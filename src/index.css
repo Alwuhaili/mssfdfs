@@ -1,0 +1,415 @@
+@import "tailwindcss";
+
+@layer base {
+  *, ::before, ::after {
+    font-family: 'Cairo', 'Tajawal', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  :root {
+    font-family: 'Cairo', 'Tajawal', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  body {
+    font-family: 'Cairo', 'Tajawal', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    letter-spacing: normal !important;
+  }
+
+  .font-arabic {
+    font-family: 'Cairo', 'Tajawal', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif !important;
+  }
+
+  .font-cairo {
+    font-family: 'Cairo', sans-serif !important;
+  }
+
+  .font-tajawal {
+    font-family: 'Tajawal', sans-serif !important;
+  }
+
+  .font-amiri {
+    font-family: 'Amiri', serif !important;
+  }
+
+  .font-naskh {
+    font-family: 'Noto Naskh Arabic', serif !important;
+  }
+
+  .font-ibm {
+    font-family: 'IBM Plex Sans Arabic', sans-serif !important;
+  }
+
+  .font-alexandria {
+    font-family: 'Alexandria', sans-serif !important;
+  }
+
+  .font-changa {
+    font-family: 'Changa', sans-serif !important;
+  }
+
+  .font-mono {
+    font-family: 'Cairo', 'Tajawal', monospace !important;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* =========================================================
+   Eye-Soothing Calming Color Themes (ثيمات الألوان الهادئة المريحة للعين)
+   ========================================================= */
+
+/* 1. Sage & Mint Calm (الزمردي والنعناع الهادئ) */
+[data-theme="sage"]:not(.dark) {
+  --theme-bg: #edf6f2;
+  --theme-card-bg: #ffffff;
+  --theme-border: #d2e7dd;
+  --theme-primary: #0d9488;
+  --theme-text: #062c26;
+  --theme-muted: #3d685a;
+}
+
+/* 2. Soft Lavender Indigo (اللافندر والبنفسجي الهادئ) */
+[data-theme="lavender"]:not(.dark) {
+  --theme-bg: #f4f3fb;
+  --theme-card-bg: #ffffff;
+  --theme-border: #e2dcf7;
+  --theme-primary: #6366f1;
+  --theme-text: #1e1b4b;
+  --theme-muted: #565088;
+}
+
+/* 3. Warm Cream Cashmere (الكشمير والعاجي الدافئ - حماية العين) */
+[data-theme="cream"]:not(.dark) {
+  --theme-bg: #faf6ef;
+  --theme-card-bg: #ffffff;
+  --theme-border: #f0e6d6;
+  --theme-primary: #b45309;
+  --theme-text: #2c1d0c;
+  --theme-muted: #6f5739;
+}
+
+/* 4. Soft Sky Turquoise (السماوي المهدئ) */
+[data-theme="sky"]:not(.dark) {
+  --theme-bg: #f0f7fd;
+  --theme-card-bg: #ffffff;
+  --theme-border: #d4e8fa;
+  --theme-primary: #0284c7;
+  --theme-text: #0b2e47;
+  --theme-muted: #3b6382;
+}
+
+/* 5. Soft Rose Quartz (الوردي الكوارتز الهادئ) */
+[data-theme="rose"]:not(.dark) {
+  --theme-bg: #faf2f4;
+  --theme-card-bg: #ffffff;
+  --theme-border: #f5d6dd;
+  --theme-primary: #be123c;
+  --theme-text: #390a16;
+  --theme-muted: #743f4c;
+}
+
+/* 6. Classic Pearl Slate (اللؤلؤي الكلاسيكي) */
+[data-theme="classic"]:not(.dark) {
+  --theme-bg: #f8fafc;
+  --theme-card-bg: #ffffff;
+  --theme-border: #e2e8f0;
+  --theme-primary: #4f46e5;
+  --theme-text: #0f172a;
+  --theme-muted: #64748b;
+}
+
+/* 7. Dark Velvet Night Mode (الوضع الليلي المخملي) */
+html.dark, [data-theme="dark"] {
+  --theme-bg: #0b1329;
+  --theme-card-bg: #1e293b;
+  --theme-border: #334155;
+  --theme-primary: #818cf8;
+  --theme-text: #f8fafc;
+  --theme-muted: #94a3b8;
+}
+
+/* Application background transition */
+body {
+  background-color: var(--theme-bg, #f8fafc);
+  color: var(--theme-text, #0f172a);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* =========================================================
+   Global & Active Page Scrollbar Styling (شريط التمرير للصفحة والحاوية النشطة فقط)
+   ========================================================= */
+
+/* =========================================================
+   Top Main Navigation Bar Visible Horizontal Scrollbar (شريط التمرير الأفقي للشريط الرئيسي)
+   ========================================================= */
+.top-nav-scrollbar {
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(99, 102, 241, 0.8) rgba(15, 23, 42, 0.7);
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 6px;
+}
+
+.top-nav-scrollbar::-webkit-scrollbar {
+  height: 6px !important;
+  display: block !important;
+}
+
+.top-nav-scrollbar::-webkit-scrollbar-track {
+  background: rgba(30, 41, 59, 0.75);
+  border-radius: 9999px;
+  margin: 0 4px;
+}
+
+.top-nav-scrollbar::-webkit-scrollbar-thumb {
+  background: linear-gradient(90deg, #6366f1, #818cf8);
+  border-radius: 9999px;
+  border: 1px solid rgba(199, 210, 254, 0.3);
+  box-shadow: 0 0 6px rgba(99, 102, 241, 0.5);
+  transition: all 0.2s ease;
+}
+
+.top-nav-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(90deg, #4f46e5, #6366f1);
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.9);
+}
+
+/* Base html & body scrollbar */
+html {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+  scrollbar-gutter: stable;
+}
+
+/* Thin modern scrollbar globally for scrollable containers */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.3) transparent;
+}
+
+*:hover,
+*:focus-within {
+  scrollbar-color: rgba(99, 102, 241, 0.5) rgba(0, 0, 0, 0.02);
+}
+
+.dark * {
+  scrollbar-color: rgba(148, 163, 184, 0.2) transparent;
+}
+
+.dark *:hover,
+.dark *:focus-within {
+  scrollbar-color: rgba(129, 140, 248, 0.5) rgba(255, 255, 255, 0.03);
+}
+
+/* WebKit Scrollbar Engine (Chrome, Safari, Edge) */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 9999px;
+  transition: background 0.2s ease, opacity 0.2s ease;
+}
+
+*:hover::-webkit-scrollbar-thumb,
+*:focus-within::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.45);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.8) !important;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.2);
+}
+
+.dark *:hover::-webkit-scrollbar-thumb,
+.dark *:focus-within::-webkit-scrollbar-thumb {
+  background: rgba(129, 140, 248, 0.45);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(129, 140, 248, 0.8) !important;
+}
+
+/* Hide scrollbar completely utility (while maintaining scrollability) */
+.no-scrollbar::-webkit-scrollbar,
+.scrollbar-none::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+.no-scrollbar,
+.scrollbar-none {
+  -ms-overflow-style: none !important;
+  scrollbar-width: none !important;
+}
+
+/* Active Page & Focused Container Scrollbar only */
+.scrollbar-active-only {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 0.25s ease;
+}
+
+.scrollbar-active-only:hover,
+.scrollbar-active-only:focus,
+.scrollbar-active-only:active {
+  scrollbar-color: rgba(99, 102, 241, 0.5) rgba(0, 0, 0, 0.03);
+}
+
+.scrollbar-active-only::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+.scrollbar-active-only:hover::-webkit-scrollbar-thumb,
+.scrollbar-active-only:focus-within::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.45);
+}
+
+/* =========================================================
+   Custom Horizontal Scrollbar Styling (تنسيق السكرول الأفقي المميز)
+   ========================================================= */
+.horizontal-scroll-container {
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(99, 102, 241, 0.45) rgba(0, 0, 0, 0.04);
+  -webkit-overflow-scrolling: touch;
+}
+
+.horizontal-scroll-container::-webkit-scrollbar {
+  height: 6px;
+}
+
+.horizontal-scroll-container::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 9999px;
+  margin: 0 4px;
+}
+
+.horizontal-scroll-container::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.4);
+  border-radius: 9999px;
+  transition: background 0.2s ease;
+}
+
+.horizontal-scroll-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.7);
+}
+
+.dark .horizontal-scroll-container {
+  scrollbar-color: rgba(129, 140, 248, 0.45) rgba(255, 255, 255, 0.06);
+}
+
+.dark .horizontal-scroll-container::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.dark .horizontal-scroll-container::-webkit-scrollbar-thumb {
+  background: rgba(129, 140, 248, 0.45);
+}
+
+.dark .horizontal-scroll-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(129, 140, 248, 0.75);
+}
+
+/* Emerald Scroll variant for subjects */
+.horizontal-scroll-emerald {
+  scrollbar-color: rgba(16, 185, 129, 0.45) rgba(0, 0, 0, 0.04);
+}
+.horizontal-scroll-emerald::-webkit-scrollbar-thumb {
+  background: rgba(16, 185, 129, 0.4);
+}
+.horizontal-scroll-emerald::-webkit-scrollbar-thumb:hover {
+  background: rgba(16, 185, 129, 0.7);
+}
+.dark .horizontal-scroll-emerald {
+  scrollbar-color: rgba(52, 211, 153, 0.45) rgba(255, 255, 255, 0.06);
+}
+.dark .horizontal-scroll-emerald::-webkit-scrollbar-thumb {
+  background: rgba(52, 211, 153, 0.45);
+}
+.dark .horizontal-scroll-emerald::-webkit-scrollbar-thumb:hover {
+  background: rgba(52, 211, 153, 0.75);
+}
+
+/* Amber Scroll variant for grades & official books */
+.horizontal-scroll-amber {
+  scrollbar-color: rgba(245, 158, 11, 0.45) rgba(0, 0, 0, 0.04);
+}
+.horizontal-scroll-amber::-webkit-scrollbar-thumb {
+  background: rgba(245, 158, 11, 0.4);
+}
+.horizontal-scroll-amber::-webkit-scrollbar-thumb:hover {
+  background: rgba(245, 158, 11, 0.7);
+}
+.dark .horizontal-scroll-amber {
+  scrollbar-color: rgba(251, 191, 36, 0.45) rgba(255, 255, 255, 0.06);
+}
+.dark .horizontal-scroll-amber::-webkit-scrollbar-thumb {
+  background: rgba(251, 191, 36, 0.45);
+}
+.dark .horizontal-scroll-amber::-webkit-scrollbar-thumb:hover {
+  background: rgba(251, 191, 36, 0.75);
+}
+
+
+/* =========================================================
+   A4 Print & PDF Export Optimization
+   ========================================================= */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 6mm 8mm;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    font-size: 11pt;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .no-print,
+  nav,
+  header,
+  footer:not(.cert-footer),
+  .print\:hidden {
+    display: none !important;
+  }
+
+  .print\:block {
+    display: block !important;
+  }
+
+  .a4-cert-page {
+    page-break-after: always;
+    break-after: page;
+    page-break-inside: avoid;
+    break-inside: avoid;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 auto !important;
+    padding: 10px !important;
+    box-shadow: none !important;
+    border: none !important;
+    background: #ffffff !important;
+  }
+
+  .a4-cert-page:last-child {
+    page-break-after: auto;
+    break-after: auto;
+  }
+}
+

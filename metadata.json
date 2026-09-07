@@ -1,0 +1,8 @@
+{
+  "name": "Copy of Remix مدرسة ثانوية ميسان للمتميزات - Maysan Secondary School For Distinguished Female Students",
+  "description": "منصة مدرسة ثانوية ميسان للمتميزات المتكاملة: لوحات تحكم متعددة الأدوار (مدير، معلمات، طالبات، أولياء أمور)، امتحانات إلكترونية مع منع الغش، تحليلات وتقارير، وإشعارات فورية.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
