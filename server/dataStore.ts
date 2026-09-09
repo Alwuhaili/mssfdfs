@@ -50,12 +50,21 @@ export interface SyncStoreState {
   data: SchoolDataPayload;
 }
 
+export type StoreSubscriber = (event: {
+  type: string;
+  version: number;
+  lastModified: string;
+  lastSyncedBy?: any;
+  data: SchoolDataPayload;
+}) => void;
+
 class CentralDataStore {
   private dbFilePath: string;
   private dbDir: string;
   private state: SyncStoreState;
   private isSaving: boolean = false;
   private pendingSave: boolean = false;
+  private subscribers: Set<StoreSubscriber> = new Set();
 
   constructor() {
     this.dbDir = path.join(process.cwd(), "data");
@@ -67,6 +76,29 @@ class CentralDataStore {
     };
 
     this.init();
+  }
+
+  public subscribe(callback: StoreSubscriber): () => void {
+    this.subscribers.add(callback);
+    return () => {
+      this.subscribers.delete(callback);
+    };
+  }
+
+  public notifySubscribers(event: {
+    type: string;
+    version: number;
+    lastModified: string;
+    lastSyncedBy?: any;
+    data: SchoolDataPayload;
+  }) {
+    this.subscribers.forEach((callback) => {
+      try {
+        callback(event);
+      } catch (err) {
+        console.error("[DataStore] Error in subscriber callback:", err);
+      }
+    });
   }
 
   private init() {
@@ -173,11 +205,95 @@ class CentralDataStore {
     const currentData = this.state.data;
     const mergedData: SchoolDataPayload = { ...currentData };
 
-    // Update each provided collection/field
+    const isAdmin =
+      sourceUser?.role === "admin" ||
+      sourceUser?.id === "admin-main" ||
+      sourceUser?.role === "director" ||
+      (sourceUser?.name && (sourceUser.name.includes("المديرة") || sourceUser.name.includes("إدارة")));
+
+    // Admin-exclusive entities that cannot be overwritten by students or teachers
+    const ADMIN_EXCLUSIVE_KEYS = [
+      "teachers",
+      "students",
+      "parents",
+      "supervisors",
+      "graduates",
+      "certificates",
+      "announcements",
+      "timetable",
+      "subjectQuotas",
+      "financial",
+      "schoolAdminData",
+      "decisionSettings",
+      "examSchedules",
+    ];
+
     for (const key of Object.keys(updates)) {
       const val = updates[key];
-      if (val !== undefined) {
+      if (val === undefined) continue;
+
+      if (isAdmin) {
+        // The Administration / Directress has absolute authority: complete replacement for additions, modifications, and deletions
         mergedData[key] = val;
+      } else {
+        // Non-admin user (teacher, student, parent)
+        if (ADMIN_EXCLUSIVE_KEYS.includes(key)) {
+          // Prevent non-admin clients from overwriting admin-managed master school data
+          continue;
+        }
+
+        // Intelligently merge operational entities
+        if (key === "submissions" && Array.isArray(val)) {
+          const currentList = Array.isArray(mergedData.submissions) ? [...mergedData.submissions] : [];
+          val.forEach((sub: any) => {
+            const matchIdx = currentList.findIndex(
+              (item) => item.id === sub.id || (item.studentId === sub.studentId && item.examId === sub.examId)
+            );
+            if (matchIdx >= 0) {
+              currentList[matchIdx] = { ...currentList[matchIdx], ...sub };
+            } else {
+              currentList.push(sub);
+            }
+          });
+          mergedData.submissions = currentList;
+        } else if (key === "attendance" && Array.isArray(val)) {
+          const currentList = Array.isArray(mergedData.attendance) ? [...mergedData.attendance] : [];
+          val.forEach((att: any) => {
+            const matchIdx = currentList.findIndex(
+              (item) => item.id === att.id || (item.date === att.date && item.grade === att.grade && item.section === att.section)
+            );
+            if (matchIdx >= 0) {
+              currentList[matchIdx] = { ...currentList[matchIdx], ...att };
+            } else {
+              currentList.push(att);
+            }
+          });
+          mergedData.attendance = currentList;
+        } else if (key === "messages" && Array.isArray(val)) {
+          const currentList = Array.isArray(mergedData.messages) ? [...mergedData.messages] : [];
+          val.forEach((msg: any) => {
+            const matchIdx = currentList.findIndex((item) => item.id === msg.id);
+            if (matchIdx >= 0) {
+              currentList[matchIdx] = { ...currentList[matchIdx], ...msg };
+            } else {
+              currentList.push(msg);
+            }
+          });
+          mergedData.messages = currentList;
+        } else if ((key === "lectures" || key === "challenges" || key === "annualPlans" || key === "dailyLessonPlans") && Array.isArray(val)) {
+          const currentList = Array.isArray(mergedData[key]) ? [...mergedData[key]] : [];
+          val.forEach((item: any) => {
+            const matchIdx = currentList.findIndex((it) => it.id === item.id);
+            if (matchIdx >= 0) {
+              currentList[matchIdx] = { ...currentList[matchIdx], ...item };
+            } else {
+              currentList.push(item);
+            }
+          });
+          mergedData[key] = currentList;
+        } else {
+          mergedData[key] = val;
+        }
       }
     }
 
@@ -191,8 +307,17 @@ class CentralDataStore {
     this.persistToDisk();
 
     console.log(
-      `[DataStore] Database updated to v${this.state.version} by ${sourceUser?.name || "System"} (${sourceUser?.role || "user"})`
+      `[DataStore] Database updated to v${this.state.version} by ${sourceUser?.name || "System"} (${sourceUser?.role || "user"})${isAdmin ? " [ADMIN_AUTHORITY]" : ""}`
     );
+
+    // Notify all real-time SSE connected clients immediately
+    this.notifySubscribers({
+      type: "DATA_UPDATED",
+      version: this.state.version,
+      lastModified: this.state.lastModified,
+      lastSyncedBy: this.state.lastSyncedBy,
+      data: this.state.data,
+    });
 
     return this.getData();
   }
@@ -206,6 +331,15 @@ class CentralDataStore {
     };
 
     this.persistToDisk();
+
+    this.notifySubscribers({
+      type: "DATABASE_RESET",
+      version: this.state.version,
+      lastModified: this.state.lastModified,
+      lastSyncedBy: this.state.lastSyncedBy,
+      data: this.state.data,
+    });
+
     return this.getData();
   }
 }

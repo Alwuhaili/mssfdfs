@@ -206,14 +206,29 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({ isOpen, onClose })
           </div>
           <div>
             <h2 className="text-xl font-black text-slate-900 dark:text-white flex items-center gap-2">
-              <span>مزامنة البيانات المركزية لجميع المستخدمين</span>
+              <span>مزامنة وتوحيد البيانات لجميع المستخدمين</span>
               <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
                 إصدار #{syncVersion}
               </span>
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 flex items-center gap-1">
+                <Zap className="w-3 h-3 text-emerald-600" />
+                بث فوري مباشر (SSE)
+              </span>
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              تضمن هذه المنظومة تناغم كافة السجلات والدرجات والرسائل فورياً بين الإدارة، المدرسات، الطالبات، وأولياء الأمور
+              منظومة المزامنة الشاملة: أي إضافة أو حذف أو تعديل من المديرة والإدارة يُنفّذ فوراً لدى كافة المدرسات والطالبات وأولياء الأمور
             </p>
+          </div>
+        </div>
+
+        {/* Real-time Admin Master Authority Banner */}
+        <div className="p-3.5 mb-5 rounded-2xl bg-linear-to-r from-indigo-500/10 via-purple-500/10 to-emerald-500/10 border border-indigo-200 dark:border-indigo-900/60 flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-md">
+            <ShieldCheck className="w-5 h-5" />
+          </div>
+          <div className="text-xs leading-relaxed text-slate-700 dark:text-slate-300">
+            <span className="font-bold text-indigo-700 dark:text-indigo-400">سيادة قرارات الإدارة والمديرة العامة: </span>
+            تتمتع عمليات الإدارة (إضافة كادر، تعديل طالبات، نشر جداول، رصد قرارات، أو حذف سجلات) بـ <strong>أولوية تنفيذ عليا وقاطعة</strong>، حيث تُبث التحديثات فوراً عبر قنوات البث الحي Server-Sent Events لتنعكس على شاشات كافة المستخدمين لحظياً وبدون أي تأخير.
           </div>
         </div>
 

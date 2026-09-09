@@ -24,6 +24,50 @@ async function startServer() {
   });
 
   // Central School Data Synchronization Endpoints (مزامنة البيانات لجميع المستخدمين)
+  // SSE: Real-Time Instant Data Stream for all connected users and roles
+  app.get("/api/data/events", (req, res) => {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+
+    const current = serverDataStore.getData();
+    // Initial handshake
+    res.write(
+      `data: ${JSON.stringify({
+        type: "CONNECTED",
+        version: current.version,
+        lastModified: current.lastModified,
+        lastSyncedBy: current.lastSyncedBy,
+      })}\n\n`
+    );
+
+    // Heartbeat ping every 20 seconds
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(": keep-alive\n\n");
+      } catch {
+        clearInterval(heartbeat);
+      }
+    }, 20000);
+
+    // Subscribe to live database updates (directress additions, deletions, edits)
+    const unsubscribe = serverDataStore.subscribe((event) => {
+      try {
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
+      } catch (err) {
+        console.error("SSE push error:", err);
+      }
+    });
+
+    req.on("close", () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+    });
+  });
+
   // GET: Fetch latest data or check if client has the latest version
   app.get("/api/data/sync", (req, res) => {
     try {

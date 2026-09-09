@@ -37,8 +37,10 @@ const BROADCAST_CHANNEL_NAME = 'maysan_gifted_school_sync_channel';
 
 class CentralSyncService {
   private broadcastChannel: BroadcastChannel | null = null;
-  private listeners: Set<(event: { type: string; payload?: any; sourceVersion?: number }) => void> = new Set();
+  private listeners: Set<(event: { type: string; payload?: any; sourceVersion?: number; lastSyncedBy?: any; lastModified?: string }) => void> = new Set();
   private isOnline: boolean = typeof navigator !== 'undefined' ? navigator.onLine : true;
+  private eventSource: EventSource | null = null;
+  private reconnectTimeout: any = null;
 
   constructor() {
     if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -57,23 +59,100 @@ class CentralSyncService {
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => {
         this.isOnline = true;
+        this.connectRealtimeStream();
         this.notifyListeners({ type: 'NETWORK_ONLINE' });
       });
       window.addEventListener('offline', () => {
         this.isOnline = false;
+        if (this.eventSource) {
+          this.eventSource.close();
+          this.eventSource = null;
+        }
         this.notifyListeners({ type: 'NETWORK_OFFLINE' });
       });
+
+      // Start SSE real-time stream
+      this.connectRealtimeStream();
     }
   }
 
-  public subscribe(callback: (event: { type: string; payload?: any; sourceVersion?: number }) => void) {
+  /**
+   * Connect to server-sent events for instant push synchronization
+   */
+  public connectRealtimeStream() {
+    if (typeof window === 'undefined' || !('EventSource' in window)) return;
+    if (this.eventSource) {
+      try {
+        this.eventSource.close();
+      } catch {
+        // ignore
+      }
+      this.eventSource = null;
+    }
+
+    try {
+      this.eventSource = new EventSource('/api/data/events');
+
+      this.eventSource.onopen = () => {
+        if (this.reconnectTimeout) {
+          clearTimeout(this.reconnectTimeout);
+          this.reconnectTimeout = null;
+        }
+      };
+
+      this.eventSource.onmessage = (event) => {
+        try {
+          if (!event.data || event.data.startsWith(':')) return;
+          const parsed = JSON.parse(event.data);
+          if (parsed.type === 'DATA_UPDATED' || parsed.type === 'DATABASE_RESET') {
+            this.notifyListeners({
+              type: 'REALTIME_SERVER_UPDATE',
+              payload: parsed.data,
+              sourceVersion: parsed.version,
+              lastSyncedBy: parsed.lastSyncedBy,
+              lastModified: parsed.lastModified,
+            });
+            // Also notify any other tabs in the same browser
+            this.broadcastToTabs('SERVER_DATA_UPDATED', null, parsed.version);
+          }
+        } catch (e) {
+          console.warn('[SyncService] SSE JSON parse error:', e);
+        }
+      };
+
+      this.eventSource.onerror = () => {
+        if (this.eventSource) {
+          try {
+            this.eventSource.close();
+          } catch {
+            // ignore
+          }
+          this.eventSource = null;
+        }
+
+        // Reconnect after 3 seconds if online
+        if (!this.reconnectTimeout && this.isOnline) {
+          this.reconnectTimeout = setTimeout(() => {
+            this.reconnectTimeout = null;
+            if (this.isOnline) {
+              this.connectRealtimeStream();
+            }
+          }, 3000);
+        }
+      };
+    } catch (err) {
+      console.warn('[SyncService] EventSource setup error:', err);
+    }
+  }
+
+  public subscribe(callback: (event: { type: string; payload?: any; sourceVersion?: number; lastSyncedBy?: any; lastModified?: string }) => void) {
     this.listeners.add(callback);
     return () => {
       this.listeners.delete(callback);
     };
   }
 
-  private notifyListeners(event: { type: string; payload?: any; sourceVersion?: number }) {
+  private notifyListeners(event: { type: string; payload?: any; sourceVersion?: number; lastSyncedBy?: any; lastModified?: string }) {
     this.listeners.forEach((callback) => {
       try {
         callback(event);

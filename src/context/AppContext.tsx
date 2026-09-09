@@ -808,37 +808,41 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Entities
   const [teachers, setTeachers] = useState<Teacher[]>(() => {
     const stored = initialStored?.teachers;
-    const raw = stored && Array.isArray(stored) && stored.length > 0 ? stored : INITIAL_TEACHERS;
+    const baseList = INITIAL_TEACHERS.filter((t) => !isTeacherBlacklisted(t.name));
+    if (!stored || !Array.isArray(stored) || stored.length === 0) {
+      return baseList;
+    }
+
     // Filter out any legacy mock teachers that might have been cached in localStorage from old versions
     const legacyMockTeacherIds = ['tech-1', 'tech-2', 'tech-3', 'tech-4', 'tech-5', 'tech-6', 'tech-7', 'tech-8', 'tech-9', 'tech-10', 'tech-11', 'tech-12', 'tech-13', 'tech-14'];
-    let filtered = raw.filter((t) => 
+    let filtered = stored.filter((t) => 
       !legacyMockTeacherIds.includes(t.id) &&
       !isTeacherBlacklisted(t.name)
     );
 
-    // Normalize any legacy names to the official full name
-    filtered = filtered.map(t => {
-      if (t.name.includes('محمد نعمة كاظم كريدي')) {
-        return { ...t, name: 'محمد نعمة كاظم كريدي الوحيلي' };
+    // Merge baseList teachers so we don't lose the full school faculty if stored was incomplete
+    const merged = [...filtered];
+    baseList.forEach((bt) => {
+      if (!merged.some((t) => t.id === bt.id || t.name === bt.name)) {
+        merged.push(bt);
       }
-      return t;
     });
-    
-    // Ensure newly added official teacher 'محمد نعمة كاظم كريدي الوحيلي' is always included
+
+    // Ensure official teacher 'محمد نعمة كاظم كريدي الوحيلي' is included
     const mohammedTeacher = INITIAL_TEACHERS.find(t => t.id === 'tech-cs-mohammed');
-    if (mohammedTeacher && !filtered.some(t => t.name === 'محمد نعمة كاظم كريدي الوحيلي' || t.id === 'tech-cs-mohammed')) {
-      filtered = [mohammedTeacher, ...filtered];
+    if (mohammedTeacher && !merged.some(t => t.name === 'محمد نعمة كاظم كريدي الوحيلي' || t.id === 'tech-cs-mohammed')) {
+      merged.unshift(mohammedTeacher);
     }
 
     // Deduplicate by name
     const seenNames = new Set<string>();
-    filtered = filtered.filter(t => {
+    const result = merged.filter(t => {
       if (seenNames.has(t.name)) return false;
       seenNames.add(t.name);
       return true;
     });
 
-    return filtered.length > 0 ? filtered : INITIAL_TEACHERS.filter(t => !isTeacherBlacklisted(t.name));
+    return result.length > 0 ? result : baseList;
   });
   const [students, setStudents] = useState<Student[]>(() => {
     const raw = (initialStored?.students || INITIAL_STUDENTS).filter(
@@ -2327,9 +2331,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     initializeCentralSync();
 
-    // Cross-tab real-time sync channel
+    // Real-time SSE and cross-tab sync channel
     const unsubscribeBroadcast = centralSyncService.subscribe(async (evt) => {
-      if (evt.type === 'SERVER_DATA_UPDATED' || evt.type === 'DATABASE_RESET') {
+      if (evt.type === 'REALTIME_SERVER_UPDATE' && evt.payload) {
+        // Instant Server-Sent Event push from server!
+        applyRemoteData(evt.payload, evt.sourceVersion || syncVersion + 1, evt.lastSyncedBy);
+      } else if (evt.type === 'SERVER_DATA_UPDATED' || evt.type === 'DATABASE_RESET') {
         try {
           const res = await centralSyncService.fetchServerData(undefined, true);
           if (isMounted && res.success && res.data) {
@@ -2346,7 +2353,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     });
 
-    // Periodic check for updates from other users every 10 seconds
+    // Periodic check for updates as fallback every 6 seconds
     const pollInterval = setInterval(async () => {
       if (!isInitialHydrationDone.current) return;
       try {
@@ -2363,7 +2370,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       } catch {
         // offline or transient
       }
-    }, 10000);
+    }, 6000);
 
     // Refresh on window focus / tab switch
     const onWindowFocus = async () => {
@@ -2398,6 +2405,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setSyncStatus('syncing');
 
+    // Administration changes sync ultra-fast (250ms) to ensure immediate school-wide propagation
+    const debounceDelay = role === 'admin' ? 250 : 1200;
+
     pushDebounceTimer.current = setTimeout(async () => {
       try {
         const payload = getFullPayload();
@@ -2422,7 +2432,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSyncStatus('offline');
         setSyncErrorMessage(err.message);
       }
-    }, 1500);
+    }, debounceDelay);
 
     return () => {
       if (pushDebounceTimer.current) clearTimeout(pushDebounceTimer.current);
@@ -2462,26 +2472,45 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const forceSyncAll = async (): Promise<boolean> => {
     setSyncStatus('syncing');
     try {
-      // First fetch latest from server
-      const fetchRes = await centralSyncService.fetchServerData(undefined, true);
-      if (fetchRes.success && fetchRes.data && Object.keys(fetchRes.data).length > 5) {
-        applyRemoteData(fetchRes.data, fetchRes.version || syncVersion, fetchRes.lastSyncedBy);
-      }
+      if (role === 'admin') {
+        // If Directress/Admin triggers sync, push immediately so local edits take master authority
+        const payload = getFullPayload();
+        const sourceUser = {
+          id: currentUser?.id || 'admin-main',
+          name: currentUser?.name || 'المديرة العامة',
+          role: 'admin',
+        };
+        const pushRes = await centralSyncService.pushUpdates(payload, sourceUser);
+        if (pushRes.success && pushRes.version) {
+          setSyncVersion(pushRes.version);
+          setLastSyncedAt(new Date());
+          setLastSyncedBy(sourceUser);
+          setSyncStatus('synced');
+          setSyncErrorMessage(undefined);
+          return true;
+        }
+      } else {
+        // Non-admin user: fetch latest server state
+        const fetchRes = await centralSyncService.fetchServerData(undefined, true);
+        if (fetchRes.success && fetchRes.data && Object.keys(fetchRes.data).length > 5) {
+          applyRemoteData(fetchRes.data, fetchRes.version || syncVersion, fetchRes.lastSyncedBy);
+        }
 
-      // Then push current unified state
-      const payload = getFullPayload();
-      const sourceUser = {
-        id: currentUser?.id || role,
-        name: currentUser?.name || (role === 'admin' ? 'المديرة العامة' : role),
-        role: role,
-      };
-      const pushRes = await centralSyncService.pushUpdates(payload, sourceUser);
-      if (pushRes.success && pushRes.version) {
-        setSyncVersion(pushRes.version);
-        setLastSyncedAt(new Date());
-        setLastSyncedBy(sourceUser);
-        setSyncStatus('synced');
-        return true;
+        // Then push any non-admin local edits (submissions, messages)
+        const payload = getFullPayload();
+        const sourceUser = {
+          id: currentUser?.id || role,
+          name: currentUser?.name || role,
+          role: role,
+        };
+        const pushRes = await centralSyncService.pushUpdates(payload, sourceUser);
+        if (pushRes.success && pushRes.version) {
+          setSyncVersion(pushRes.version);
+          setLastSyncedAt(new Date());
+          setLastSyncedBy(sourceUser);
+          setSyncStatus('synced');
+          return true;
+        }
       }
       return false;
     } catch (err: any) {
