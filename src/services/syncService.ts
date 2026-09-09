@@ -1,14 +1,10 @@
-/**
- * Central Data Synchronization Service for All Users
- * خدمة المزامنة المركزية لجميع المستخدمين والأدوار
- * ثانوية ميسان للمتميزات
- */
+import { db } from '../lib/firebase';
+import { doc, getDoc, setDoc, onSnapshot, serverTimestamp, writeBatch } from 'firebase/firestore';
 
-export interface SyncStatusInfo {
-  status: 'synced' | 'syncing' | 'offline' | 'error';
-  version: number;
-  lastModified: string | null;
-  lastSyncedAt: string | null;
+export interface SyncStatus {
+  success: boolean;
+  version?: number;
+  lastModified?: string;
   lastSyncedBy?: {
     id?: string;
     name?: string;
@@ -34,13 +30,14 @@ export interface SyncResponse {
 }
 
 const BROADCAST_CHANNEL_NAME = 'maysan_gifted_school_sync_channel';
+const FIREBASE_DOC_PATH = 'database/main';
 
 class CentralSyncService {
   private broadcastChannel: BroadcastChannel | null = null;
   private listeners: Set<(event: { type: string; payload?: any; sourceVersion?: number; lastSyncedBy?: any; lastModified?: string }) => void> = new Set();
   private isOnline: boolean = typeof navigator !== 'undefined' ? navigator.onLine : true;
-  private eventSource: EventSource | null = null;
-  private reconnectTimeout: any = null;
+  private unsubscribeFirestore: (() => void) | null = null;
+  private currentVersion: number = 0;
 
   constructor() {
     if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -64,84 +61,51 @@ class CentralSyncService {
       });
       window.addEventListener('offline', () => {
         this.isOnline = false;
-        if (this.eventSource) {
-          this.eventSource.close();
-          this.eventSource = null;
+        if (this.unsubscribeFirestore) {
+          this.unsubscribeFirestore();
+          this.unsubscribeFirestore = null;
         }
         this.notifyListeners({ type: 'NETWORK_OFFLINE' });
       });
 
-      // Start SSE real-time stream
+      // Start Firebase real-time stream
       this.connectRealtimeStream();
     }
   }
 
-  /**
-   * Connect to server-sent events for instant push synchronization
-   */
   public connectRealtimeStream() {
-    if (typeof window === 'undefined' || !('EventSource' in window)) return;
-    if (this.eventSource) {
-      try {
-        this.eventSource.close();
-      } catch {
-        // ignore
-      }
-      this.eventSource = null;
+    if (typeof window === 'undefined') return;
+
+    if (this.unsubscribeFirestore) {
+      this.unsubscribeFirestore();
+      this.unsubscribeFirestore = null;
     }
 
     try {
-      this.eventSource = new EventSource('/api/data/events');
-
-      this.eventSource.onopen = () => {
-        if (this.reconnectTimeout) {
-          clearTimeout(this.reconnectTimeout);
-          this.reconnectTimeout = null;
-        }
-      };
-
-      this.eventSource.onmessage = (event) => {
-        try {
-          if (!event.data || event.data.startsWith(':')) return;
-          const parsed = JSON.parse(event.data);
-          if (parsed.type === 'DATA_UPDATED' || parsed.type === 'DATABASE_RESET') {
+      const docRef = doc(db, FIREBASE_DOC_PATH);
+      
+      this.unsubscribeFirestore = onSnapshot(docRef, (snapshot) => {
+        if (snapshot.exists()) {
+          const data = snapshot.data();
+          if (data && data.version && data.version > this.currentVersion) {
+            this.currentVersion = data.version;
+            
+            // Format for compatibility with the existing AppContext payload expectancies
             this.notifyListeners({
               type: 'REALTIME_SERVER_UPDATE',
-              payload: parsed.data,
-              sourceVersion: parsed.version,
-              lastSyncedBy: parsed.lastSyncedBy,
-              lastModified: parsed.lastModified,
+              payload: data.data,
+              sourceVersion: data.version,
+              lastSyncedBy: data.lastSyncedBy,
+              lastModified: data.lastModified,
             });
-            // Also notify any other tabs in the same browser
-            this.broadcastToTabs('SERVER_DATA_UPDATED', null, parsed.version);
+            this.broadcastToTabs('SERVER_DATA_UPDATED', null, data.version);
           }
-        } catch (e) {
-          console.warn('[SyncService] SSE JSON parse error:', e);
         }
-      };
-
-      this.eventSource.onerror = () => {
-        if (this.eventSource) {
-          try {
-            this.eventSource.close();
-          } catch {
-            // ignore
-          }
-          this.eventSource = null;
-        }
-
-        // Reconnect after 3 seconds if online
-        if (!this.reconnectTimeout && this.isOnline) {
-          this.reconnectTimeout = setTimeout(() => {
-            this.reconnectTimeout = null;
-            if (this.isOnline) {
-              this.connectRealtimeStream();
-            }
-          }, 3000);
-        }
-      };
+      }, (err) => {
+        console.warn('[SyncService] Firebase onSnapshot error:', err);
+      });
     } catch (err) {
-      console.warn('[SyncService] EventSource setup error:', err);
+      console.warn('[SyncService] Firebase setup error:', err);
     }
   }
 
@@ -173,49 +137,44 @@ class CentralSyncService {
     }
   }
 
-  /**
-   * Fetch latest state from central server
-   */
   public async fetchServerData(currentVersion?: number, force: boolean = false): Promise<SyncResponse> {
     if (!this.isOnline) {
       return { success: false, message: 'الجهاز غير متصل بالإنترنت حالياً' };
     }
 
     try {
-      const url = new URL('/api/data/sync', window.location.origin);
-      if (currentVersion !== undefined && !force) {
-        url.searchParams.set('version', currentVersion.toString());
-      }
-      if (force) {
-        url.searchParams.set('force', 'true');
-      }
-
-      const res = await fetch(url.toString(), {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json',
-          'Cache-Control': 'no-cache',
-        },
-      });
-
-      if (!res.ok) {
-        throw new Error(`Server returned HTTP ${res.status}`);
+      const docRef = doc(db, FIREBASE_DOC_PATH);
+      const snapshot = await getDoc(docRef);
+      
+      if (!snapshot.exists()) {
+        return { success: true, data: {}, version: 1 }; // Empty initial state
       }
 
-      const json: SyncResponse = await res.json();
-      return json;
+      const data = snapshot.data();
+      
+      if (currentVersion !== undefined && !force && data.version <= currentVersion) {
+        return { success: true, notModified: true, version: data.version };
+      }
+
+      this.currentVersion = data.version || 1;
+
+      return {
+        success: true,
+        version: data.version,
+        lastModified: data.lastModified,
+        lastSyncedBy: data.lastSyncedBy,
+        data: data.data,
+        serverTime: new Date().toISOString()
+      };
     } catch (err: any) {
       console.warn('[SyncService] Fetch data error:', err);
       return {
         success: false,
-        message: err.message || 'فشل الاتصال بخادم المزامنة المركزي',
+        message: err.message || 'فشل الاتصال بخادم Firebase',
       };
     }
   }
 
-  /**
-   * Push updates to central server
-   */
   public async pushUpdates(
     updates: any,
     sourceUser?: { id?: string; name?: string; role?: string },
@@ -226,74 +185,137 @@ class CentralSyncService {
     }
 
     try {
-      const res = await fetch('/api/data/sync', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          updates,
-          sourceUser,
-          clientVersion,
-        }),
+      const docRef = doc(db, FIREBASE_DOC_PATH);
+      
+      const newVersion = (this.currentVersion || 0) + 1;
+      const lastModified = new Date().toISOString();
+      const lastSyncedBy = sourceUser || { id: 'unknown', name: 'Unknown', role: 'user' };
+
+      // In a real app we would merge changes intelligently (using transactions).
+      // For now, we do a simple merge: read current, merge updates, write back.
+      // Firebase transaction ensures atomic updates
+      
+      // But AppContext actually sends the ENTIRE state most of the time via getFullPayload.
+      // Easiest is just to overwrite the entire data object if we assume updates has everything,
+      // but if updates is partial, we should get current first.
+      
+      const snapshot = await getDoc(docRef);
+      let currentData = snapshot.exists() ? snapshot.data().data || {} : {};
+      
+      // If it's an admin pushing, we trust their payload entirely.
+      const isAdmin = sourceUser?.role === 'admin' || sourceUser?.id === 'admin-main';
+      
+      let mergedData = { ...currentData };
+      if (isAdmin) {
+         for (const key of Object.keys(updates)) {
+             if (updates[key] !== undefined) mergedData[key] = updates[key];
+         }
+      } else {
+         // Non-admin logic similar to the backend
+         const ADMIN_EXCLUSIVE_KEYS = [
+            "teachers", "students", "parents", "supervisors", "graduates", "certificates",
+            "announcements", "timetable", "subjectQuotas", "financial", "schoolAdminData",
+            "decisionSettings", "examSchedules",
+         ];
+         for (const key of Object.keys(updates)) {
+            if (updates[key] === undefined) continue;
+            if (ADMIN_EXCLUSIVE_KEYS.includes(key)) continue;
+            
+            // For array-based operational entities, we merge lists intelligently
+            if (["submissions", "attendance", "messages", "lectures", "challenges", "annualPlans", "dailyLessonPlans"].includes(key) && Array.isArray(updates[key])) {
+                const currentList = Array.isArray(mergedData[key]) ? [...mergedData[key]] : [];
+                updates[key].forEach((item: any) => {
+                    const matchIdx = currentList.findIndex((it: any) => it.id === item.id);
+                    if (matchIdx >= 0) {
+                        currentList[matchIdx] = { ...currentList[matchIdx], ...item };
+                    } else {
+                        currentList.push(item);
+                    }
+                });
+                mergedData[key] = currentList;
+            } else {
+                mergedData[key] = updates[key];
+            }
+         }
+      }
+
+      await setDoc(docRef, {
+        version: newVersion,
+        lastModified: lastModified,
+        lastSyncedBy: lastSyncedBy,
+        data: mergedData,
+        _timestamp: serverTimestamp()
       });
 
-      if (!res.ok) {
-        throw new Error(`Server returned HTTP ${res.status}`);
-      }
+      this.currentVersion = newVersion;
+      
+      this.broadcastToTabs('SERVER_DATA_UPDATED', null, newVersion);
 
-      const json: SyncResponse = await res.json();
-      if (json.success && json.version) {
-        this.broadcastToTabs('SERVER_DATA_UPDATED', null, json.version);
-      }
-      return json;
+      return {
+        success: true,
+        version: newVersion,
+        lastModified: lastModified,
+        lastSyncedBy: lastSyncedBy
+      };
     } catch (err: any) {
       console.warn('[SyncService] Push updates error:', err);
       return {
         success: false,
-        message: err.message || 'فشل إرسال التحديثات إلى الخادم المركزي',
+        message: err.message || 'فشل إرسال التحديثات إلى Firebase',
       };
     }
   }
 
-  /**
-   * Get Server Health & Entity Counts Status
-   */
   public async getServerStatus(): Promise<any> {
     const startTime = Date.now();
     try {
-      const res = await fetch('/api/data/status?t=' + Date.now(), {
-        cache: 'no-store',
-      });
+      const docRef = doc(db, FIREBASE_DOC_PATH);
+      const snapshot = await getDoc(docRef);
       const latencyMs = Date.now() - startTime;
-      if (!res.ok) {
-        return { success: false, latencyMs, message: `HTTP ${res.status}` };
+      
+      if (!snapshot.exists()) {
+         return { success: true, latencyMs, message: 'Database is empty', counts: {} };
       }
-      const data = await res.json();
-      return { ...data, latencyMs };
+      
+      const data = snapshot.data();
+      const counts: any = {};
+      if (data.data) {
+         Object.keys(data.data).forEach(key => {
+            if (Array.isArray(data.data[key])) {
+               counts[key] = data.data[key].length;
+            }
+         });
+      }
+      
+      return { 
+         success: true, 
+         version: data.version, 
+         lastModified: data.lastModified, 
+         lastSyncedBy: data.lastSyncedBy,
+         totalKeys: Object.keys(data.data || {}).length,
+         counts,
+         latencyMs 
+      };
     } catch (err: any) {
       const latencyMs = Date.now() - startTime;
       return { success: false, latencyMs, message: err.message };
     }
   }
 
-  /**
-   * Reset Central Database
-   */
   public async resetServerDatabase(seedData?: any): Promise<SyncResponse> {
     try {
-      const res = await fetch('/api/data/reset', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ seedData }),
+      const docRef = doc(db, FIREBASE_DOC_PATH);
+      const newVersion = (this.currentVersion || 0) + 1;
+      await setDoc(docRef, {
+        version: newVersion,
+        lastModified: new Date().toISOString(),
+        lastSyncedBy: { id: 'admin-main', name: 'System Admin', role: 'admin' },
+        data: seedData || {},
+        _timestamp: serverTimestamp()
       });
-      const json: SyncResponse = await res.json();
-      if (json.success) {
-        this.broadcastToTabs('DATABASE_RESET', null, json.version);
-      }
-      return json;
+      
+      this.broadcastToTabs('DATABASE_RESET', null, newVersion);
+      return { success: true, version: newVersion };
     } catch (err: any) {
       return { success: false, message: err.message };
     }

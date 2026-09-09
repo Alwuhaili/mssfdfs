@@ -817,6 +817,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const legacyMockTeacherIds = ['tech-1', 'tech-2', 'tech-3', 'tech-4', 'tech-5', 'tech-6', 'tech-7', 'tech-8', 'tech-9', 'tech-10', 'tech-11', 'tech-12', 'tech-13', 'tech-14'];
     let filtered = stored.filter((t) => 
       !legacyMockTeacherIds.includes(t.id) &&
+      !/^tech-[a-z]+-\d+$/.test(t.id) && // this removes tech-math-1, tech-chem-2, etc. but leaves tech-cs-mohammed and real ones like tech-1700000-xyz
       !isTeacherBlacklisted(t.name)
     );
 

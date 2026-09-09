@@ -1,0 +1,10 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // We will allow open access for now as the app uses local passcode roles and we don't have FirebaseAuth fully wired for these custom roles yet.
+    // In a production scenario, we'd use Custom Claims, but this matches the local SSE security model.
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

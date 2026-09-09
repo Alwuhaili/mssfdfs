@@ -20,6 +20,7 @@
     "canvas-confetti": "^1.9.4",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
+    "firebase": "^12.19.0",
     "html2canvas-pro": "^2.3.8",
     "html2pdf.js": "^0.14.0",
     "jspdf": "^4.2.1",
