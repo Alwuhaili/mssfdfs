@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "lastModified": "2026-09-09T14:12:35.667Z",
+  "lastSyncedBy": {
+    "name": "اختبار المزامنة",
+    "role": "admin"
+  },
+  "data": {
+    "sync_test_ping": 123
+  }
+}

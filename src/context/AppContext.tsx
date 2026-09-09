@@ -2,7 +2,8 @@
  * Central State Management & Persistence for Maysan High School for Gifted Girls
  */
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import { centralSyncService } from '../services/syncService';
 import {
   UserRole,
   Language,
@@ -373,6 +374,16 @@ interface AppContextType {
   deleteExamSchedule: (id: string) => void;
   duplicateExamSchedule: (id: string) => void;
   toggleExamSchedulePublish: (id: string) => void;
+
+  // Central Data Synchronization for all users (مزامنة البيانات المركزية لجميع المستخدمين)
+  syncStatus: 'synced' | 'syncing' | 'offline' | 'error';
+  syncVersion: number;
+  lastSyncedAt: Date | null;
+  lastSyncedBy: { id?: string; name?: string; role?: string } | null;
+  syncLatencyMs: number;
+  syncErrorMessage?: string;
+  forceSyncAll: () => Promise<boolean>;
+  resetCentralDatabase: () => Promise<boolean>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -2182,6 +2193,323 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     dailyLessonPlans,
     examSchedules,
   ]);
+
+  // ─────────────────────────────────────────────────────────────
+  // CENTRAL MULTI-USER DATA SYNCHRONIZATION (مزامنة البيانات لجميع المستخدمين)
+  // ─────────────────────────────────────────────────────────────
+  const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error'>('syncing');
+  const [syncVersion, setSyncVersion] = useState<number>(1);
+  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+  const [lastSyncedBy, setLastSyncedBy] = useState<{ id?: string; name?: string; role?: string } | null>(null);
+  const [syncLatencyMs, setSyncLatencyMs] = useState<number>(0);
+  const [syncErrorMessage, setSyncErrorMessage] = useState<string | undefined>(undefined);
+
+  const isApplyingRemoteUpdate = useRef<boolean>(false);
+  const isInitialHydrationDone = useRef<boolean>(false);
+  const pushDebounceTimer = useRef<any>(null);
+
+  // Apply remote data securely to React state
+  const applyRemoteData = (remoteData: any, remoteVersion: number, remoteLastSyncedBy?: any) => {
+    if (!remoteData || typeof remoteData !== 'object') return;
+    isApplyingRemoteUpdate.current = true;
+
+    if (Array.isArray(remoteData.teachers)) setTeachers(remoteData.teachers);
+    if (Array.isArray(remoteData.students)) setStudents(remoteData.students);
+    if (Array.isArray(remoteData.parents)) setParents(remoteData.parents);
+    if (Array.isArray(remoteData.supervisors)) setSupervisors(remoteData.supervisors);
+    if (Array.isArray(remoteData.graduates)) setGraduates(remoteData.graduates);
+    if (Array.isArray(remoteData.exams)) setExams(remoteData.exams);
+    if (Array.isArray(remoteData.submissions)) setSubmissions(remoteData.submissions);
+    if (Array.isArray(remoteData.attendance)) setAttendance(remoteData.attendance);
+    if (Array.isArray(remoteData.announcements)) setAnnouncements(remoteData.announcements);
+    if (Array.isArray(remoteData.messages)) setMessages(remoteData.messages);
+    if (Array.isArray(remoteData.lectures)) setLectures(remoteData.lectures);
+    if (Array.isArray(remoteData.deletedLectureIds)) setDeletedLectureIds(remoteData.deletedLectureIds);
+    if (Array.isArray(remoteData.deletedChallengeIds)) setDeletedChallengeIds(remoteData.deletedChallengeIds);
+    if (Array.isArray(remoteData.timetable)) setTimetable(remoteData.timetable);
+    if (Array.isArray(remoteData.subjectQuotas)) setSubjectQuotas(remoteData.subjectQuotas);
+    if (Array.isArray(remoteData.financial)) setFinancial(remoteData.financial);
+    if (Array.isArray(remoteData.notifications)) setNotifications(remoteData.notifications);
+    if (Array.isArray(remoteData.certificates)) setCertificates(remoteData.certificates);
+    if (Array.isArray(remoteData.calendarEvents)) setCalendarEvents(remoteData.calendarEvents);
+    if (Array.isArray(remoteData.challenges)) setChallenges(remoteData.challenges);
+    if (remoteData.userPasscodes) setUserPasscodes(remoteData.userPasscodes);
+    if (remoteData.schoolAdminData) setSchoolAdminData(remoteData.schoolAdminData);
+    if (remoteData.decisionSettings) setDecisionSettings(remoteData.decisionSettings);
+    if (Array.isArray(remoteData.auditLogs)) setAuditLogs(remoteData.auditLogs);
+    if (Array.isArray(remoteData.annualPlans)) setAnnualPlans(remoteData.annualPlans);
+    if (Array.isArray(remoteData.dailyLessonPlans)) setDailyLessonPlans(remoteData.dailyLessonPlans);
+    if (Array.isArray(remoteData.examSchedules)) setExamSchedules(remoteData.examSchedules);
+    if (Array.isArray(remoteData.customFolders)) setCustomFolders(remoteData.customFolders);
+
+    setSyncVersion(remoteVersion);
+    setLastSyncedAt(new Date());
+    if (remoteLastSyncedBy) setLastSyncedBy(remoteLastSyncedBy);
+    setSyncStatus('synced');
+
+    setTimeout(() => {
+      isApplyingRemoteUpdate.current = false;
+    }, 400);
+  };
+
+  // Build full payload for central store
+  const getFullPayload = () => ({
+    teachers,
+    students,
+    parents,
+    supervisors,
+    graduates,
+    exams,
+    submissions,
+    attendance,
+    announcements,
+    messages,
+    lectures: lectures.map((l) => ({
+      ...l,
+      pdfDataUrl: l.pdfDataUrl && l.pdfDataUrl.length > 500 ? `idb:${l.id}` : l.pdfDataUrl,
+      fileUrl: l.fileUrl && l.fileUrl.length > 500 ? `idb:${l.id}` : l.fileUrl,
+    })),
+    deletedLectureIds,
+    deletedChallengeIds,
+    timetable,
+    subjectQuotas,
+    financial,
+    notifications,
+    certificates,
+    calendarEvents,
+    challenges,
+    userPasscodes,
+    schoolAdminData,
+    decisionSettings,
+    auditLogs,
+    annualPlans,
+    dailyLessonPlans,
+    examSchedules,
+    customFolders,
+  });
+
+  // Initial Server Hydration & Seeding
+  useEffect(() => {
+    let isMounted = true;
+
+    const initializeCentralSync = async () => {
+      try {
+        setSyncStatus('syncing');
+        const res = await centralSyncService.fetchServerData(undefined, true);
+        if (!isMounted) return;
+
+        if (res.success && res.data && Object.keys(res.data).length > 5) {
+          applyRemoteData(res.data, res.version || 1, res.lastSyncedBy);
+          isInitialHydrationDone.current = true;
+        } else {
+          // Server database needs initial seed from local authoritative data
+          const payload = getFullPayload();
+          const sourceUser = {
+            id: currentUser?.id || role,
+            name: currentUser?.name || (role === 'admin' ? 'المديرة العامة' : role),
+            role: role,
+          };
+          const pushRes = await centralSyncService.pushUpdates(payload, sourceUser, 1);
+          if (pushRes.success && pushRes.version) {
+            setSyncVersion(pushRes.version);
+            setLastSyncedAt(new Date());
+            setLastSyncedBy(sourceUser);
+            setSyncStatus('synced');
+          }
+          isInitialHydrationDone.current = true;
+        }
+      } catch (err: any) {
+        console.warn('Initial sync error, continuing with local state:', err);
+        setSyncStatus('offline');
+        isInitialHydrationDone.current = true;
+      }
+    };
+
+    initializeCentralSync();
+
+    // Cross-tab real-time sync channel
+    const unsubscribeBroadcast = centralSyncService.subscribe(async (evt) => {
+      if (evt.type === 'SERVER_DATA_UPDATED' || evt.type === 'DATABASE_RESET') {
+        try {
+          const res = await centralSyncService.fetchServerData(undefined, true);
+          if (isMounted && res.success && res.data) {
+            applyRemoteData(res.data, res.version || 1, res.lastSyncedBy);
+          }
+        } catch {
+          // ignore
+        }
+      } else if (evt.type === 'NETWORK_ONLINE') {
+        setSyncStatus('synced');
+        forceSyncAll();
+      } else if (evt.type === 'NETWORK_OFFLINE') {
+        setSyncStatus('offline');
+      }
+    });
+
+    // Periodic check for updates from other users every 10 seconds
+    const pollInterval = setInterval(async () => {
+      if (!isInitialHydrationDone.current) return;
+      try {
+        const res = await centralSyncService.fetchServerData(syncVersion, false);
+        if (!isMounted) return;
+
+        if (res.success) {
+          if (!res.notModified && res.data) {
+            applyRemoteData(res.data, res.version || syncVersion + 1, res.lastSyncedBy);
+          }
+          setSyncStatus('synced');
+          setSyncErrorMessage(undefined);
+        }
+      } catch {
+        // offline or transient
+      }
+    }, 10000);
+
+    // Refresh on window focus / tab switch
+    const onWindowFocus = async () => {
+      if (!isInitialHydrationDone.current) return;
+      try {
+        const res = await centralSyncService.fetchServerData(syncVersion, false);
+        if (res.success && !res.notModified && res.data) {
+          applyRemoteData(res.data, res.version || syncVersion + 1, res.lastSyncedBy);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('focus', onWindowFocus);
+
+    return () => {
+      isMounted = false;
+      clearInterval(pollInterval);
+      unsubscribeBroadcast();
+      window.removeEventListener('focus', onWindowFocus);
+    };
+  }, [syncVersion]);
+
+  // Debounced auto-push to central server on local changes
+  useEffect(() => {
+    if (isApplyingRemoteUpdate.current) return;
+    if (!isInitialHydrationDone.current) return;
+
+    if (pushDebounceTimer.current) {
+      clearTimeout(pushDebounceTimer.current);
+    }
+
+    setSyncStatus('syncing');
+
+    pushDebounceTimer.current = setTimeout(async () => {
+      try {
+        const payload = getFullPayload();
+        const sourceUser = {
+          id: currentUser?.id || role,
+          name: currentUser?.name || (role === 'admin' ? 'المديرة العامة' : role),
+          role: role,
+        };
+
+        const res = await centralSyncService.pushUpdates(payload, sourceUser, syncVersion);
+        if (res.success && res.version) {
+          setSyncVersion(res.version);
+          setLastSyncedAt(new Date());
+          setLastSyncedBy(sourceUser);
+          setSyncStatus('synced');
+          setSyncErrorMessage(undefined);
+        } else {
+          setSyncStatus('error');
+          setSyncErrorMessage(res.message);
+        }
+      } catch (err: any) {
+        setSyncStatus('offline');
+        setSyncErrorMessage(err.message);
+      }
+    }, 1500);
+
+    return () => {
+      if (pushDebounceTimer.current) clearTimeout(pushDebounceTimer.current);
+    };
+  }, [
+    teachers,
+    students,
+    parents,
+    supervisors,
+    graduates,
+    exams,
+    submissions,
+    attendance,
+    announcements,
+    messages,
+    lectures,
+    deletedLectureIds,
+    deletedChallengeIds,
+    timetable,
+    subjectQuotas,
+    financial,
+    notifications,
+    certificates,
+    calendarEvents,
+    challenges,
+    userPasscodes,
+    schoolAdminData,
+    decisionSettings,
+    auditLogs,
+    annualPlans,
+    dailyLessonPlans,
+    examSchedules,
+    customFolders,
+  ]);
+
+  // Manual Force Sync All
+  const forceSyncAll = async (): Promise<boolean> => {
+    setSyncStatus('syncing');
+    try {
+      // First fetch latest from server
+      const fetchRes = await centralSyncService.fetchServerData(undefined, true);
+      if (fetchRes.success && fetchRes.data && Object.keys(fetchRes.data).length > 5) {
+        applyRemoteData(fetchRes.data, fetchRes.version || syncVersion, fetchRes.lastSyncedBy);
+      }
+
+      // Then push current unified state
+      const payload = getFullPayload();
+      const sourceUser = {
+        id: currentUser?.id || role,
+        name: currentUser?.name || (role === 'admin' ? 'المديرة العامة' : role),
+        role: role,
+      };
+      const pushRes = await centralSyncService.pushUpdates(payload, sourceUser);
+      if (pushRes.success && pushRes.version) {
+        setSyncVersion(pushRes.version);
+        setLastSyncedAt(new Date());
+        setLastSyncedBy(sourceUser);
+        setSyncStatus('synced');
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      console.warn('Manual sync failed:', err);
+      setSyncStatus('error');
+      setSyncErrorMessage(err.message);
+      return false;
+    }
+  };
+
+  // Reset central database to defaults
+  const resetCentralDatabase = async (): Promise<boolean> => {
+    setSyncStatus('syncing');
+    try {
+      const resetRes = await centralSyncService.resetServerDatabase();
+      if (resetRes.success) {
+        resetToDefaultData();
+        setSyncVersion(resetRes.version || 1);
+        setLastSyncedAt(new Date());
+        setSyncStatus('synced');
+        return true;
+      }
+      return false;
+    } catch (err) {
+      setSyncStatus('error');
+      return false;
+    }
+  };
 
   // Ministry Decision Settings & Actions
   const updateDecisionSettings = (updated: Partial<MinistryDecisionSettings>) => {
@@ -6179,6 +6507,14 @@ ${defaultReason}
         deleteExamSchedule,
         duplicateExamSchedule,
         toggleExamSchedulePublish,
+        syncStatus,
+        syncVersion,
+        lastSyncedAt,
+        lastSyncedBy,
+        syncLatencyMs,
+        syncErrorMessage,
+        forceSyncAll,
+        resetCentralDatabase,
       }}
     >
       {children}

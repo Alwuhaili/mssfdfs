@@ -2,12 +2,15 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { ServerAuthService } from "./server/authService.js";
+import { serverDataStore } from "./server/dataStore.js";
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
+  // Support large payloads (school data, lesson plans, exams, certificates)
+  app.use(express.json({ limit: "50mb" }));
+  app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
   // Health check & SMTP / Twilio configuration status
   app.get("/api/health", (_req, res) => {
@@ -18,6 +21,111 @@ async function startServer() {
       smtpConfigured: hasSmtpPass || Boolean(process.env.SMTP_HOST && process.env.SMTP_USER),
       smsConfigured: Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_PHONE_NUMBER),
     });
+  });
+
+  // Central School Data Synchronization Endpoints (مزامنة البيانات لجميع المستخدمين)
+  // GET: Fetch latest data or check if client has the latest version
+  app.get("/api/data/sync", (req, res) => {
+    try {
+      const clientVersion = req.query.version ? Number(req.query.version) : null;
+      const force = req.query.force === "true";
+      const current = serverDataStore.getData();
+
+      if (!force && clientVersion !== null && clientVersion === current.version) {
+        return res.json({
+          success: true,
+          notModified: true,
+          version: current.version,
+          lastModified: current.lastModified,
+          serverTime: new Date().toISOString(),
+        });
+      }
+
+      return res.json({
+        success: true,
+        notModified: false,
+        version: current.version,
+        lastModified: current.lastModified,
+        lastSyncedBy: current.lastSyncedBy,
+        data: current.data,
+        serverTime: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      console.error("Data sync GET error:", error);
+      return res.status(500).json({
+        success: false,
+        message: "فشلت مزامنة البيانات من الخادم المركزي.",
+      });
+    }
+  });
+
+  // POST: Push updates from client to server central store
+  app.post("/api/data/sync", (req, res) => {
+    try {
+      const { updates, sourceUser } = req.body;
+
+      if (!updates || typeof updates !== "object") {
+        return res.status(400).json({
+          success: false,
+          message: "بيانات التحديث غير صالحة.",
+        });
+      }
+
+      const updated = serverDataStore.updateData(updates, sourceUser);
+
+      return res.json({
+        success: true,
+        version: updated.version,
+        lastModified: updated.lastModified,
+        lastSyncedBy: updated.lastSyncedBy,
+        data: updated.data,
+        serverTime: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      console.error("Data sync POST error:", error);
+      return res.status(500).json({
+        success: false,
+        message: "فشل حفظ التحديثات في الخادم المركزي.",
+      });
+    }
+  });
+
+  // GET: Central Data Sync Status & Entity Counts
+  app.get("/api/data/status", (_req, res) => {
+    try {
+      const status = serverDataStore.getStatus();
+      return res.json({
+        success: true,
+        ...status,
+        serverTime: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      console.error("Data status error:", error);
+      return res.status(500).json({
+        success: false,
+        message: "فشل استرداد حالة المزامنة.",
+      });
+    }
+  });
+
+  // POST: Reset Central Database (with optional seed data)
+  app.post("/api/data/reset", (req, res) => {
+    try {
+      const { seedData } = req.body;
+      const reset = serverDataStore.resetDatabase(seedData);
+      return res.json({
+        success: true,
+        message: "تمت إعادة ضبط قاعدة البيانات المركزية بنجاح.",
+        version: reset.version,
+        lastModified: reset.lastModified,
+      });
+    } catch (error: any) {
+      console.error("Data reset error:", error);
+      return res.status(500).json({
+        success: false,
+        message: "فشلت إعادة ضبط قاعدة البيانات المركزية.",
+      });
+    }
   });
 
   // API Route: Send Real OTP via Email (SMTP) or SMS (Twilio)

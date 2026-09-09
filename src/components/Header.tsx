@@ -14,6 +14,7 @@ import {
 import { RoleAuthModal } from './RoleAuthModal';
 import { ChangePasswordModal } from './ChangePasswordModal';
 import { ThemeSelectorModal } from './ThemeSelectorModal';
+import { DataSyncModal } from './DataSyncModal';
 import { COLOR_THEMES_LIST } from '../types';
 import {
   GraduationCap,
@@ -32,18 +33,21 @@ import {
   Palette,
   Eye,
   X,
+  Cloud,
+  RefreshCw,
 } from 'lucide-react';
 
 export const Header: React.FC<{
   onOpenNotifications: () => void;
   onOpenMessages: () => void;
 }> = ({ onOpenNotifications, onOpenMessages }) => {
-  const { role, setRole, currentUser, lang, setLang, colorTheme, isDarkMode, toggleDarkMode, t, notifications, getUserNotifications, messages, teachers, students, parents, schoolAdminData } = useApp();
+  const { role, setRole, currentUser, lang, setLang, colorTheme, isDarkMode, toggleDarkMode, t, notifications, getUserNotifications, messages, teachers, students, parents, schoolAdminData, syncStatus, syncVersion } = useApp();
   const [showRoleMenu, setShowRoleMenu] = useState(false);
   const [targetAuthRole, setTargetAuthRole] = useState<UserRole | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [isThemeModalOpen, setIsThemeModalOpen] = useState(false);
+  const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
 
   const activeThemeObj = COLOR_THEMES_LIST.find((th) => th.id === colorTheme);
 
@@ -227,6 +231,29 @@ export const Header: React.FC<{
           {/* Right Controls: Role Switcher, Dark Mode, Notifications, Language */}
           <div className="flex items-center gap-2 sm:gap-3">
 
+            {/* Central Multi-User Data Synchronization Indicator & Button */}
+            <button
+              onClick={() => setIsSyncModalOpen(true)}
+              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-full text-xs font-bold transition-all border shadow-xs cursor-pointer ${
+                syncStatus === 'synced'
+                  ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800 hover:bg-emerald-100'
+                  : syncStatus === 'syncing'
+                  ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border-indigo-300 dark:border-indigo-800 animate-pulse'
+                  : 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-800 hover:bg-amber-100'
+              }`}
+              title={`مزامنة البيانات المركزية لجميع المستخدمين (الإصدار #${syncVersion})`}
+            >
+              {syncStatus === 'syncing' ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-600 dark:text-indigo-400" />
+              ) : (
+                <Cloud className={`w-3.5 h-3.5 ${syncStatus === 'synced' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600'}`} />
+              )}
+              <span className="hidden md:inline">
+                {syncStatus === 'synced' ? 'مزامنة موحدة' : syncStatus === 'syncing' ? 'جارِ المزامنة...' : 'محلي'}
+              </span>
+              <span className={`w-2 h-2 rounded-full ${syncStatus === 'synced' ? 'bg-emerald-500' : syncStatus === 'syncing' ? 'bg-indigo-500 animate-ping' : 'bg-amber-500'}`}></span>
+            </button>
+
             {/* Language Switcher */}
             <button
               onClick={() => setLang(lang === 'ar' ? 'en' : 'ar')}
@@ -387,6 +414,12 @@ export const Header: React.FC<{
       <ThemeSelectorModal
         isOpen={isThemeModalOpen}
         onClose={() => setIsThemeModalOpen(false)}
+      />
+
+      {/* Central Data Synchronization Modal for All Users */}
+      <DataSyncModal
+        isOpen={isSyncModalOpen}
+        onClose={() => setIsSyncModalOpen(false)}
       />
     </header>
   );
