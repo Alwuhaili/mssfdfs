@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { DisciplinarySettingsModal } from './DisciplinarySettingsModal';
 import { ALL_GRADES_LIST, GradeLevel, Student, DisciplinaryDecision, AttendanceRecord } from '../types';
-import {
-  ShieldAlert,
+import { Settings, ShieldAlert,
   AlertTriangle,
   FileText,
   CheckCircle2,
@@ -81,6 +81,7 @@ interface AbsenceDayItem {
 
 export const DisciplinaryAttendancePanel: React.FC = () => {
   const {
+    disciplinarySettings,
     students,
     teachers,
     attendance,
@@ -97,7 +98,13 @@ export const DisciplinaryAttendancePanel: React.FC = () => {
     lang,
   } = useApp();
 
+  const firstWarn = disciplinarySettings?.firstWarningDays ?? 5;
+  const finalWarn = disciplinarySettings?.finalWarningDays ?? 10;
+  const expelDays = disciplinarySettings?.expulsionDays ?? 15;
+  const lessPerDay = disciplinarySettings?.lessonsPerAbsenceDay ?? 5;
+
   const [searchQuery, setSearchQuery] = useState('');
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [selectedGrade, setSelectedGrade] = useState<string>('all');
   const [selectedSection, setSelectedSection] = useState<string>('all');
   const [selectedWarningFilter, setSelectedWarningFilter] = useState<string>('all');
@@ -642,7 +649,7 @@ export const DisciplinaryAttendancePanel: React.FC = () => {
     undoStudentAbsenceDays(
       student.id,
       days > 0 ? days : 1,
-      lessons > 0 ? lessons : (days > 0 ? days * 5 : 5),
+      lessons > 0 ? lessons : (days > 0 ? days * lessPerDay : 5),
       reason || 'رصد الغياب سهواً وتأكيد الدوام الفعلي للطالبة',
       notifyParent
     );
@@ -666,7 +673,7 @@ export const DisciplinaryAttendancePanel: React.FC = () => {
       setViewMissedLessonsStudent({
         ...updatedStd,
         unexcusedAbsenceDays: Math.max(0, (updatedStd.unexcusedAbsenceDays || 0) - days),
-        totalMissedLessons: Math.max(0, (updatedStd.totalMissedLessons || 0) - (lessons || days * 5)),
+        totalMissedLessons: Math.max(0, (updatedStd.totalMissedLessons || 0) - (lessons || days * lessPerDay)),
       });
     }
   };
@@ -943,6 +950,13 @@ export const DisciplinaryAttendancePanel: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-3 flex-wrap">
+              <button 
+                onClick={() => setShowSettingsModal(true)}
+                className="flex items-center gap-2 bg-indigo-600/60 hover:bg-indigo-500 transition-colors px-4 py-2 rounded-2xl border border-indigo-400 text-xs text-white font-bold shadow-md"
+              >
+                <Settings className="w-4 h-4" />
+                <span>إعدادات الانضباط والغياب</span>
+              </button>
               <div className="flex items-center gap-2 bg-white/10 backdrop-blur-md px-4 py-2 rounded-2xl border border-white/15 text-xs text-indigo-100">
                 <Building className="w-4 h-4 text-amber-400" />
                 <span>نظام انضباط المدارس الثانوية رقم 2 لسنة 1977 وتعديلاته</span>
@@ -963,23 +977,23 @@ export const DisciplinaryAttendancePanel: React.FC = () => {
             <div className="p-3 rounded-2xl bg-amber-950/40 border border-amber-500/30 space-y-1">
               <div className="flex items-center justify-between text-amber-300 font-extrabold">
                 <span>🚨 الإنذار الأول</span>
-                <span>5 أيام غياب</span>
+                <span>{firstWarn} أيام غياب</span>
               </div>
-              <p className="text-[10px] text-amber-200/80">غياب 5 أيام غير مبررة (25 درساً) - يوجّه إنذار أول وإشعار ولي الأمر.</p>
+              <p className="text-[10px] text-amber-200/80">غياب {firstWarn} أيام غير مبررة ({firstWarn * lessPerDay} درساً) - يوجّه إنذار أول وإشعار ولي الأمر.</p>
             </div>
 
             <div className="p-3 rounded-2xl bg-orange-950/40 border border-orange-500/30 space-y-1">
               <div className="flex items-center justify-between text-orange-300 font-extrabold">
                 <span>⚠️ الإنذار النهائي</span>
-                <span>10 أيام غياب</span>
+                <span>{finalWarn} أيام غياب</span>
               </div>
-              <p className="text-[10px] text-orange-200/80">غياب 10 أيام (50 درساً) - إنذار نهائي واستدعاء ولي الأمر بتعهد خطي.</p>
+              <p className="text-[10px] text-orange-200/80">غياب {finalWarn} أيام ({finalWarn * lessPerDay} درساً) - إنذار نهائي واستدعاء ولي الأمر بتعهد خطي.</p>
             </div>
 
             <div className="p-3 rounded-2xl bg-rose-950/40 border border-rose-500/30 space-y-1">
               <div className="flex items-center justify-between text-rose-300 font-extrabold">
                 <span>⛔ الفصل بالغياب</span>
-                <span>15 يوماً متصلاً</span>
+                <span>{expelDays} يوماً متصلاً</span>
               </div>
               <p className="text-[10px] text-rose-200/80">غياب 15 يوماً متصلاً أو 30 منفصلاً - قرار فصل وزاري تحويل خارجي.</p>
             </div>
@@ -1013,7 +1027,7 @@ export const DisciplinaryAttendancePanel: React.FC = () => {
 
         <div className="p-4 rounded-2xl bg-white border border-slate-200/80 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-[11px] font-bold text-amber-700">إنذار أول (5 أيام)</p>
+            <p className="text-[11px] font-bold text-amber-700">إنذار أول ({firstWarn} أيام)</p>
             <h3 className="text-xl font-black text-amber-800 mt-1">{firstWarningCount}</h3>
             <span className="text-[10px] text-amber-600">يتطلب كتاب إنذار أول</span>
           </div>
@@ -1024,7 +1038,7 @@ export const DisciplinaryAttendancePanel: React.FC = () => {
 
         <div className="p-4 rounded-2xl bg-white border border-slate-200/80 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-[11px] font-bold text-orange-700">إنذار نهائي (10 أيام)</p>
+            <p className="text-[11px] font-bold text-orange-700">إنذار نهائي ({finalWarn} أيام)</p>
             <h3 className="text-xl font-black text-orange-800 mt-1">{finalWarningCount}</h3>
             <span className="text-[10px] text-orange-600">يتطلب تعهداً خطياً</span>
           </div>
@@ -1106,8 +1120,8 @@ export const DisciplinaryAttendancePanel: React.FC = () => {
             >
               <option value="all">الكل (جميع المستويات)</option>
               <option value="طبيعي">طبيعي (منتظمة)</option>
-              <option value="إنذار أول">🚨 إنذار أول (5 أيام)</option>
-              <option value="إنذار نهائي">⚠️ إنذار نهائي (10 أيام)</option>
+              <option value="إنذار أول">🚨 إنذار أول ({firstWarn} أيام)</option>
+              <option value="إنذار نهائي">⚠️ إنذار نهائي ({finalWarn} أيام)</option>
               <option value="مستحقة للفصل">⛔ مستحقة للفصل (15+ يوماً)</option>
             </select>
           </div>
@@ -1177,11 +1191,11 @@ export const DisciplinaryAttendancePanel: React.FC = () => {
                           }}
                           title="انقري لعرض لائحة وتواريخ أيام الغياب غير المبرر بالتفصيل 📅"
                           className={`group relative px-3 py-1.5 rounded-2xl font-black text-xs inline-flex items-center gap-1.5 transition-all shadow-2xs hover:scale-105 active:scale-95 cursor-pointer ${
-                            unexcused >= 15
+                            unexcused >= expelDays
                               ? 'bg-rose-100 text-rose-800 border border-rose-300 hover:bg-rose-200 hover:border-rose-400'
-                              : unexcused >= 10
+                              : unexcused >= finalWarn
                               ? 'bg-orange-100 text-orange-800 border border-orange-300 hover:bg-orange-200 hover:border-orange-400'
-                              : unexcused >= 5
+                              : unexcused >= firstWarn
                               ? 'bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 hover:border-amber-400'
                               : unexcused > 0
                               ? 'bg-slate-100 text-slate-800 border border-slate-300 hover:bg-slate-200'
@@ -1359,8 +1373,8 @@ export const DisciplinaryAttendancePanel: React.FC = () => {
                           <button
                             onClick={() => {
                               setIssueModalStudent(std);
-                              if (unexcused >= 15) setDecisionType('قرار فصل بسبب الغياب');
-                              else if (unexcused >= 10) setDecisionType('إنذار نهائي');
+                              if (unexcused >= expelDays) setDecisionType('قرار فصل بسبب الغياب');
+                              else if (unexcused >= finalWarn) setDecisionType('إنذار نهائي');
                               else setDecisionType('إنذار أول');
                             }}
                             className="px-2.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-[10px] flex items-center gap-1 shadow-sm transition-all"
@@ -1448,8 +1462,8 @@ export const DisciplinaryAttendancePanel: React.FC = () => {
                   onChange={(e) => setDecisionType(e.target.value as any)}
                   className="w-full p-2.5 rounded-xl border border-slate-300 bg-white font-extrabold text-slate-800 text-xs focus:ring-2 focus:ring-indigo-500"
                 >
-                  <option value="إنذار أول">🚨 إنذار أول خطي في الغياب (تجاوز 5 أيام)</option>
-                  <option value="إنذار نهائي">⚠️ إنذار نهائي خطي وتعهد ولي أمر (تجاوز 10 أيام)</option>
+                  <option value="إنذار أول">🚨 إنذار أول خطي في الغياب (تجاوز {firstWarn} أيام)</option>
+                  <option value="إنذار نهائي">⚠️ إنذار نهائي خطي وتعهد ولي أمر (تجاوز {finalWarn} أيام)</option>
                   <option value="تعهد خطي">📝 تعهد خطي بالالتزام بالدوام والانتظام</option>
                   <option value="قرار فصل بسبب الغياب">⛔ قرار فصل رسمي بسبب الغياب (تجاوز 15 يوماً متصلاً أو 30 يوماً)</option>
                 </select>
@@ -1511,11 +1525,11 @@ export const DisciplinaryAttendancePanel: React.FC = () => {
         const currentUnexcused = justifyModalStudent.unexcusedAbsenceDays || 0;
         const newUnexcused = Math.max(0, currentUnexcused - excusedDaysToDeduct);
         const newWarningLevel =
-          newUnexcused >= 15
+          newUnexcused >= expelDays
             ? 'فصل لتجاوز الغياب'
-            : newUnexcused >= 10
+            : newUnexcused >= finalWarn
             ? 'إنذار نهائي'
-            : newUnexcused >= 5
+            : newUnexcused >= firstWarn
             ? 'إنذار أول'
             : 'موقف انضباطي منتظم';
 
@@ -3478,7 +3492,7 @@ export const DisciplinaryAttendancePanel: React.FC = () => {
               </div>
               <div>
                 <span className="text-slate-500 font-bold">المكافئ بالأيام:</span>{' '}
-                <span className="font-bold text-slate-900">{Math.ceil(printLessonsStudent.lessons.length / 5)} يوم تقريبي</span>
+                <span className="font-bold text-slate-900">{Math.ceil(printLessonsStudent.lessons.length / lessPerDay)} يوم تقريبي</span>
               </div>
             </div>
 
@@ -3551,6 +3565,13 @@ export const DisciplinaryAttendancePanel: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {showSettingsModal && (
+        <DisciplinarySettingsModal 
+          isOpen={showSettingsModal} 
+          onClose={() => setShowSettingsModal(false)} 
+        />
       )}
 
       {/* Floating Success Toast Feedback */}

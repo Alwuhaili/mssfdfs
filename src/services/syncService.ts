@@ -1,5 +1,5 @@
 import { db } from '../lib/firebase';
-import { doc, getDoc, setDoc, onSnapshot, serverTimestamp, writeBatch } from 'firebase/firestore';
+import { doc, getDoc, setDoc, onSnapshot, serverTimestamp, writeBatch, disableNetwork, terminate } from 'firebase/firestore';
 
 export interface SyncStatus {
   success: boolean;
@@ -33,6 +33,7 @@ const BROADCAST_CHANNEL_NAME = 'maysan_gifted_school_sync_channel';
 const FIREBASE_DOC_PATH = 'database/main';
 
 class CentralSyncService {
+  private isQuotaExceeded: boolean = false;
   private broadcastChannel: BroadcastChannel | null = null;
   private listeners: Set<(event: { type: string; payload?: any; sourceVersion?: number; lastSyncedBy?: any; lastModified?: string }) => void> = new Set();
   private isOnline: boolean = typeof navigator !== 'undefined' ? navigator.onLine : true;
@@ -84,7 +85,9 @@ class CentralSyncService {
     try {
       const docRef = doc(db, FIREBASE_DOC_PATH);
       
-      this.unsubscribeFirestore = onSnapshot(docRef, (snapshot) => {
+      try {
+        this.unsubscribeFirestore = onSnapshot(docRef, (snapshot) => {
+          
         if (snapshot.exists()) {
           const data = snapshot.data();
           if (data && data.version && data.version > this.currentVersion) {
@@ -101,9 +104,27 @@ class CentralSyncService {
             this.broadcastToTabs('SERVER_DATA_UPDATED', null, data.version);
           }
         }
-      }, (err) => {
+      
+        }, (err: any) => {
+          
+        if (err?.code === 'resource-exhausted' || err?.message?.includes('Quota') || err?.message?.includes('resource-exhausted')) {
+          this.isQuotaExceeded = true;
+          console.error('Firebase Quota Exceeded in onSnapshot!');
+          terminate(db).catch(() => {})
+        }
         console.warn('[SyncService] Firebase onSnapshot error:', err);
-      });
+      
+        });
+      } catch (err: any) {
+        if (err?.code === 'resource-exhausted' || err?.message?.includes('Quota') || err?.message?.includes('resource-exhausted')) {
+          this.isQuotaExceeded = true;
+          if (this.unsubscribeFirestore) {
+            try { this.unsubscribeFirestore(); } catch(e) {}
+          }
+          terminate(db).catch(() => {})
+          console.error('Firebase Quota Exceeded!');
+        }
+      }
     } catch (err) {
       console.warn('[SyncService] Firebase setup error:', err);
     }
@@ -138,6 +159,9 @@ class CentralSyncService {
   }
 
   public async fetchServerData(currentVersion?: number, force: boolean = false): Promise<SyncResponse> {
+    if (this.isQuotaExceeded) {
+      return { success: false, message: 'تجاوز الحد اليومي المجاني لقاعدة البيانات' };
+    }
     if (!this.isOnline) {
       return { success: false, message: 'الجهاز غير متصل بالإنترنت حالياً' };
     }
@@ -167,6 +191,14 @@ class CentralSyncService {
         serverTime: new Date().toISOString()
       };
     } catch (err: any) {
+      if (err?.code === 'resource-exhausted' || err?.message?.includes('Quota') || err?.message?.includes('resource-exhausted')) {
+        this.isQuotaExceeded = true;
+          if (this.unsubscribeFirestore) {
+            try { this.unsubscribeFirestore(); } catch(e) {}
+          }
+          terminate(db).catch(() => {})
+        console.error('Firebase Quota Exceeded!');
+      }
       console.warn('[SyncService] Fetch data error:', err);
       return {
         success: false,
@@ -180,6 +212,7 @@ class CentralSyncService {
     sourceUser?: { id?: string; name?: string; role?: string },
     clientVersion?: number
   ): Promise<SyncResponse> {
+    if (this.isQuotaExceeded) return { success: false, message: 'تجاوز الحد اليومي لقاعدة البيانات' };
     if (!this.isOnline) {
       return { success: false, message: 'الجهاز غير متصل بالإنترنت حالياً' };
     }
@@ -215,7 +248,7 @@ class CentralSyncService {
          const ADMIN_EXCLUSIVE_KEYS = [
             "teachers", "students", "parents", "supervisors", "graduates", "certificates",
             "announcements", "timetable", "subjectQuotas", "financial", "schoolAdminData",
-            "decisionSettings", "examSchedules",
+            "decisionSettings", "disciplinarySettings", "examSchedules",
          ];
          for (const key of Object.keys(updates)) {
             if (updates[key] === undefined) continue;
@@ -239,11 +272,14 @@ class CentralSyncService {
          }
       }
 
+      const safeMergedData = JSON.parse(JSON.stringify(mergedData));
+      const safeLastSyncedBy = JSON.parse(JSON.stringify(lastSyncedBy));
+      
       await setDoc(docRef, {
         version: newVersion,
         lastModified: lastModified,
-        lastSyncedBy: lastSyncedBy,
-        data: mergedData,
+        lastSyncedBy: safeLastSyncedBy,
+        data: safeMergedData,
         _timestamp: serverTimestamp()
       });
 
@@ -258,6 +294,14 @@ class CentralSyncService {
         lastSyncedBy: lastSyncedBy
       };
     } catch (err: any) {
+      if (err?.code === 'resource-exhausted' || err?.message?.includes('Quota') || err?.message?.includes('resource-exhausted')) {
+        this.isQuotaExceeded = true;
+          if (this.unsubscribeFirestore) {
+            try { this.unsubscribeFirestore(); } catch(e) {}
+          }
+          terminate(db).catch(() => {})
+        console.error('Firebase Quota Exceeded!');
+      }
       console.warn('[SyncService] Push updates error:', err);
       return {
         success: false,
@@ -272,6 +316,7 @@ class CentralSyncService {
    * Instantly mutates an array in Firebase database/main
    */
   public async directArrayMutation(key: string, dataArray: any[], sourceUser?: any): Promise<boolean> {
+    if (this.isQuotaExceeded) return false;
     if (!this.isOnline) return false;
     try {
       const { doc, getDoc, updateDoc, serverTimestamp } = await import('firebase/firestore');
@@ -281,11 +326,15 @@ class CentralSyncService {
       if (snapshot.exists()) {
          const data = snapshot.data();
          const newVersion = (data.version || 0) + 1;
+         // Clean undefined values by round-tripping through JSON
+         const safeDataArray = JSON.parse(JSON.stringify(dataArray));
+         const safeSourceUser = JSON.parse(JSON.stringify(sourceUser || { id: 'admin-main', name: 'Direct Mutation', role: 'admin' }));
+         
          await updateDoc(docRef, {
-           [`data.${key}`]: dataArray,
+           [`data.${key}`]: safeDataArray,
            version: newVersion,
            lastModified: new Date().toISOString(),
-           lastSyncedBy: sourceUser || { id: 'admin-main', name: 'Direct Mutation', role: 'admin' },
+           lastSyncedBy: safeSourceUser,
            _timestamp: serverTimestamp()
          });
          this.currentVersion = newVersion;
@@ -293,7 +342,15 @@ class CentralSyncService {
          return true;
       }
       return false;
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.code === 'resource-exhausted' || err?.message?.includes('Quota') || err?.message?.includes('resource-exhausted')) {
+        this.isQuotaExceeded = true;
+          if (this.unsubscribeFirestore) {
+            try { this.unsubscribeFirestore(); } catch(e) {}
+          }
+          terminate(db).catch(() => {})
+        console.error('Firebase Quota Exceeded!');
+      }
       console.error('[SyncService] Direct mutation error:', err);
       return false;
     }
@@ -330,6 +387,14 @@ class CentralSyncService {
          latencyMs 
       };
     } catch (err: any) {
+      if (err?.code === 'resource-exhausted' || err?.message?.includes('Quota') || err?.message?.includes('resource-exhausted')) {
+        this.isQuotaExceeded = true;
+          if (this.unsubscribeFirestore) {
+            try { this.unsubscribeFirestore(); } catch(e) {}
+          }
+          terminate(db).catch(() => {})
+        console.error('Firebase Quota Exceeded!');
+      }
       const latencyMs = Date.now() - startTime;
       return { success: false, latencyMs, message: err.message };
     }
@@ -350,6 +415,14 @@ class CentralSyncService {
       this.broadcastToTabs('DATABASE_RESET', null, newVersion);
       return { success: true, version: newVersion };
     } catch (err: any) {
+      if (err?.code === 'resource-exhausted' || err?.message?.includes('Quota') || err?.message?.includes('resource-exhausted')) {
+        this.isQuotaExceeded = true;
+          if (this.unsubscribeFirestore) {
+            try { this.unsubscribeFirestore(); } catch(e) {}
+          }
+          terminate(db).catch(() => {})
+        console.error('Firebase Quota Exceeded!');
+      }
       return { success: false, message: err.message };
     }
   }

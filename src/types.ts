@@ -1377,3 +1377,10 @@ export interface ExamSchedule {
 
 
 
+
+export interface DisciplinarySettings {
+  firstWarningDays: number;
+  finalWarningDays: number;
+  expulsionDays: number;
+  lessonsPerAbsenceDay: number;
+}

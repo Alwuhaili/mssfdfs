@@ -24,7 +24,7 @@ import {
   StudentCertificate,
   SubjectGrade,
   IssueCertificatesOptions,
-  MinistryDecisionSettings,
+  MinistryDecisionSettings, DisciplinarySettings,
   CalendarEvent,
   ColorThemeId,
   CurrentUser,
@@ -125,6 +125,8 @@ interface AppContextType {
 
   // Certificates & Grade Management Actions
   decisionSettings: MinistryDecisionSettings;
+  disciplinarySettings: DisciplinarySettings;
+  updateDisciplinarySettings: (updated: Partial<DisciplinarySettings>) => void;
   updateDecisionSettings: (updated: Partial<MinistryDecisionSettings>) => void;
   applySubjectDecisionMarks: (certificateId: string, subjectId: string, decisionMarks: number) => void;
   autoOptimizeDecisionMarksForCert: (certificateId: string) => void;
@@ -410,6 +412,13 @@ const getInitialStoredData = () => {
   return null;
 };
 
+
+export const DEFAULT_DISCIPLINARY_SETTINGS: DisciplinarySettings = {
+  firstWarningDays: 5,
+  finalWarningDays: 10,
+  expulsionDays: 15,
+  lessonsPerAbsenceDay: 5
+};
 export const DEFAULT_MINISTRY_DECISION_SETTINGS: MinistryDecisionSettings = {
   maxDecisionMarks: 10,
   decisionScopeMode: 'total_pool',
@@ -979,9 +988,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [decisionSettings, setDecisionSettings] = useState<MinistryDecisionSettings>(() => {
     return initialStored?.decisionSettings || DEFAULT_MINISTRY_DECISION_SETTINGS;
   });
+  const [disciplinarySettings, setDisciplinarySettings] = useState<DisciplinarySettings>(() => {
+    return initialStored?.disciplinarySettings || DEFAULT_DISCIPLINARY_SETTINGS;
+  });
   const [certificates, setCertificates] = useState<StudentCertificate[]>(() => {
     const raw = initialStored?.certificates || INITIAL_CERTIFICATES;
     const initialSettings = initialStored?.decisionSettings || DEFAULT_MINISTRY_DECISION_SETTINGS;
+    const initialDisc = initialStored?.disciplinarySettings || DEFAULT_DISCIPLINARY_SETTINGS;
     return raw.map((c) => computeCertificateStats(c, initialSettings));
   });
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>(
@@ -2241,6 +2254,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (remoteData.userPasscodes) setUserPasscodes(remoteData.userPasscodes);
     if (remoteData.schoolAdminData) setSchoolAdminData(remoteData.schoolAdminData);
     if (remoteData.decisionSettings) setDecisionSettings(remoteData.decisionSettings);
+    if (remoteData.disciplinarySettings) setDisciplinarySettings(remoteData.disciplinarySettings);
     if (Array.isArray(remoteData.auditLogs)) setAuditLogs(remoteData.auditLogs);
     if (Array.isArray(remoteData.annualPlans)) setAnnualPlans(remoteData.annualPlans);
     if (Array.isArray(remoteData.dailyLessonPlans)) setDailyLessonPlans(remoteData.dailyLessonPlans);
@@ -3212,6 +3226,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
+  const updateDisciplinarySettings = (updated: Partial<DisciplinarySettings>) => {
+    let finalSettings: DisciplinarySettings;
+    setDisciplinarySettings((prev) => {
+      const newVal = { ...prev, ...updated };
+      finalSettings = newVal;
+      centralSyncService.pushUpdates({ disciplinarySettings: newVal }, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      return newVal;
+    });
+    // Give state time to settle or pass explicit config
+    setTimeout(() => {
+      recalculateStudentAbsenceStats(undefined, updated as DisciplinarySettings);
+    }, 100);
+    addAuditLog({
+      action: 'تحديث إعدادات الانضباط والغياب',
+      actionType: 'update',
+      targetCategory: 'system',
+      targetId: 'disciplinary-settings',
+      targetName: 'إعدادات الانضباط',
+      details: 'تم تعديل قوانين الحضور والإنذارات بنجاح',
+      severity: 'warning'
+    });
+  };
+
+
   // Document RTL/LTR Direction
   useEffect(() => {
     document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
@@ -3369,13 +3407,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const updateStudent = (id: string, updateData: Partial<Student>) => {
+  const updateStudent = (id: string, updated: Partial<Student>) => {
     let studentName = '';
     setStudents((prev) => {
       const updatedArray = prev.map((s) => {
         if (s.id === id) {
           studentName = s.name;
-          return { ...s, ...updateData };
+          return { ...s, ...updated };
         }
         return s;
       });
@@ -3402,17 +3440,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: `shield-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
     };
     let studentName = '';
-    setStudents((prev) => {
-      const updated = prev.map((s) => {
-        if (s.id === id) {
-          studentName = s.name;
-          return { ...s, ...updatedStudent };
-        }
-        return s;
-      });
-      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
-    });
+    
 
     addAuditLog({
       action: `منح وسام تكريم للطالبة: ${studentName}`,
@@ -3426,17 +3454,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const removeShieldFromStudent = (studentId: string, shieldId: string) => {
-    setStudents((prev) => {
-      const updated = prev.map((s) => {
-        if (s.id === id) {
-          studentName = s.name;
-          return { ...s, ...updatedStudent };
-        }
-        return s;
-      });
-      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
-    });
+    
   };
 
   const updateStudentBadges = (studentId: string, badges: string[]) => {
@@ -4120,18 +4138,52 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       // 4. Update Cumulative Student Absence & Warning Levels Automatically
       setStudents((prev) => {
-      const updated = prev.map((s) => {
-        if (s.id === id) {
-          studentName = s.name;
-          return { ...s, ...updatedStudent };
-        }
-        return s;
+        const lessPerDay = disciplinarySettings?.lessonsPerAbsenceDay ?? 5;
+        const first = disciplinarySettings?.firstWarningDays ?? 5;
+        const final = disciplinarySettings?.finalWarningDays ?? 10;
+        const expel = disciplinarySettings?.expulsionDays ?? 15;
+        
+        const updatedArray = prev.map((s) => {
+          const rec = newRecords.find(r => r.studentId === s.id || r.studentName === s.name);
+          if (!rec) return s;
+          
+          let missedLessons = s.totalMissedLessons || 0;
+          let unexcusedDays = s.unexcusedAbsenceDays || 0;
+          let excusedDays = s.excusedAbsenceDays || 0;
+          
+          if (rec.status === 'غائبة') {
+            missedLessons += 1;
+            if (missedLessons > 0 && missedLessons % lessPerDay === 0) {
+              unexcusedDays += 1;
+            }
+          } else if (rec.status === 'مجازة') {
+            // we'll just track missed lessons for excused if needed, but keeping it simple
+            // usually excusedAbsenceDays is full days, we'll increment if we reach the threshold
+            const totalExcusedLessons = (s.excusedAbsenceDays || 0) * lessPerDay + 1;
+            if (totalExcusedLessons % lessPerDay === 0) {
+              excusedDays += 1;
+            }
+          }
+          
+          let newWarn = s.warningLevel || 'طبيعي';
+          if (unexcusedDays >= expel) newWarn = 'مستحقة للفصل';
+          else if (unexcusedDays >= final) newWarn = 'إنذار نهائي';
+          else if (unexcusedDays >= first) newWarn = 'إنذار أول';
+          
+          return {
+            ...s,
+            totalMissedLessons: missedLessons,
+            unexcusedAbsenceDays: unexcusedDays,
+            excusedAbsenceDays: excusedDays,
+            warningLevel: newWarn
+          };
+        });
+        centralSyncService.directArrayMutation('students', updatedArray, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+        return updatedArray;
       });
-      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
-    });
     }
   };
+
 
   const updateAttendanceRecord = (
     id: string,
@@ -4180,16 +4232,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (deltaMissedLessons !== 0 || deltaExcusedDays !== 0) {
         setStudents((prev) => {
-      const updated = prev.map((s) => {
-        if (s.id === id) {
-          studentName = s.name;
-          return { ...s, ...updatedStudent };
-        }
-        return s;
-      });
-      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
-    });
+          const updatedArray = prev.map((s) => {
+            if (s.id !== targetRecord?.studentId && s.name !== targetRecord?.studentName) return s;
+            
+            let missedLessons = Math.max(0, (s.totalMissedLessons || 0) + deltaMissedLessons);
+            let excusedDays = Math.max(0, (s.excusedAbsenceDays || 0) + deltaExcusedDays);
+            
+            const lessPerDay = disciplinarySettings?.lessonsPerAbsenceDay ?? 5;
+            const unexcusedDays = Math.floor(missedLessons / lessPerDay);
+            
+            const first = disciplinarySettings?.firstWarningDays ?? 5;
+            const final = disciplinarySettings?.finalWarningDays ?? 10;
+            const expel = disciplinarySettings?.expulsionDays ?? 15;
+            
+            let newWarn: 'طبيعي' | 'إنذار أول' | 'إنذار نهائي' | 'مستحقة للفصل' = 'طبيعي';
+            if (unexcusedDays >= expel) newWarn = 'مستحقة للفصل';
+            else if (unexcusedDays >= final) newWarn = 'إنذار نهائي';
+            else if (unexcusedDays >= first) newWarn = 'إنذار أول';
+            
+            return {
+              ...s,
+              totalMissedLessons: missedLessons,
+              unexcusedAbsenceDays: unexcusedDays,
+              excusedAbsenceDays: excusedDays,
+              warningLevel: newWarn
+            };
+          });
+          centralSyncService.directArrayMutation('students', updatedArray, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+          return updatedArray;
+        });
       }
 
       // If notifyParent is requested, send an official correction notification & direct message
@@ -4294,17 +4365,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const isAbsent = rec.status === 'غائبة';
         const isExcused = rec.status === 'مجازة';
 
-        setStudents((prev) => {
-      const updated = prev.map((s) => {
-        if (s.id === id) {
-          studentName = s.name;
-          return { ...s, ...updatedStudent };
-        }
-        return s;
-      });
-      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
-    });
+        
       }
 
       addNotification({
@@ -4349,17 +4410,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (r.status === 'مجازة') studentImpacts[sId].excusedDeduct += 1;
     });
 
-    setStudents((prev) => {
-      const updated = prev.map((s) => {
-        if (s.id === id) {
-          studentName = s.name;
-          return { ...s, ...updatedStudent };
-        }
-        return s;
-      });
-      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
-    });
+    
 
     addNotification({
       title: '🗑️ حذف جلسة حضور بالكامل',
@@ -4372,12 +4423,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const recalculateStudentAbsenceStats = (studentId?: string) => {
+  const recalculateStudentAbsenceStats = (studentId?: string, overrideSettings?: DisciplinarySettings) => {
     setStudents((prev) => {
       const updated = prev.map((s) => {
-        if (s.id === id) {
-          studentName = s.name;
-          return { ...s, ...updatedStudent };
+        if (studentId && s.id !== studentId) return s;
+        const discSettings = overrideSettings || disciplinarySettings || DEFAULT_DISCIPLINARY_SETTINGS;
+        const first = discSettings.firstWarningDays ?? 5;
+        const final = discSettings.finalWarningDays ?? 10;
+        const expel = discSettings.expulsionDays ?? 15;
+        
+        const unexcused = s.unexcusedAbsenceDays || 0;
+        let newWarn: 'طبيعي' | 'إنذار أول' | 'إنذار نهائي' | 'مستحقة للفصل' = 'طبيعي';
+        if (unexcused >= expel) newWarn = 'مستحقة للفصل';
+        else if (unexcused >= final) newWarn = 'إنذار نهائي';
+        else if (unexcused >= first) newWarn = 'إنذار أول';
+        
+        if (s.warningLevel !== newWarn) {
+          return { ...s, warningLevel: newWarn };
         }
         return s;
       });
@@ -4494,18 +4556,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Deduct student missed lesson & recalculate absence days
     const deltaLessons = isAbsent ? -1 : 0;
     const deltaExcused = isExcused ? -1 : 0;
-
-    setStudents((prev) => {
-      const updated = prev.map((s) => {
-        if (s.id === id) {
-          studentName = s.name;
-          return { ...s, ...updatedStudent };
-        }
-        return s;
+    
+    if (deltaLessons !== 0 || deltaExcused !== 0) {
+      setStudents((prev) => {
+        const updatedArray = prev.map((s) => {
+          if (s.id !== existing.studentId && s.name !== existing.studentName) return s;
+          
+          let missedLessons = Math.max(0, (s.totalMissedLessons || 0) + deltaLessons);
+          let excusedDays = Math.max(0, (s.excusedAbsenceDays || 0) + deltaExcused);
+          
+          const lessPerDay = disciplinarySettings?.lessonsPerAbsenceDay ?? 5;
+          const unexcusedDays = Math.floor(missedLessons / lessPerDay);
+          
+          const first = disciplinarySettings?.firstWarningDays ?? 5;
+          const final = disciplinarySettings?.finalWarningDays ?? 10;
+          const expel = disciplinarySettings?.expulsionDays ?? 15;
+          
+          let newWarn: 'طبيعي' | 'إنذار أول' | 'إنذار نهائي' | 'مستحقة للفصل' = 'طبيعي';
+          if (unexcusedDays >= expel) newWarn = 'مستحقة للفصل';
+          else if (unexcusedDays >= final) newWarn = 'إنذار نهائي';
+          else if (unexcusedDays >= first) newWarn = 'إنذار أول';
+          
+          return {
+            ...s,
+            totalMissedLessons: missedLessons,
+            unexcusedAbsenceDays: unexcusedDays,
+            excusedAbsenceDays: excusedDays,
+            warningLevel: newWarn
+          };
+        });
+        centralSyncService.directArrayMutation('students', updatedArray, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+        return updatedArray;
       });
-      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
-    });
+    }
 
     // Send Notifications & Direct Messages if notifyParent !== false
     const shouldNotify = options?.notifyParent !== false;
@@ -4627,17 +4710,43 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       currentUser?.name || (role === 'admin' ? 'إدارة ثانوية ميسان للمتميزات' : (curTeacher?.name || 'الهيئة التدريسية'));
     const timeStr = new Date().toLocaleString(lang === 'ar' ? 'ar-IQ' : 'en-US');
     let targetStudent: Student | undefined;
-
+    
     setStudents((prev) => {
-      const updated = prev.map((s) => {
-        if (s.id === id) {
-          studentName = s.name;
-          return { ...s, ...updatedStudent };
+      const updatedArray = prev.map((s) => {
+        if (s.id !== studentId) return s;
+        targetStudent = s;
+        
+        let missedLessons = Math.max(0, (s.totalMissedLessons || 0) - lessonsToUndo);
+        // Sometimes days are directly undone
+        let unexcusedDays = Math.max(0, (s.unexcusedAbsenceDays || 0) - daysToUndo);
+        
+        // Let's recalculate unexcusedDays based on missedLessons if lessons were specifically given
+        if (lessonsToUndo > 0) {
+           const lessPerDay = disciplinarySettings?.lessonsPerAbsenceDay ?? 5;
+           unexcusedDays = Math.floor(missedLessons / lessPerDay);
+        } else if (daysToUndo > 0) {
+           const lessPerDay = disciplinarySettings?.lessonsPerAbsenceDay ?? 5;
+           missedLessons = Math.max(0, (s.totalMissedLessons || 0) - (daysToUndo * lessPerDay));
         }
-        return s;
+        
+        const first = disciplinarySettings?.firstWarningDays ?? 5;
+        const final = disciplinarySettings?.finalWarningDays ?? 10;
+        const expel = disciplinarySettings?.expulsionDays ?? 15;
+        
+        let newWarn: 'طبيعي' | 'إنذار أول' | 'إنذار نهائي' | 'مستحقة للفصل' = 'طبيعي';
+        if (unexcusedDays >= expel) newWarn = 'مستحقة للفصل';
+        else if (unexcusedDays >= final) newWarn = 'إنذار نهائي';
+        else if (unexcusedDays >= first) newWarn = 'إنذار أول';
+        
+        return {
+          ...s,
+          totalMissedLessons: missedLessons,
+          unexcusedAbsenceDays: unexcusedDays,
+          warningLevel: newWarn
+        };
       });
-      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
+      centralSyncService.directArrayMutation('students', updatedArray, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      return updatedArray;
     });
 
     if (targetStudent && notifyParent) {
@@ -4718,17 +4827,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     // Update student object
-    setStudents((prev) => {
-      const updated = prev.map((s) => {
-        if (s.id === id) {
-          studentName = s.name;
-          return { ...s, ...updatedStudent };
-        }
-        return s;
-      });
-      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
-    });
+    
 
     // Send targeted instant notification to parent & student
     const studentObj = students.find((s) => s.id === newDecision.studentId);
@@ -4802,17 +4901,7 @@ ${newDecision.notes || 'يرجى مراجعة إدارة المدرسة فورا
     const letterNum = `م/ت/${Math.floor(100 + Math.random() * 900)}/${new Date().getFullYear()}`;
     const formattedDatesList = justifiedDates && justifiedDates.length > 0 ? justifiedDates.join(' ، ') : '';
 
-    setStudents((prev) => {
-      const updated = prev.map((s) => {
-        if (s.id === id) {
-          studentName = s.name;
-          return { ...s, ...updatedStudent };
-        }
-        return s;
-      });
-      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
-    });
+    
 
     // Update attendance records for the justified dates if present
     if (justifiedDates && justifiedDates.length > 0) {
@@ -4830,7 +4919,41 @@ ${newDecision.notes || 'يرجى مراجعة إدارة المدرسة فورا
       );
     }
 
-    const targetStudent = students.find((s) => s.id === studentId);
+    let targetStudent: Student | undefined;
+    setStudents((prev) => {
+      const updatedArray = prev.map((s) => {
+        if (s.id !== studentId) return s;
+        targetStudent = s;
+        
+        let missedLessons = Math.max(0, (s.totalMissedLessons || 0));
+        let unexcusedDays = Math.max(0, (s.unexcusedAbsenceDays || 0) - excusedDays);
+        let newExcusedDays = (s.excusedAbsenceDays || 0) + excusedDays;
+        
+        const lessPerDay = disciplinarySettings?.lessonsPerAbsenceDay ?? 5;
+        // If we justify days, we might want to subtract from missed lessons too
+        missedLessons = Math.max(0, missedLessons - (excusedDays * lessPerDay));
+        
+        const first = disciplinarySettings?.firstWarningDays ?? 5;
+        const final = disciplinarySettings?.finalWarningDays ?? 10;
+        const expel = disciplinarySettings?.expulsionDays ?? 15;
+        
+        let newWarn: 'طبيعي' | 'إنذار أول' | 'إنذار نهائي' | 'مستحقة للفصل' = 'طبيعي';
+        if (unexcusedDays >= expel) newWarn = 'مستحقة للفصل';
+        else if (unexcusedDays >= final) newWarn = 'إنذار نهائي';
+        else if (unexcusedDays >= first) newWarn = 'إنذار أول';
+        
+        return {
+          ...s,
+          totalMissedLessons: missedLessons,
+          unexcusedAbsenceDays: unexcusedDays,
+          excusedAbsenceDays: newExcusedDays,
+          warningLevel: newWarn
+        };
+      });
+      centralSyncService.directArrayMutation('students', updatedArray, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      return updatedArray;
+    });
+
     if (targetStudent) {
       const datesDetail = formattedDatesList ? ` التواريخ: (${formattedDatesList}).` : '';
       addNotification({
@@ -4850,18 +4973,18 @@ ${newDecision.notes || 'يرجى مراجعة إدارة المدرسة فورا
   const revokeDisciplinaryDecision = (decisionId: string, studentId: string, reason?: string) => {
     let targetStudentName = '';
     let targetParentId: string | undefined;
-    let targetDecision: DisciplinaryDecision | undefined;
-
+    // We don't have a DisciplinaryDecision store in state. 
+    // We just need to send the notification to the parent/student.
+    const targetDecision = { decisionType: 'قرار إداري' };
+    
     setStudents((prev) => {
-      const updated = prev.map((s) => {
-        if (s.id === id) {
-          studentName = s.name;
-          return { ...s, ...updatedStudent };
-        }
-        return s;
+      const updatedArray = prev.map(s => {
+        if (s.id !== studentId) return s;
+        targetStudentName = s.name;
+        targetParentId = s.parentId;
+        return s; 
       });
-      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
+      return updatedArray;
     });
 
     if (targetDecision) {
@@ -4938,17 +5061,7 @@ ${defaultReason}
   };
 
   const updateDisciplinaryDecision = (decisionId: string, studentId: string, updates: Partial<DisciplinaryDecision>) => {
-    setStudents((prev) => {
-      const updated = prev.map((s) => {
-        if (s.id === id) {
-          studentName = s.name;
-          return { ...s, ...updatedStudent };
-        }
-        return s;
-      });
-      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
-    });
+    
   };
 
   const revertAbsenceJustification = (decisionId: string, studentId: string, daysToRevert?: number, reason?: string) => {
@@ -6104,6 +6217,7 @@ ${defaultReason}
         }
       }
       if (parsed.decisionSettings) setDecisionSettings(parsed.decisionSettings);
+      if (parsed.disciplinarySettings) setDisciplinarySettings(parsed.disciplinarySettings);
       if (parsed.auditLogs) setAuditLogs(parsed.auditLogs);
 
       addAuditLog({
@@ -6139,6 +6253,7 @@ ${defaultReason}
     setCalendarEvents(INITIAL_CALENDAR_EVENTS);
     setSchoolAdminData(INITIAL_SCHOOL_ADMIN_DATA);
     setDecisionSettings(DEFAULT_MINISTRY_DECISION_SETTINGS);
+    setDisciplinarySettings(DEFAULT_DISCIPLINARY_SETTINGS);
     setChallenges(INITIAL_CHALLENGES);
     setAuditLogs(INITIAL_AUDIT_LOGS);
     setDeletedLectureIds([]);
@@ -6188,7 +6303,9 @@ ${defaultReason}
         updateCalendarEvent,
         deleteCalendarEvent,
         decisionSettings,
-        updateDecisionSettings,
+    updateDecisionSettings,
+    disciplinarySettings,
+    updateDisciplinarySettings,
         applySubjectDecisionMarks,
         autoOptimizeDecisionMarksForCert,
         resetDecisionMarksForCert,

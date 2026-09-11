@@ -2,6 +2,25 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
+
+const originalError = console.error;
+console.error = (...args) => {
+  const msg = args.map(a => (a instanceof Error ? a.message + ' ' + a.stack : typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+  if (msg.includes('resource-exhausted') || msg.includes('Quota') || msg.includes('maximum backoff delay')) {
+    return; // Suppress Firebase quota spam
+  }
+  originalError.apply(console, args);
+};
+
+const originalWarn = console.warn;
+console.warn = (...args) => {
+  const msg = args.map(a => (a instanceof Error ? a.message + ' ' + a.stack : typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+  if (msg.includes('resource-exhausted') || msg.includes('Quota') || msg.includes('maximum backoff delay')) {
+    return; // Suppress Firebase quota spam
+  }
+  originalWarn.apply(console, args);
+};
+
 import './index.css';
 
 // 1. Transparently ensure window.localStorage never throws SecurityError in sandboxed iframes
