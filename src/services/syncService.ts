@@ -220,7 +220,20 @@ class CentralSyncService {
     try {
       const docRef = doc(db, FIREBASE_DOC_PATH);
       
-      const newVersion = (this.currentVersion || 0) + 1;
+      //const newVersion = (this.currentVersion || 0) + 1;
+      const snapshot = await getDoc(docRef);
+
+      const serverVersion = snapshot.exists()
+        ? Number(snapshot.data().version || 0)
+        : 0;
+
+      const newVersion = serverVersion + 1;
+
+      let currentData = snapshot.exists()
+        ? snapshot.data().data || {}
+        : {};
+
+
       const lastModified = new Date().toISOString();
       const lastSyncedBy = sourceUser || { id: 'unknown', name: 'Unknown', role: 'user' };
 
@@ -232,8 +245,6 @@ class CentralSyncService {
       // Easiest is just to overwrite the entire data object if we assume updates has everything,
       // but if updates is partial, we should get current first.
       
-      const snapshot = await getDoc(docRef);
-      let currentData = snapshot.exists() ? snapshot.data().data || {} : {};
       
       // If it's an admin pushing, we trust their payload entirely.
      // const isAdmin = sourceUser?.role === 'admin' || sourceUser?.id === 'admin-main';
