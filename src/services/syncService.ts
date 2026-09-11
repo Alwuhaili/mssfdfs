@@ -236,7 +236,17 @@ class CentralSyncService {
       let currentData = snapshot.exists() ? snapshot.data().data || {} : {};
       
       // If it's an admin pushing, we trust their payload entirely.
-      const isAdmin = sourceUser?.role === 'admin' || sourceUser?.id === 'admin-main';
+     // const isAdmin = sourceUser?.role === 'admin' || sourceUser?.id === 'admin-main';
+
+      const isAdmin = sourceUser?.role === 'admin' || sourceUser?.role === 'director' ||
+  sourceUser?.id === 'admin-main' ||
+  (
+    sourceUser?.name &&
+    (
+      sourceUser.name.includes('المديرة') ||
+      sourceUser.name.includes('إدارة')
+    )
+  );
       
       let mergedData = { ...currentData };
       if (isAdmin) {
