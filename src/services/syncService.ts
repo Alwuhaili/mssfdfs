@@ -1,5 +1,5 @@
 import { db } from '../lib/firebase';
-import { doc, getDoc, setDoc, onSnapshot, serverTimestamp, writeBatch, disableNetwork, terminate } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, onSnapshot, serverTimestamp, writeBatch, disableNetwork, terminate } from 'firebase/firestore';
 
 export interface SyncStatus {
   success: boolean;
@@ -319,8 +319,7 @@ class CentralSyncService {
     if (this.isQuotaExceeded) return false;
     if (!this.isOnline) return false;
     try {
-      const { doc, getDoc, updateDoc, serverTimestamp } = await import('firebase/firestore');
-      const { db } = await import('../lib/firebase');
+      
       const docRef = doc(db, 'database/main');
       const snapshot = await getDoc(docRef);
       if (snapshot.exists()) {
