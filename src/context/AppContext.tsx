@@ -1467,15 +1467,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       previousValue: entry.previousValue,
       newValue: entry.newValue,
     };
-    setAuditLogs((prev) => [newLog, ...prev]);
+    setAuditLogs((prev) => {
+      const updated = [newLog, ...prev];
+      centralSyncService.directArrayMutation('auditLogs', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      return updated;
+    });
   };
 
   const deleteAuditLog = (id: string) => {
-    setAuditLogs((prev) => prev.filter((log) => log.id !== id));
+    setAuditLogs((prev) => {
+      const updated = prev.filter((log) => log.id !== id);
+      centralSyncService.directArrayMutation('auditLogs', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      return updated;
+    });
   };
 
   const clearAuditLogs = () => {
     setAuditLogs([]);
+    centralSyncService.directArrayMutation('auditLogs', [], { id: currentUser?.id || role, name: currentUser?.name || role, role });
   };
 
   const exportAuditLogsJSON = () => {
@@ -1523,7 +1532,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateSchoolAdminData = (updated: Partial<SchoolAdminData>) => {
-    setSchoolAdminData((prev) => ({ ...prev, ...updated }));
+    setSchoolAdminData((prev) => {
+      const newData = { ...prev, ...updated };
+      centralSyncService.directObjectMutation('schoolAdminData', newData, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      return newData;
+    });
     addAuditLog({
       action: 'تحديث بيانات ورؤية الإدارة المدرسية',
       actionType: 'settings_change',
@@ -2226,6 +2239,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const isInitialHydrationDone = useRef<boolean>(false);
   const pushDebounceTimer = useRef<any>(null);
 
+
+  // Prevent data loss on accidental refresh before sync completes
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (syncStatus === 'syncing') {
+        e.preventDefault();
+        e.returnValue = 'جاري حفظ البيانات في قاعدة البيانات... يرجى الانتظار للحظات لتجنب فقدان البيانات.';
+        return e.returnValue;
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [syncStatus]);
+
   // Apply remote data securely to React state
   const applyRemoteData = (remoteData: any, remoteVersion: number, remoteLastSyncedBy?: any) => {
     if (!remoteData || typeof remoteData !== 'object') return;
@@ -2421,11 +2448,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setSyncStatus('syncing');
 
     // Administration changes sync ultra-fast (250ms) to ensure immediate school-wide propagation
-    const debounceDelay = role === 'admin' ? 250 : 1200;
+    const debounceDelay = 100;
 
     pushDebounceTimer.current = setTimeout(async () => {
+        pushDebounceTimer.current = null;
       try {
         const payload = getFullPayload();
+        
+        // --- OFFLINE FALLBACK ---
+        // Always save to localStorage immediately to prevent data loss 
+        // in case Firebase hits its daily quota limit.
+        try {
+          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload));
+        } catch(e) {
+          console.error("Local storage save failed", e);
+        }
+        
         const sourceUser = {
           id: currentUser?.id || role,
           name: currentUser?.name || (role === 'admin' ? 'المديرة العامة' : role),
@@ -2560,6 +2598,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDecisionSettings((prev) => {
       const next = { ...prev, ...updated };
       setCertificates((certs) => certs.map((c) => computeCertificateStats(c, next)));
+      centralSyncService.directObjectMutation('decisionSettings', next, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return next;
     });
   };
@@ -3231,7 +3270,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDisciplinarySettings((prev) => {
       const newVal = { ...prev, ...updated };
       finalSettings = newVal;
-      centralSyncService.pushUpdates({ disciplinarySettings: newVal }, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      centralSyncService.directObjectMutation('disciplinarySettings', newVal, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return newVal;
     });
     // Give state time to settle or pass explicit config
