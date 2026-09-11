@@ -3395,7 +3395,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       centralSyncService.directArrayMutation('teachers', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return updated;
     });
-
+    // Delete their passcode completely from the system instead of leaving it
+    setUserPasscodes(prev => {
+      const copy = { ...prev };
+      delete copy[`teacher-${id}`];
+            return copy;
+    });
     addAuditLog({
       action: `حذف حساب مدرسة: ${deletedName || id}`,
       actionType: 'delete',
@@ -3471,6 +3476,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const updated = prev.filter((s) => s.id !== id);
       centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return updated;
+    });
+    // Delete their passcode completely from the system instead of leaving it
+    setUserPasscodes(prev => {
+      const copy = { ...prev };
+      delete copy[`student-${id}`];
+            return copy;
     });
     // Also remove parent linked record if any
     setParents((prev) => prev.filter((p) => p.studentId !== id));
@@ -5057,7 +5068,19 @@ ${defaultReason}
   };
 
   const deleteDisciplinaryDecision = (decisionId: string, studentId: string) => {
-    revokeDisciplinaryDecision(decisionId, studentId, 'حذف السجل الإداري بطلب مباشر من إدارة المدرسة');
+    setStudents((prev) => {
+      const updated = prev.map(s => {
+        if (s.id !== studentId) return s;
+        if (!s.disciplinaryDecisions) return s;
+        const filteredDecisions = s.disciplinaryDecisions.filter(d => d.id !== decisionId);
+        
+        // Recalculate warning level if needed based on remaining decisions? 
+        // For now just removing it from the array.
+        return { ...s, disciplinaryDecisions: filteredDecisions };
+      });
+      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      return updated;
+    });
   };
 
   const updateDisciplinaryDecision = (decisionId: string, studentId: string, updates: Partial<DisciplinaryDecision>) => {
@@ -5371,6 +5394,15 @@ ${defaultReason}
   };
 
   const deleteMessage = (id: string, explicitUserId?: string) => {
+    // Admin override: Actually delete the message from the system completely
+    if (role === 'admin' || currentUser?.role === 'admin') {
+      setMessages(prev => {
+        const updated = prev.filter(m => m.id !== id);
+        centralSyncService.directArrayMutation('messages', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+        return updated;
+      });
+      return;
+    }
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
     setMessages((prev) => {
       const msg = prev.find((m) => m.id === id);
@@ -5621,6 +5653,15 @@ ${defaultReason}
   };
 
   const deleteNotification = (id: string, explicitUserId?: string) => {
+    // Admin override: Actually delete the notification from the system completely
+    if (role === 'admin' || currentUser?.role === 'admin') {
+      setNotifications(prev => {
+        const updated = prev.filter(n => n.id !== id);
+        centralSyncService.directArrayMutation('notifications', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+        return updated;
+      });
+      return;
+    }
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
     setNotifications((prev) =>
       prev.map((n) => {
