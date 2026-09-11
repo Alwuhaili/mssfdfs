@@ -1,8 +1,12 @@
-const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
-};
+{
+  "projectId": "jaunty-ellipse-b8chg",
+  "appId": "1:776987691303:web:652b526d165faef9688102",
+  "apiKey": "AIzaSyBriSXvmTP2qp0Tl-i0Ag6NI62oTra45mU",
+  "authDomain": "jaunty-ellipse-b8chg.firebaseapp.com",
+  "firestoreDatabaseId": "maysan-prod-db",
+  "storageBucket": "jaunty-ellipse-b8chg.firebasestorage.app",
+  "messagingSenderId": "776987691303",
+  "measurementId": "",
+  "oAuthClientId": "776987691303-f1oi4r7ge6iab0lpb86li94dng9cv2ua.apps.googleusercontent.com",
+  "recaptchaSiteKey": ""
+}
