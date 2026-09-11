@@ -3,4 +3,4 @@
   publish = "dist"
 
 [build.environment]
-  SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES = "AIzaSyBriSXvmTP2qp0Tl-i0Ag6NI62oTra45mU"
+  SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES = "AIzaSyBriSXvmTP2qp0Tl-i0Ag6NI62oTra45mU,1:776987691303:web:652b526d165faef9688102,776987691303-f1oi4r7ge6iab0lpb86li94dng9cv2ua.apps.googleusercontent.com"
