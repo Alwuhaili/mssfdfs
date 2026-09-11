@@ -273,7 +273,17 @@ class CentralSyncService {
          ];
          for (const key of Object.keys(updates)) {
             if (updates[key] === undefined) continue;
-            if (ADMIN_EXCLUSIVE_KEYS.includes(key)) continue;
+            //if (ADMIN_EXCLUSIVE_KEYS.includes(key)) continue;
+            if (ADMIN_EXCLUSIVE_KEYS.includes(key)) {
+                console.warn(
+                  '[SyncService] Update blocked because user is not admin:',
+                  {
+                    key,
+                    sourceUser
+                  }
+                );
+                continue;
+              }
             
             // For array-based operational entities, we merge lists intelligently
             if (["submissions", "attendance", "messages", "lectures", "challenges", "annualPlans", "dailyLessonPlans"].includes(key) && Array.isArray(updates[key])) {
