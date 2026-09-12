@@ -356,7 +356,7 @@ class CentralSyncService {
       };
     } catch (err: any) {
       this.handleFirestoreError(err, 'Fetch data');
-      return { success: false, message: err?.message || 'فشل الاتصال بقاعدة Firebase' };
+      return { success: false, message: `${err?.code ? `[${err.code}] ` : ''}${err?.message || 'فشل الاتصال بقاعدة Firebase'}` };
     }
   }
 
@@ -443,7 +443,7 @@ class CentralSyncService {
       };
     } catch (err: any) {
       this.handleFirestoreError(err, 'Patch keys');
-      return { success: false, message: err?.message || 'فشل حفظ التغييرات في Firebase' };
+      return { success: false, message: `${err?.code ? `[${err.code}] ` : ''}${err?.message || 'فشل حفظ التغييرات في Firebase'}` };
     }
   }
 

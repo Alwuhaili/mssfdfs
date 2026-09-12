@@ -2531,10 +2531,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setSyncErrorMessage(res.message);
 
           // A failed write must never cause a stale local snapshot to be pushed later.
+          const failedMessage = res.message || 'تعذر حفظ التغييرات في قاعدة Firestore';
           const latest = await centralSyncService.fetchServerData(undefined, true);
           if (latest.success && latest.data) {
             applyRemoteData(latest.data, latest.version || syncVersionRef.current, latest.lastSyncedBy);
           }
+          // applyRemoteData marks a successful READ as synced. Restore the WRITE failure
+          // so the UI never reports a false central synchronization success.
+          setSyncStatus(navigator.onLine ? 'error' : 'offline');
+          setSyncErrorMessage(failedMessage);
         }
       } catch (err: any) {
         setSyncStatus(navigator.onLine ? 'error' : 'offline');
@@ -3476,20 +3481,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return;
         }
 
-        setSyncStatus(navigator.onLine ? 'error' : 'offline');
-        setSyncErrorMessage(res.message || 'تعذر حفظ الطالبة في قاعدة البيانات المركزية');
+        const failedMessage = res.message || 'تعذر حفظ الطالبة في قاعدة البيانات المركزية';
         const latest = await centralSyncService.fetchServerData(undefined, true);
         if (latest.success && latest.data) {
           applyRemoteData(latest.data, latest.version || syncVersionRef.current, latest.lastSyncedBy);
         }
+        // Reading the latest server snapshot succeeded, but the student WRITE failed.
+        // Keep that distinction visible instead of falsely showing "synced".
+        setSyncStatus(navigator.onLine ? 'error' : 'offline');
+        setSyncErrorMessage(failedMessage);
       })
       .catch(async (err: any) => {
-        setSyncStatus(navigator.onLine ? 'error' : 'offline');
-        setSyncErrorMessage(err?.message || 'تعذر حفظ الطالبة في قاعدة البيانات المركزية');
+        const failedMessage = err?.message || 'تعذر حفظ الطالبة في قاعدة البيانات المركزية';
         const latest = await centralSyncService.fetchServerData(undefined, true);
         if (latest.success && latest.data) {
           applyRemoteData(latest.data, latest.version || syncVersionRef.current, latest.lastSyncedBy);
         }
+        setSyncStatus(navigator.onLine ? 'error' : 'offline');
+        setSyncErrorMessage(failedMessage);
       })
       .finally(() => {
         writeInFlightRef.current = false;
