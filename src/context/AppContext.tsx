@@ -2241,6 +2241,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const syncVersionRef = useRef<number>(0);
   const lastSyncedPayloadRef = useRef<Record<string, any> | null>(null);
   const queuedRemoteUpdateRef = useRef<any>(null);
+  const writeInFlightRef = useRef<boolean>(false);
 
   // Prevent accidental refresh while a local change is being committed.
   useEffect(() => {
@@ -2418,7 +2419,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (evt.type === 'REALTIME_SERVER_UPDATE' && evt.payload) {
         // If a local edit is waiting for its transaction, do not overwrite it mid-flight.
-        if (pushDebounceTimer.current) {
+        if (pushDebounceTimer.current || writeInFlightRef.current) {
           queuedRemoteUpdateRef.current = evt;
           return;
         }
@@ -2444,7 +2445,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     // Fallback only. Firestore onSnapshot remains the primary realtime mechanism.
     const pollInterval = window.setInterval(async () => {
-      if (!isInitialHydrationDone.current || pushDebounceTimer.current) return;
+      if (!isInitialHydrationDone.current || pushDebounceTimer.current || writeInFlightRef.current) return;
       try {
         await fetchAndApplyLatest(false);
       } catch {
@@ -2453,7 +2454,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }, 15000);
 
     const onWindowFocus = async () => {
-      if (!isInitialHydrationDone.current || pushDebounceTimer.current) return;
+      if (!isInitialHydrationDone.current || pushDebounceTimer.current || writeInFlightRef.current) return;
       try {
         await fetchAndApplyLatest(false);
       } catch {
@@ -2475,7 +2476,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Single automatic write path: calculate only the keys changed locally and merge
   // them transactionally into the newest Firestore document.
   useEffect(() => {
-    if (isApplyingRemoteUpdate.current || !isInitialHydrationDone.current) return;
+    if (isApplyingRemoteUpdate.current || writeInFlightRef.current || !isInitialHydrationDone.current) return;
     if (!lastSyncedPayloadRef.current) return;
 
     const payload = getFullPayload();
@@ -2502,9 +2503,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const sourceUser = {
         id: currentUser?.id || role,
         name: currentUser?.name || (role === 'admin' ? 'إدارة المدرسة' : role),
-        role,
+        role: currentUser?.role || role,
       };
 
+      writeInFlightRef.current = true;
       try {
         const startedAt = Date.now();
         const res = await centralSyncService.patchKeys(updates, baseValues, sourceUser);
@@ -2537,6 +2539,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       } catch (err: any) {
         setSyncStatus(navigator.onLine ? 'error' : 'offline');
         setSyncErrorMessage(err?.message || 'تعذر حفظ التغييرات');
+      } finally {
+        writeInFlightRef.current = false;
+        const queued = queuedRemoteUpdateRef.current;
+        queuedRemoteUpdateRef.current = null;
+        if (queued?.payload && queued?.sourceVersion && queued.sourceVersion > syncVersionRef.current) {
+          applyRemoteData(queued.payload, queued.sourceVersion, queued.lastSyncedBy);
+        }
       }
     }, 120);
 
@@ -3372,14 +3381,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       status: 'منتظمة',
       enrollmentYear: data.enrollmentYear?.trim() || '2026',
     };
-    setStudents((prev) => {
-      const updated = [newStudent, ...prev];
-      // Instantly sync to firebase
-      // Central Firestore write is handled by the transactional auto-sync effect.
-      return updated;
-    });
 
-    // Auto add parent account link
     const newParent: Parent = {
       id: parentId,
       name: data.parentName,
@@ -3389,13 +3391,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       studentName: newStudent.name,
       gradeLevel: newStudent.gradeLevel,
     };
-    setParents((prev) => {
-      const updated = [newParent, ...prev];
-      // Central Firestore write is handled by the transactional auto-sync effect.
-      return updated;
-    });
 
-    // Create initial tuition financial record
     const fin: FinancialRecord = {
       id: `fin-${Date.now()}-${randSuffix}`,
       studentId: newStudent.id,
@@ -3407,23 +3403,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       status: 'غير مدفوع',
       dueDate: '2026-09-01',
     };
-    setFinancial((prev) => {
-      const updated = [fin, ...prev];
-      // Central Firestore write is handled by the transactional auto-sync effect.
-      return updated;
-    });
 
-    addAuditLog({
+    const newAuditLog: AuditLogEntry = {
+      id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      userId: currentUser?.id || 'admin-principal',
+      userName: currentUser?.name || schoolAdminData.principalName || 'إدارة المدرسة',
+      userRole: (currentUser?.role || role || 'admin') as UserRole,
       action: `تسجيل طالبة جديدة: ${newStudent.name}`,
       actionType: 'create',
       targetCategory: 'students',
       targetId: newStudent.id,
       targetName: newStudent.name,
       details: `تسجيل الطالبة في ${newStudent.gradeLevel} - شعبة (${newStudent.section}) مع ربط حساب ولي الأمر (${data.parentName})`,
+      ipAddress: '192.168.1.10',
+      deviceInfo: 'لوحة تحكم الإدارة (الويب)',
       severity: 'success',
-    });
+    };
 
-    // Push notification
     const notif: NotificationItem = {
       id: `notif-${Date.now()}-${randSuffix}`,
       title: lang === 'ar' ? 'تسجيل طالبة جديدة بالمدرسة' : 'New Gifted Student Registered',
@@ -3432,7 +3429,71 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       timestamp: lang === 'ar' ? 'الآن' : 'Just now',
       isRead: false,
     };
-    setNotifications((prev) => [notif, ...prev]);
+
+    const nextStudents = [newStudent, ...students];
+    const nextParents = [newParent, ...parents];
+    const nextFinancial = [fin, ...financial];
+    const nextAuditLogs = [newAuditLog, ...auditLogs];
+    const nextNotifications = [notif, ...notifications];
+
+    // Optimistic UI, but the same exact bundle is committed to Firestore immediately.
+    writeInFlightRef.current = true;
+    setSyncStatus('syncing');
+    setStudents(nextStudents);
+    setParents(nextParents);
+    setFinancial(nextFinancial);
+    setAuditLogs(nextAuditLogs);
+    setNotifications(nextNotifications);
+
+    const sourceUser = {
+      id: currentUser?.id || role,
+      name: currentUser?.name || 'إدارة المدرسة',
+      role: currentUser?.role || role,
+    };
+
+    const base = lastSyncedPayloadRef.current || {};
+    const updates = {
+      students: nextStudents,
+      parents: nextParents,
+      financial: nextFinancial,
+      auditLogs: nextAuditLogs,
+      notifications: nextNotifications,
+    };
+    const baseValues = {
+      students: base.students || [],
+      parents: base.parents || [],
+      financial: base.financial || [],
+      auditLogs: base.auditLogs || [],
+      notifications: base.notifications || [],
+    };
+
+    void centralSyncService.patchKeys(updates, baseValues, sourceUser)
+      .then(async (res) => {
+        if (res.success && res.version !== undefined && res.data) {
+          applyRemoteData(res.data, res.version, res.lastSyncedBy || sourceUser);
+          setSyncStatus('synced');
+          setSyncErrorMessage(undefined);
+          return;
+        }
+
+        setSyncStatus(navigator.onLine ? 'error' : 'offline');
+        setSyncErrorMessage(res.message || 'تعذر حفظ الطالبة في قاعدة البيانات المركزية');
+        const latest = await centralSyncService.fetchServerData(undefined, true);
+        if (latest.success && latest.data) {
+          applyRemoteData(latest.data, latest.version || syncVersionRef.current, latest.lastSyncedBy);
+        }
+      })
+      .catch(async (err: any) => {
+        setSyncStatus(navigator.onLine ? 'error' : 'offline');
+        setSyncErrorMessage(err?.message || 'تعذر حفظ الطالبة في قاعدة البيانات المركزية');
+        const latest = await centralSyncService.fetchServerData(undefined, true);
+        if (latest.success && latest.data) {
+          applyRemoteData(latest.data, latest.version || syncVersionRef.current, latest.lastSyncedBy);
+        }
+      })
+      .finally(() => {
+        writeInFlightRef.current = false;
+      });
   };
 
   // User Management Implementations

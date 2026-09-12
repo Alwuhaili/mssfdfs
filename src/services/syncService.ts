@@ -321,7 +321,7 @@ class CentralSyncService {
   }
 
   private canWriteKey(key: string, sourceUser?: SyncUser): boolean {
-    const isAdmin = sourceUser?.role === 'admin' || sourceUser?.id === 'admin-main';
+    const isAdmin = sourceUser?.role === 'admin' || sourceUser?.role === 'director' || sourceUser?.id === 'admin-main';
     return isAdmin || !ADMIN_EXCLUSIVE_KEYS.has(key);
   }
 
@@ -375,9 +375,22 @@ class CentralSyncService {
     if (!this.isOnline) return { success: false, message: 'الجهاز غير متصل بالإنترنت حالياً' };
 
     const allowedUpdates: Record<string, any> = {};
+    const blockedKeys: string[] = [];
     for (const [key, value] of Object.entries(updates || {})) {
-      if (value === undefined || !this.canWriteKey(key, sourceUser)) continue;
+      if (value === undefined) continue;
+      if (!this.canWriteKey(key, sourceUser)) {
+        blockedKeys.push(key);
+        continue;
+      }
       allowedUpdates[key] = clone(value);
+    }
+
+    if (blockedKeys.length > 0) {
+      console.error('[SYNC PERMISSION BLOCK]', { blockedKeys, sourceUser });
+      return {
+        success: false,
+        message: `تم منع حفظ الحقول التالية بسبب الصلاحيات: ${blockedKeys.join(', ')}`,
+      };
     }
 
     if (Object.keys(allowedUpdates).length === 0) {
