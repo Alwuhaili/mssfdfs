@@ -202,6 +202,7 @@ export interface Teacher {
   nationalId?: string;
   avatar?: string;
   isDirectress?: boolean;
+  systemRole?: 'مدير' | 'معاون' | 'مدرس';
   assignedGrades: GradeLevel[];
   assignedSections?: Section[];
   status: 'نشط' | 'في إجازة' | 'محظور' | 'مقيد الوصول';

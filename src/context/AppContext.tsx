@@ -3575,89 +3575,156 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateStudent = (id: string, updated: Partial<Student>) => {
-    // 1. Find the target student synchronously from the current state
-    const currentStudent = students.find(s => s.id === id);
-    if (!currentStudent) return; // Prevent crashes if student not found
+    // Student edits are latency-sensitive (grades / honor board / identity data).
+    // Commit the student document directly to Firestore instead of waiting for
+    // the generic debounced auto-sync loop.
+    const currentStudent = students.find((s) => s.id === id);
+    if (!currentStudent) return;
 
     let targetStudent = { ...currentStudent, ...updated };
     const studentName = targetStudent.name || id;
 
-    // 2. Check if parent needs to be created or updated
     let parentFound = false;
     let newParentId = targetStudent.parentId;
     let updatedParents = parents.map((p) => {
-        if (p.id === targetStudent.parentId || p.studentId === id) {
-            parentFound = true;
-            return {
-                ...p,
-                name: targetStudent.parentName,
-                phone: targetStudent.parentPhone,
-                email: targetStudent.parentEmail,
-                studentName: targetStudent.name,
-                gradeLevel: targetStudent.gradeLevel,
-            };
-        }
-        return p;
+      if (p.id === targetStudent.parentId || p.studentId === id) {
+        parentFound = true;
+        return {
+          ...p,
+          name: targetStudent.parentName,
+          phone: targetStudent.parentPhone,
+          email: targetStudent.parentEmail,
+          studentName: targetStudent.name,
+          gradeLevel: targetStudent.gradeLevel,
+        };
+      }
+      return p;
     });
 
     if (!parentFound && (targetStudent.parentName || targetStudent.parentPhone)) {
-        newParentId = targetStudent.parentId || `prt-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-        const newParent = {
-            id: newParentId,
-            name: targetStudent.parentName || '',
-            phone: targetStudent.parentPhone || '',
-            email: targetStudent.parentEmail || '',
-            studentId: targetStudent.id,
-            studentName: targetStudent.name,
-            gradeLevel: targetStudent.gradeLevel,
-        };
-        updatedParents = [newParent as any, ...updatedParents];
-        targetStudent.parentId = newParentId;
+      newParentId = targetStudent.parentId || `prt-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+      const newParent = {
+        id: newParentId,
+        name: targetStudent.parentName || '',
+        phone: targetStudent.parentPhone || '',
+        email: targetStudent.parentEmail || '',
+        studentId: targetStudent.id,
+        studentName: targetStudent.name,
+        gradeLevel: targetStudent.gradeLevel,
+      };
+      updatedParents = [newParent as any, ...updatedParents];
+      targetStudent.parentId = newParentId;
     }
 
-    // 3. Update students array
-    const updatedStudents = students.map(s => s.id === id ? targetStudent : s);
-    
-    // 4. Update financial record if missing
+    const updatedStudents = students.map((s) => (s.id === id ? targetStudent : s));
+
     let updatedFin = [...financial];
-    const hasFin = updatedFin.some(f => f.studentId === id);
+    const hasFin = updatedFin.some((f) => f.studentId === id);
     if (!hasFin) {
-        const randSuffix = Math.random().toString(36).substring(2, 7);
-        const fin = {
-            id: `fin-${Date.now()}-${randSuffix}`,
-            studentId: targetStudent.id,
-            studentName: targetStudent.name,
-            gradeLevel: targetStudent.gradeLevel,
-            feeType: 'رسوم التسجيل والكتب',
-            totalAmount: 120000,
-            paidAmount: 0,
-            status: 'غير مدفوع' as const,
-            dueDate: '2026-09-01',
-        };
-        updatedFin = [fin, ...updatedFin];
+      const randSuffix = Math.random().toString(36).substring(2, 7);
+      const fin = {
+        id: `fin-${Date.now()}-${randSuffix}`,
+        studentId: targetStudent.id,
+        studentName: targetStudent.name,
+        gradeLevel: targetStudent.gradeLevel,
+        feeType: 'رسوم التسجيل والكتب',
+        totalAmount: 120000,
+        paidAmount: 0,
+        status: 'غير مدفوع' as const,
+        dueDate: '2026-09-01',
+      };
+      updatedFin = [fin, ...updatedFin];
     }
 
-    // 5. Apply the updates to state and sync
+    // Optimistic local UI update. Firestore is still authoritative; a failed
+    // transaction reloads the central value below.
     setStudents(updatedStudents);
-      // Central Firestore write is handled by the transactional auto-sync effect.
     setParents(updatedParents);
-      // Central Firestore write is handled by the transactional auto-sync effect.
-    if (!hasFin) {
-        setFinancial(updatedFin);
-      // Central Firestore write is handled by the transactional auto-sync effect.
-    }
+    if (!hasFin) setFinancial(updatedFin);
 
-    addAuditLog({
-      action: `تعديل بيانات الطالبة: ${studentName}`,
-      actionType: updated.status ? 'status_change' : 'update',
-      targetCategory: 'students',
-      targetId: id,
-      targetName: studentName,
-      details: updated.status
-        ? `تعديل حالة الطالبة (${studentName}) إلى [${updated.status}]`
-        : `تحديث بيانات ومعلومات الطالبة (${studentName})`,
-      severity: 'info',
-    });
+    const sourceUser = {
+      id: currentUser?.id || role,
+      name: currentUser?.name || (role === 'admin' ? 'إدارة المدرسة' : role),
+      role: currentUser?.role || role,
+    };
+
+    const baseStudent =
+      (lastSyncedPayloadRef.current?.students || []).find((s: Student) => s.id === id) || currentStudent;
+
+    // Block the generic auto-sync while the direct student transaction is active.
+    writeInFlightRef.current = true;
+    setSyncStatus('syncing');
+    setSyncErrorMessage(undefined);
+
+    void centralSyncService
+      .upsertCollectionDocument('students', id, targetStudent, baseStudent, sourceUser)
+      .then(async (res) => {
+        if (!res.success) {
+          const failedMessage = res.message || 'تعذر حفظ تعديل الطالبة في Firestore';
+          const latest = await centralSyncService.fetchServerData(undefined, true);
+          if (latest.success && latest.data) {
+            applyRemoteData(
+              latest.data,
+              latest.version || syncVersionRef.current,
+              latest.lastSyncedBy
+            );
+          }
+          setSyncStatus(navigator.onLine ? 'error' : 'offline');
+          setSyncErrorMessage(failedMessage);
+          return;
+        }
+
+        // Advance only the student's central base. Other keys remain governed by
+        // their normal collection listeners/auto-sync.
+        const nextBase = { ...(lastSyncedPayloadRef.current || {}) };
+        const baseStudents = Array.isArray(nextBase.students) ? [...nextBase.students] : [...students];
+        const pos = baseStudents.findIndex((s: Student) => s.id === id);
+        if (pos >= 0) baseStudents[pos] = JSON.parse(JSON.stringify(targetStudent));
+        else baseStudents.unshift(JSON.parse(JSON.stringify(targetStudent)));
+        nextBase.students = baseStudents;
+        lastSyncedPayloadRef.current = nextBase;
+
+        syncVersionRef.current = res.version || Math.max(syncVersionRef.current + 1, Date.now());
+        setSyncVersion(syncVersionRef.current);
+        setLastSyncedAt(new Date());
+        setLastSyncedBy(sourceUser);
+        setSyncStatus('synced');
+      })
+      .catch(async (err: any) => {
+        const failedMessage = err?.message || 'تعذر حفظ تعديل الطالبة في Firestore';
+        const latest = await centralSyncService.fetchServerData(undefined, true);
+        if (latest.success && latest.data) {
+          applyRemoteData(latest.data, latest.version || syncVersionRef.current, latest.lastSyncedBy);
+        }
+        setSyncStatus(navigator.onLine ? 'error' : 'offline');
+        setSyncErrorMessage(failedMessage);
+      })
+      .finally(() => {
+        writeInFlightRef.current = false;
+        const queued = queuedRemoteUpdateRef.current;
+        queuedRemoteUpdateRef.current = null;
+        if (queued?.payload) {
+          applyRemoteData(
+            queued.payload,
+            queued.sourceVersion || Math.max(syncVersionRef.current + 1, Date.now()),
+            queued.lastSyncedBy
+          );
+        }
+
+        // Audit is appended only after the central student transaction finishes so
+        // its normal auto-sync is not suppressed by writeInFlightRef.
+        addAuditLog({
+          action: `تعديل بيانات الطالبة: ${studentName}`,
+          actionType: updated.status ? 'status_change' : 'update',
+          targetCategory: 'students',
+          targetId: id,
+          targetName: studentName,
+          details: updated.status
+            ? `تعديل حالة الطالبة (${studentName}) إلى [${updated.status}]`
+            : `تحديث بيانات ومعلومات الطالبة (${studentName})`,
+          severity: 'info',
+        });
+      });
   };
 
   const addShieldToStudent = (studentId: string, shield: Omit<StudentShieldBadge, 'id'>) => {
@@ -3684,9 +3751,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateStudentBadges = (studentId: string, badges: string[]) => {
-    setStudents((prev) =>
-      prev.map((s) => (s.id === studentId ? { ...s, badges } : s))
-    );
+    updateStudent(studentId, { badges } as Partial<Student>);
   };
 
   const deleteStudent = (id: string) => {

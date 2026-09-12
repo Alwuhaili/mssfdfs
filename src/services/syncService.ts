@@ -760,6 +760,85 @@ class CentralSyncService {
     }
   }
 
+
+  /**
+   * Commit exactly one entity document using Firestore transaction semantics.
+   * This is used for latency-sensitive records (for example student edits) so
+   * the UI does not depend on the generic debounced auto-sync loop.
+   */
+  public async upsertCollectionDocument(
+    key: string,
+    id: string,
+    localItem: any,
+    baseItem: any,
+    sourceUser?: SyncUser
+  ): Promise<SyncResponse> {
+    if (!this.isOnline) return { success: false, message: 'الجهاز غير متصل بالإنترنت حالياً' };
+
+    try {
+      const migration = await this.readMigrationMeta();
+      if (migration?.status !== 'completed') {
+        return { success: false, message: 'ترحيل Collections لم يكتمل؛ تم منع الكتابة لحماية البيانات.' };
+      }
+
+      const map = await this.ensureStorageMapLoaded();
+      const mode = map[key] || this.chooseStorageMode(key, [localItem]);
+      if (mode !== 'collection') {
+        return { success: false, message: `المفتاح ${key} ليس Collection في مخطط Firestore الحالي.` };
+      }
+      if (!this.canWriteKey(key, sourceUser)) {
+        return { success: false, message: `تم منع حفظ ${key} بسبب الصلاحيات.` };
+      }
+      if (!id || !localItem) {
+        return { success: false, message: 'معرف السجل أو بياناته غير صالحة.' };
+      }
+
+      const ref = doc(db, key, safeDocId(id));
+      await runTransaction(db, async (tx) => {
+        const snap = await tx.get(ref);
+        const serverItem = snap.exists() ? stripInternalFields(snap.data()) : undefined;
+
+        let merged: any;
+        if (serverItem === undefined) {
+          merged = clone(localItem);
+        } else if (baseItem === undefined) {
+          // Unknown/stale client must not replace an existing record wholesale.
+          merged = { ...clone(serverItem), ...clone(localItem) };
+        } else {
+          merged = mergeValueThreeWay(baseItem, localItem, serverItem);
+        }
+
+        tx.set(ref, {
+          ...clone(merged),
+          id,
+          __sync: {
+            updatedAt: new Date().toISOString(),
+            updatedBy: clone(sourceUser || {}),
+          },
+        });
+      });
+
+      this.currentVersion = Math.max(this.currentVersion + 1, Date.now());
+      this.lastSyncedBy = clone(sourceUser || {});
+      this.lastModified = new Date().toISOString();
+      const version = this.currentVersion;
+      this.broadcastToTabs('SERVER_DATA_UPDATED', undefined, version);
+
+      return {
+        success: true,
+        version,
+        lastModified: this.lastModified,
+        lastSyncedBy: this.lastSyncedBy,
+      };
+    } catch (err: any) {
+      console.error(`[SyncService] direct ${key}/${id} update failed:`, err);
+      return {
+        success: false,
+        message: `${err?.code ? `[${err.code}] ` : ''}${err?.message || 'فشل حفظ السجل في Firestore'}`,
+      };
+    }
+  }
+
   public async pushUpdates(updates: any, sourceUser?: SyncUser, _clientVersion?: number): Promise<SyncResponse> {
     const current = await this.fetchServerData(undefined, true);
     if (!current.success) return current;
