@@ -119,7 +119,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
       setParentName(s.parentName || '');
       setParentPhone(s.parentPhone || '');
       setParentEmail(s.parentEmail || '');
-      setGpa(s.gpa || 98.5);
+      setGpa(s.gpa ?? 98.5);
       setEnrollmentYear(s.enrollmentYear || '2026');
       setStudentStatus(s.status || 'منتظمة');
       setStudentBadges(

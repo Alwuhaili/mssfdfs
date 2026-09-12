@@ -5,7 +5,7 @@
  * صور وانجازات المديرة والهيئة التدريسية، والألعاب والمنافسات والتحديات.
  */
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { EditHonorStudentModal } from './EditHonorStudentModal';
 import { EditFacultyModal, FacultyMember } from './EditFacultyModal';
@@ -63,6 +63,7 @@ import {
 
 // Honor Roll Data for ALL 6 Grades (3 Students each)
 interface HonorStudent {
+  studentId?: string;
   rank: 1 | 2 | 3;
   name: string;
   grade: string;
@@ -462,7 +463,7 @@ const GALLERY_PHOTOS: GalleryPhoto[] = [
 ];
 
 export const SchoolHomeOverview: React.FC = () => {
-  const { lang, role, schoolAdminData, updateSchoolAdminData } = useApp();
+  const { lang, role, students, updateStudent, schoolAdminData, updateSchoolAdminData } = useApp();
   const [isEditSchoolAdminModalOpen, setIsEditSchoolAdminModalOpen] = useState(false);
   const principalFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -479,38 +480,47 @@ export const SchoolHomeOverview: React.FC = () => {
     }
   };
 
-  const handleHonorStudentAvatarUpload = (studentRank: 1 | 2 | 3, file: File) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      if (typeof reader.result === 'string') {
-        const newAvatar = reader.result;
-        setHonorRollData((prev) => {
-          const currentList = prev[selectedHonorGrade] || HONOR_ROLL_DATA[selectedHonorGrade] || [];
-          const updatedList = currentList.map((st) => (st.rank === studentRank ? { ...st, avatar: newAvatar } : st));
-          const nextData = { ...prev, [selectedHonorGrade]: updatedList };
-          try {
-            localStorage.setItem('maysan_honor_roll_v2', JSON.stringify(nextData));
-          } catch (e) {
-            console.error('Failed to save honor roll to storage', e);
-          }
-          return nextData;
-        });
-        setSaveToast('تم تحديث صورة الطالبة المتفوقة بنجاح 📸');
-        setTimeout(() => setSaveToast(null), 3000);
-      }
-    };
-    reader.readAsDataURL(file);
-  };
+  // Honor Roll is derived directly from the central students collection.
+  // This makes Firestore/AppContext the single source of truth across all devices.
+  const honorRollData = useMemo<Record<string, HonorStudent[]>>(() => {
+    const result: Record<string, HonorStudent[]> = {};
 
-  // Honor Roll Data State with localStorage persistence
-  const [honorRollData, setHonorRollData] = useState<Record<string, HonorStudent[]>>(() => {
-    try {
-      const saved = localStorage.getItem('maysan_honor_roll_v2');
-      return saved ? JSON.parse(saved) : HONOR_ROLL_DATA;
-    } catch (e) {
-      return HONOR_ROLL_DATA;
-    }
-  });
+    Object.keys(HONOR_ROLL_DATA).forEach((grade) => {
+      const topStudents = students
+        .filter((student) => student.gradeLevel === grade)
+        .filter((student) => !['محظورة', 'منقولة'].includes(String(student.status || '')))
+        .slice()
+        .sort((a, b) => {
+          const gpaDiff = (Number(b.gpa) || 0) - (Number(a.gpa) || 0);
+          if (gpaDiff !== 0) return gpaDiff;
+          return String(a.name || '').localeCompare(String(b.name || ''), 'ar');
+        })
+        .slice(0, 3);
+
+      result[grade] = topStudents.map((student, index) => {
+        const legacy = HONOR_ROLL_DATA[grade]?.[index];
+        return {
+          studentId: student.id,
+          rank: (index + 1) as 1 | 2 | 3,
+          name: student.name,
+          grade: student.gradeLevel,
+          section: student.section || 'أ',
+          gpa: Number(student.gpa) || 0,
+          avatar: (student as any).avatar || legacy?.avatar || '',
+          specialty:
+            (student as any).honorSpecialty ||
+            (student as any).specialty ||
+            'التفوق الدراسي والتميز الأكاديمي',
+          dream:
+            (student as any).honorDream ||
+            (student as any).dream ||
+            'مواصلة التفوق وتحقيق الطموح العلمي',
+        };
+      });
+    });
+
+    return result;
+  }, [students]);
 
   // Honor Roll Admin Editing State
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -520,31 +530,52 @@ export const SchoolHomeOverview: React.FC = () => {
   // Selected Grade for Honor Roll Tab
   const [selectedHonorGrade, setSelectedHonorGrade] = useState<string>('الصف السادس العلمي');
 
+  const handleHonorStudentAvatarUpload = (studentRank: 1 | 2 | 3, file: File) => {
+    const honorStudent = honorRollData[selectedHonorGrade]?.find((student) => student.rank === studentRank);
+    if (!honorStudent?.studentId) return;
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result !== 'string') return;
+      updateStudent(honorStudent.studentId!, { avatar: reader.result } as any);
+      setSaveToast('تم تحديث صورة الطالبة المتفوقة ومزامنتها مركزياً 📸');
+      setTimeout(() => setSaveToast(null), 3000);
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleSaveHonorStudent = (updatedStudent: HonorStudent) => {
-    setHonorRollData((prev) => {
-      const list = prev[selectedHonorGrade] || HONOR_ROLL_DATA[selectedHonorGrade] || [];
-      const updatedList = list.map((st) => (st.rank === updatedStudent.rank ? updatedStudent : st));
-      const next = { ...prev, [selectedHonorGrade]: updatedList };
-      try {
-        localStorage.setItem('maysan_honor_roll_v2', JSON.stringify(next));
-      } catch (e) {
-        console.error('Failed to persist honor roll data', e);
-      }
-      return next;
-    });
-    setSaveToast(`تم تحديث بيانات الطالبة "${updatedStudent.name}" في لوحة الشرف بنجاح! 🏆`);
+    const currentHonorStudent = honorRollData[selectedHonorGrade]?.find(
+      (student) => student.rank === updatedStudent.rank,
+    );
+
+    if (!currentHonorStudent?.studentId) {
+      setSaveToast('تعذر تحديد سجل الطالبة المركزي.');
+      setTimeout(() => setSaveToast(null), 3500);
+      return;
+    }
+
+    updateStudent(
+      currentHonorStudent.studentId,
+      {
+        name: updatedStudent.name,
+        avatar: updatedStudent.avatar,
+        gradeLevel: updatedStudent.grade as any,
+        section: updatedStudent.section,
+        gpa: Number(updatedStudent.gpa),
+        honorSpecialty: updatedStudent.specialty,
+        honorDream: updatedStudent.dream,
+      } as any,
+    );
+
+    setSaveToast(`تم تحديث بيانات الطالبة "${updatedStudent.name}" ومزامنتها مركزياً 🏆`);
     setTimeout(() => setSaveToast(null), 4500);
   };
 
   const handleResetHonorRoll = () => {
-    if (window.confirm('هل أنت تأكد من إعادة تعيين لوحة الشرف إلى البيانات الافتراضية؟')) {
-      setHonorRollData(HONOR_ROLL_DATA);
-      try {
-        localStorage.removeItem('maysan_honor_roll_v2');
-      } catch (e) {}
-      setSaveToast('تمت إعادة تعيين لوحة الشرف إلى البيانات الأصلية الافتراضية.');
-      setTimeout(() => setSaveToast(null), 4500);
-    }
+    // Ranking is automatic now; there is no separate local honor-roll dataset to reset.
+    setSaveToast('لوحة الشرف مرتبطة الآن بسجل الطالبات المركزي ويتم ترتيبها تلقائياً حسب المعدل.');
+    setTimeout(() => setSaveToast(null), 4500);
   };
 
   // Faculty Members State with localStorage persistence
