@@ -40,7 +40,7 @@ type StorageMode = 'collection' | 'setting';
 type StorageMap = Record<string, StorageMode>;
 
 const LEGACY_DOC_PATH = 'database/main';
-const MIGRATION_FIELD = '_collectionsMigration';
+const MIGRATION_DOC_PATH = 'database/migration_collections_v1';
 const SETTINGS_COLLECTION = 'appSettings';
 const BROADCAST_CHANNEL_NAME = 'maysan_gifted_school_sync_channel_v2';
 
@@ -218,14 +218,16 @@ class CentralSyncService {
   }
 
   private async readMigrationMeta() {
-    const snap = await getDoc(doc(db, LEGACY_DOC_PATH));
-    return snap.exists() ? snap.data()?.[MIGRATION_FIELD] : undefined;
+    const snap = await getDoc(doc(db, MIGRATION_DOC_PATH));
+    return snap.exists() ? snap.data() : undefined;
   }
 
   private async writeMigrationMeta(patch: Record<string, any>) {
     const current = await this.readMigrationMeta();
     const merged = { ...(current || {}), ...clone(patch) };
-    await setDoc(doc(db, LEGACY_DOC_PATH), { [MIGRATION_FIELD]: merged }, { merge: true });
+    // Migration metadata lives in its own tiny sibling document.
+    // Never append metadata to the very large legacy database/main document.
+    await setDoc(doc(db, MIGRATION_DOC_PATH), merged, { merge: true });
     return merged;
   }
 
@@ -285,6 +287,7 @@ class CentralSyncService {
    * - Reads the legacy database/main document.
    * - Copies data to collections/settings.
    * - Never deletes or modifies database/main.
+   * - Stores migration state separately at database/migration_collections_v1.
    * - While status=in_progress, new clients refuse normal writes.
    */
   private async runCollectionsMigration(seedData?: any, sourceUser?: SyncUser): Promise<SyncResponse> {
@@ -368,7 +371,7 @@ class CentralSyncService {
           startedBy: clone(sourceUser || {}),
           leaseOwner: this.clientId,
           leaseExpiresAt: Date.now() + 10 * 60 * 1000,
-          note: 'Legacy database/main data is preserved. Only migration metadata is added.',
+          note: 'Legacy database/main data is preserved unchanged. Migration metadata is stored separately in database/migration_collections_v1.',
         }),
         'migration-lock'
       );

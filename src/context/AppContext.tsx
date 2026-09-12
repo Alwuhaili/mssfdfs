@@ -2374,6 +2374,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         // Idempotent and non-destructive: database/main is read as the migration
         // source but is never deleted or modified by the new architecture.
+        // Migration metadata is stored separately in database/migration_collections_v1.
         const migration = await centralSyncService.ensureCollectionsMigration(
           getFullPayload(),
           sourceUser
