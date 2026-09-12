@@ -160,6 +160,8 @@ class CentralSyncService {
   private realtimeEmitTimer: ReturnType<typeof setTimeout> | null = null;
   private lastSyncedBy?: SyncUser;
   private lastModified?: string;
+  private migrationPromise: Promise<SyncResponse> | null = null;
+  private readonly clientId = `client-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
   constructor() {
     if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -234,6 +236,52 @@ class CentralSyncService {
     return 'setting';
   }
 
+  private isRetryableFirestoreError(err: any): boolean {
+    const code = String(err?.code || '');
+    const message = String(err?.message || '');
+    return (
+      code.includes('resource-exhausted') ||
+      code.includes('unavailable') ||
+      code.includes('aborted') ||
+      code.includes('deadline-exceeded') ||
+      message.includes('429') ||
+      message.toLowerCase().includes('too many requests')
+    );
+  }
+
+  private async withFirestoreRetry<T>(operation: () => Promise<T>, label: string): Promise<T> {
+    let lastError: any;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      try {
+        return await operation();
+      } catch (err: any) {
+        lastError = err;
+        if (!this.isRetryableFirestoreError(err) || attempt === 5) throw err;
+        const waitMs = Math.min(20000, 1000 * 2 ** attempt) + Math.floor(Math.random() * 500);
+        console.warn(`[SyncService] ${label} throttled; retrying in ${waitMs}ms`, err?.code || err?.message);
+        await delay(waitMs);
+      }
+    }
+    throw lastError;
+  }
+
+  private async waitForMigrationCompleted(timeoutMs = 300000): Promise<any> {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const meta = await this.readMigrationMeta();
+      if (meta?.status === 'completed' && meta?.storageMap) {
+        this.storageMap = clone(meta.storageMap);
+        this.currentVersion = Number(meta.version || this.currentVersion || 0);
+        return meta;
+      }
+      if (meta?.status === 'failed') {
+        throw new Error(meta?.errorMessage || 'Collections migration failed.');
+      }
+      await delay(1200);
+    }
+    throw new Error('انتهت مهلة انتظار اكتمال ترحيل Firestore Collections.');
+  }
+
   /**
    * One-time, resumable migration.
    * - Reads the legacy database/main document.
@@ -241,7 +289,7 @@ class CentralSyncService {
    * - Never deletes or modifies database/main.
    * - While status=in_progress, new clients refuse normal writes.
    */
-  public async ensureCollectionsMigration(seedData?: any, sourceUser?: SyncUser): Promise<SyncResponse> {
+  private async runCollectionsMigration(seedData?: any, sourceUser?: SyncUser): Promise<SyncResponse> {
     if (!this.isOnline) return { success: false, message: 'الجهاز غير متصل بالإنترنت' };
 
     try {
@@ -260,7 +308,38 @@ class CentralSyncService {
         sourceUser?.role === 'admin' ||
         sourceUser?.role === 'director' ||
         sourceUser?.id === 'admin-main';
+
+      // If another client is already migrating, never start a second migration.
+      // Non-admin clients simply wait for the administrator to finish.
+      const now = Date.now();
+      const activeLease =
+        existingMeta?.status === 'in_progress' &&
+        Number(existingMeta?.leaseExpiresAt || 0) > now &&
+        existingMeta?.leaseOwner &&
+        existingMeta.leaseOwner !== this.clientId;
+
+      if (activeLease) {
+        try {
+          const completed = await this.waitForMigrationCompleted();
+          return {
+            success: true,
+            version: Number(completed?.version || 0),
+            message: 'اكتمل الترحيل بواسطة جهاز آخر.',
+          };
+        } catch (err: any) {
+          return { success: false, message: err?.message || 'تعذر انتظار اكتمال الترحيل.' };
+        }
+      }
+
       if (!isAdmin) {
+        if (existingMeta?.status === 'in_progress') {
+          try {
+            const completed = await this.waitForMigrationCompleted();
+            return { success: true, version: Number(completed?.version || 0) };
+          } catch (err: any) {
+            return { success: false, message: err?.message || 'الترحيل لم يكتمل بعد.' };
+          }
+        }
         return {
           success: false,
           message: 'يجب تنفيذ ترحيل قاعدة البيانات أول مرة من حساب الإدارة.',
@@ -280,19 +359,24 @@ class CentralSyncService {
         storageMap[key] = this.chooseStorageMode(key, value);
       }
 
-      await setDoc(
-        doc(db, MIGRATION_META_PATH),
-        {
-          status: 'in_progress',
-          schemaVersion: 1,
-          storageMap,
-          legacyDocument: LEGACY_DOC_PATH,
-          legacyVersion: Number(legacyRecord?.version || 0),
-          startedAt: serverTimestamp(),
-          startedBy: clone(sourceUser || {}),
-          note: 'Legacy database/main is intentionally preserved and not deleted.',
-        },
-        { merge: true }
+      await this.withFirestoreRetry(
+        () => setDoc(
+          doc(db, MIGRATION_META_PATH),
+          {
+            status: 'in_progress',
+            schemaVersion: 1,
+            storageMap,
+            legacyDocument: LEGACY_DOC_PATH,
+            legacyVersion: Number(legacyRecord?.version || 0),
+            startedAt: serverTimestamp(),
+            startedBy: clone(sourceUser || {}),
+            leaseOwner: this.clientId,
+            leaseExpiresAt: Date.now() + 10 * 60 * 1000,
+            note: 'Legacy database/main is intentionally preserved and not deleted.',
+          },
+          { merge: true }
+        ),
+        'migration-lock'
       );
 
       // Migrate entity collections in throttled batches to avoid another 429 burst.
@@ -300,7 +384,7 @@ class CentralSyncService {
         const mode = storageMap[key];
         if (mode === 'collection') {
           const items = value as any[];
-          const CHUNK = 200;
+          const CHUNK = 50;
           for (let start = 0; start < items.length; start += CHUNK) {
             const batch = writeBatch(db);
             const slice = items.slice(start, start + CHUNK);
@@ -318,27 +402,41 @@ class CentralSyncService {
                 { merge: true }
               );
             }
-            await batch.commit();
-            await delay(300);
+            await this.withFirestoreRetry(() => batch.commit(), `migrate-${key}`);
+            await this.withFirestoreRetry(
+              () => setDoc(doc(db, MIGRATION_META_PATH), {
+                status: 'in_progress',
+                leaseOwner: this.clientId,
+                leaseExpiresAt: Date.now() + 10 * 60 * 1000,
+                progressKey: key,
+                progressCount: Math.min(start + slice.length, items.length),
+                progressTotal: items.length,
+              }, { merge: true }),
+              'migration-progress'
+            );
+            await delay(650);
           }
         } else {
-          await setDoc(
-            doc(db, SETTINGS_COLLECTION, key),
-            {
-              value: clone(value),
-              __sync: {
-                migratedFromLegacy: true,
-                migratedAt: new Date().toISOString(),
+          await this.withFirestoreRetry(
+            () => setDoc(
+              doc(db, SETTINGS_COLLECTION, key),
+              {
+                value: clone(value),
+                __sync: {
+                  migratedFromLegacy: true,
+                  migratedAt: new Date().toISOString(),
+                },
               },
-            },
-            { merge: true }
+              { merge: true }
+            ),
+            `migrate-setting-${key}`
           );
-          await delay(100);
+          await delay(250);
         }
       }
 
       const initialVersion = Math.max(1, Number(legacyRecord?.version || 0));
-      await setDoc(
+      await this.withFirestoreRetry(() => setDoc(
         doc(db, STATE_META_PATH),
         {
           version: initialVersion,
@@ -348,9 +446,9 @@ class CentralSyncService {
           updatedAt: serverTimestamp(),
         },
         { merge: true }
-      );
+      ), 'migration-state-meta');
 
-      await setDoc(
+      await this.withFirestoreRetry(() => setDoc(
         doc(db, MIGRATION_META_PATH),
         {
           status: 'completed',
@@ -362,9 +460,11 @@ class CentralSyncService {
           completedAt: serverTimestamp(),
           completedBy: clone(sourceUser || {}),
           originalPreserved: true,
+          leaseOwner: null,
+          leaseExpiresAt: 0,
         },
         { merge: true }
-      );
+      ), 'migration-complete');
 
       this.storageMap = storageMap;
       this.currentVersion = initialVersion;
@@ -376,6 +476,19 @@ class CentralSyncService {
       };
     } catch (err: any) {
       console.error('[SyncService] migration failed:', err);
+      try {
+        const meta = await this.readMigrationMeta();
+        if (meta?.leaseOwner === this.clientId) {
+          await setDoc(doc(db, MIGRATION_META_PATH), {
+            status: 'failed',
+            errorCode: err?.code || null,
+            errorMessage: err?.message || 'فشل ترحيل قاعدة البيانات',
+            failedAt: serverTimestamp(),
+            leaseOwner: null,
+            leaseExpiresAt: 0,
+          }, { merge: true });
+        }
+      } catch {}
       return {
         success: false,
         message: `${err?.code ? `[${err.code}] ` : ''}${err?.message || 'فشل ترحيل قاعدة البيانات'}`,
@@ -383,11 +496,19 @@ class CentralSyncService {
     }
   }
 
+  public async ensureCollectionsMigration(seedData?: any, sourceUser?: SyncUser): Promise<SyncResponse> {
+    if (this.migrationPromise) return this.migrationPromise;
+    this.migrationPromise = this.runCollectionsMigration(seedData, sourceUser).finally(() => {
+      this.migrationPromise = null;
+    });
+    return this.migrationPromise;
+  }
+
   private async ensureStorageMapLoaded(): Promise<StorageMap> {
     if (Object.keys(this.storageMap).length > 0) return this.storageMap;
-    const meta = await this.readMigrationMeta();
+    let meta = await this.readMigrationMeta();
     if (meta?.status !== 'completed' || !meta?.storageMap) {
-      throw new Error('Collections migration is not completed yet.');
+      meta = await this.waitForMigrationCompleted();
     }
     this.storageMap = clone(meta.storageMap);
     return this.storageMap;

@@ -2440,6 +2440,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       if (evt.type === 'NETWORK_ONLINE') {
+        // Do not race the initial migration/hydration. The bootstrap sequence above
+        // owns Firestore until the Collections architecture is ready.
+        if (!isInitialHydrationDone.current) return;
         setSyncStatus('syncing');
         const res = await centralSyncService.fetchServerData(undefined, true);
         if (!isMounted) return;
