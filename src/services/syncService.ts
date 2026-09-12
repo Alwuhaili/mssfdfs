@@ -4,10 +4,8 @@ import {
   doc,
   getDoc,
   getDocs,
-  increment,
   onSnapshot,
   runTransaction,
-  serverTimestamp,
   setDoc,
   writeBatch,
 } from 'firebase/firestore';
@@ -42,8 +40,7 @@ type StorageMode = 'collection' | 'setting';
 type StorageMap = Record<string, StorageMode>;
 
 const LEGACY_DOC_PATH = 'database/main';
-const MIGRATION_META_PATH = 'system/migration_collections_v1';
-const STATE_META_PATH = 'system/state_collections_v1';
+const MIGRATION_FIELD = '_collectionsMigration';
 const SETTINGS_COLLECTION = 'appSettings';
 const BROADCAST_CHANNEL_NAME = 'maysan_gifted_school_sync_channel_v2';
 
@@ -221,14 +218,15 @@ class CentralSyncService {
   }
 
   private async readMigrationMeta() {
-    const snap = await getDoc(doc(db, MIGRATION_META_PATH));
-    return snap.exists() ? snap.data() : undefined;
+    const snap = await getDoc(doc(db, LEGACY_DOC_PATH));
+    return snap.exists() ? snap.data()?.[MIGRATION_FIELD] : undefined;
   }
 
-  private async readStateMeta() {
-    const snap = await getDoc(doc(db, STATE_META_PATH));
-    if (!snap.exists()) return undefined;
-    return snap.data();
+  private async writeMigrationMeta(patch: Record<string, any>) {
+    const current = await this.readMigrationMeta();
+    const merged = { ...(current || {}), ...clone(patch) };
+    await setDoc(doc(db, LEGACY_DOC_PATH), { [MIGRATION_FIELD]: merged }, { merge: true });
+    return merged;
   }
 
   private chooseStorageMode(key: string, value: any): StorageMode {
@@ -360,22 +358,18 @@ class CentralSyncService {
       }
 
       await this.withFirestoreRetry(
-        () => setDoc(
-          doc(db, MIGRATION_META_PATH),
-          {
-            status: 'in_progress',
-            schemaVersion: 1,
-            storageMap,
-            legacyDocument: LEGACY_DOC_PATH,
-            legacyVersion: Number(legacyRecord?.version || 0),
-            startedAt: serverTimestamp(),
-            startedBy: clone(sourceUser || {}),
-            leaseOwner: this.clientId,
-            leaseExpiresAt: Date.now() + 10 * 60 * 1000,
-            note: 'Legacy database/main is intentionally preserved and not deleted.',
-          },
-          { merge: true }
-        ),
+        () => this.writeMigrationMeta({
+          status: 'in_progress',
+          schemaVersion: 1,
+          storageMap,
+          legacyDocument: LEGACY_DOC_PATH,
+          legacyVersion: Number(legacyRecord?.version || 0),
+          startedAt: new Date().toISOString(),
+          startedBy: clone(sourceUser || {}),
+          leaseOwner: this.clientId,
+          leaseExpiresAt: Date.now() + 10 * 60 * 1000,
+          note: 'Legacy database/main data is preserved. Only migration metadata is added.',
+        }),
         'migration-lock'
       );
 
@@ -404,14 +398,14 @@ class CentralSyncService {
             }
             await this.withFirestoreRetry(() => batch.commit(), `migrate-${key}`);
             await this.withFirestoreRetry(
-              () => setDoc(doc(db, MIGRATION_META_PATH), {
+              () => this.writeMigrationMeta({
                 status: 'in_progress',
                 leaseOwner: this.clientId,
                 leaseExpiresAt: Date.now() + 10 * 60 * 1000,
                 progressKey: key,
                 progressCount: Math.min(start + slice.length, items.length),
                 progressTotal: items.length,
-              }, { merge: true }),
+              }),
               'migration-progress'
             );
             await delay(650);
@@ -436,35 +430,19 @@ class CentralSyncService {
       }
 
       const initialVersion = Math.max(1, Number(legacyRecord?.version || 0));
-      await this.withFirestoreRetry(() => setDoc(
-        doc(db, STATE_META_PATH),
-        {
-          version: initialVersion,
-          schemaVersion: 1,
-          lastModified: new Date().toISOString(),
-          lastSyncedBy: clone(sourceUser || {}),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      ), 'migration-state-meta');
-
-      await this.withFirestoreRetry(() => setDoc(
-        doc(db, MIGRATION_META_PATH),
-        {
-          status: 'completed',
-          schemaVersion: 1,
-          storageMap,
-          version: initialVersion,
-          legacyDocument: LEGACY_DOC_PATH,
-          legacyVersion: Number(legacyRecord?.version || 0),
-          completedAt: serverTimestamp(),
-          completedBy: clone(sourceUser || {}),
-          originalPreserved: true,
-          leaseOwner: null,
-          leaseExpiresAt: 0,
-        },
-        { merge: true }
-      ), 'migration-complete');
+      await this.withFirestoreRetry(() => this.writeMigrationMeta({
+        status: 'completed',
+        schemaVersion: 1,
+        storageMap,
+        version: initialVersion,
+        legacyDocument: LEGACY_DOC_PATH,
+        legacyVersion: Number(legacyRecord?.version || 0),
+        completedAt: new Date().toISOString(),
+        completedBy: clone(sourceUser || {}),
+        originalPreserved: true,
+        leaseOwner: null,
+        leaseExpiresAt: 0,
+      }), 'migration-complete');
 
       this.storageMap = storageMap;
       this.currentVersion = initialVersion;
@@ -479,14 +457,14 @@ class CentralSyncService {
       try {
         const meta = await this.readMigrationMeta();
         if (meta?.leaseOwner === this.clientId) {
-          await setDoc(doc(db, MIGRATION_META_PATH), {
+          await this.writeMigrationMeta({
             status: 'failed',
             errorCode: err?.code || null,
             errorMessage: err?.message || 'فشل ترحيل قاعدة البيانات',
-            failedAt: serverTimestamp(),
+            failedAt: new Date().toISOString(),
             leaseOwner: null,
             leaseExpiresAt: 0,
-          }, { merge: true });
+          });
         }
       } catch {}
       return {
@@ -529,8 +507,8 @@ class CentralSyncService {
 
     try {
       const map = await this.ensureStorageMapLoaded();
-      const state = await this.readStateMeta();
-      const version = Number(state?.version || 0);
+      const migration = await this.readMigrationMeta();
+      const version = Number(migration?.version || migration?.legacyVersion || 1);
 
       if (currentVersion !== undefined && !force && version <= currentVersion) {
         return { success: true, notModified: true, version };
@@ -542,15 +520,15 @@ class CentralSyncService {
       const data = Object.fromEntries(entries);
 
       this.currentVersion = Math.max(this.currentVersion, version);
-      this.lastSyncedBy = state?.lastSyncedBy;
-      this.lastModified = state?.lastModified;
+      this.lastSyncedBy = migration?.completedBy || migration?.startedBy;
+      this.lastModified = migration?.completedAt || migration?.startedAt;
       this.realtimeDataCache = clone(data);
 
       return {
         success: true,
         version,
-        lastModified: state?.lastModified,
-        lastSyncedBy: state?.lastSyncedBy,
+        lastModified: migration?.completedAt || migration?.startedAt,
+        lastSyncedBy: migration?.completedBy || migration?.startedBy,
         data,
         serverTime: new Date().toISOString(),
       };
@@ -609,19 +587,6 @@ class CentralSyncService {
         }
       }
 
-      const metaUnsub = onSnapshot(
-        doc(db, STATE_META_PATH),
-        (snapshot) => {
-          if (!snapshot.exists()) return;
-          const state = snapshot.data();
-          this.currentVersion = Number(state.version || this.currentVersion || 0);
-          this.lastSyncedBy = state.lastSyncedBy;
-          this.lastModified = state.lastModified;
-          this.scheduleRealtimeEmit();
-        },
-        (err) => console.warn('[SyncService] realtime state meta:', err)
-      );
-      this.unsubscribeRealtime.push(metaUnsub);
     } catch (err) {
       this.realtimeStarted = false;
       console.warn('[SyncService] could not start realtime listeners:', err);
@@ -759,7 +724,7 @@ class CentralSyncService {
         if (!map[key]) {
           map[key] = mode;
           this.storageMap = map;
-          await setDoc(doc(db, MIGRATION_META_PATH), { storageMap: map }, { merge: true });
+          await this.writeMigrationMeta({ storageMap: map });
         }
 
         if (mode === 'collection') {
@@ -815,15 +780,14 @@ class CentralSyncService {
   public async getServerStatus() {
     try {
       const migration = await this.readMigrationMeta();
-      const state = await this.readStateMeta();
       return {
         success: true,
-        architecture: 'firestore-collections-v1',
+        architecture: 'firestore-collections-v2-legacy-meta',
         migrationStatus: migration?.status || 'not_started',
-        originalLegacyPreserved: migration?.originalPreserved === true || migration?.status === 'in_progress',
-        version: Number(state?.version || 0),
-        lastModified: state?.lastModified,
-        lastSyncedBy: state?.lastSyncedBy,
+        originalLegacyPreserved: true,
+        version: Number(migration?.version || migration?.legacyVersion || 0),
+        lastModified: migration?.completedAt || migration?.startedAt,
+        lastSyncedBy: migration?.completedBy || migration?.startedBy,
         storageMap: migration?.storageMap || {},
       };
     } catch (err: any) {
