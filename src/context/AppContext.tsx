@@ -2356,85 +2356,100 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }, 0);
   };
 
-  // Initial hydration runs ONCE. It never runs again when syncVersion changes.
+  // Firestore Collections bootstrap: migrate legacy database/main once, then
+  // hydrate exclusively from the new collections architecture.
   useEffect(() => {
     let isMounted = true;
 
-    const fetchAndApplyLatest = async (force = true) => {
-      const startedAt = Date.now();
-      const res = await centralSyncService.fetchServerData(syncVersionRef.current, force);
-      if (!isMounted) return res;
-      setSyncLatencyMs(Date.now() - startedAt);
+    const initializeCollectionsSync = async () => {
+      setSyncStatus('syncing');
+      setSyncErrorMessage(undefined);
 
-      if (res.success && !res.notModified && res.data && Object.keys(res.data).length > 0) {
-        applyRemoteData(res.data, res.version || 0, res.lastSyncedBy);
-      }
-      return res;
-    };
-
-    const initializeCentralSync = async () => {
       try {
-        setSyncStatus('syncing');
-        const res = await fetchAndApplyLatest(true);
+        const sourceUser = {
+          id: currentUser?.id || (role === 'admin' ? 'admin-main' : role),
+          name: currentUser?.name || (role === 'admin' ? 'إدارة المدرسة' : role),
+          role: currentUser?.role || role,
+        };
+
+        // Idempotent and non-destructive: database/main is read as the migration
+        // source but is never deleted or modified by the new architecture.
+        const migration = await centralSyncService.ensureCollectionsMigration(
+          getFullPayload(),
+          sourceUser
+        );
         if (!isMounted) return;
 
-        if (res?.success && res.data && Object.keys(res.data).length > 0) {
-          isInitialHydrationDone.current = true;
+        if (!migration.success) {
+          setSyncStatus(navigator.onLine ? 'error' : 'offline');
+          setSyncErrorMessage(migration.message || 'تعذر ترحيل البيانات إلى Firestore Collections');
+          isInitialHydrationDone.current = false;
           return;
         }
 
-        // Never overwrite an existing production database from localStorage/defaults.
-        // Only a true administrator may initialize a document that does not exist.
-        if (res?.success && (res.version || 0) === 0 && role === 'admin') {
-          const sourceUser = {
-            id: currentUser?.id || 'admin-main',
-            name: currentUser?.name || 'إدارة المدرسة',
-            role: 'admin',
-          };
-          const initRes = await centralSyncService.initializeIfEmpty(getFullPayload(), sourceUser);
-          if (initRes.success && initRes.data) {
-            applyRemoteData(initRes.data, initRes.version || 1, initRes.lastSyncedBy);
-          } else {
-            setSyncStatus('error');
-            setSyncErrorMessage(initRes.message);
-          }
-        } else if (!res?.success) {
+        const startedAt = Date.now();
+        const res = await centralSyncService.fetchServerData(undefined, true);
+        if (!isMounted) return;
+        setSyncLatencyMs(Date.now() - startedAt);
+
+        if (!res.success || !res.data) {
           setSyncStatus(navigator.onLine ? 'error' : 'offline');
-          setSyncErrorMessage(res?.message);
+          setSyncErrorMessage(res.message || 'تعذر تحميل البيانات المركزية');
+          isInitialHydrationDone.current = false;
+          return;
         }
 
+        applyRemoteData(res.data, res.version || 1, res.lastSyncedBy);
         isInitialHydrationDone.current = true;
+
+        // Start listeners only AFTER migration and first hydration. We deliberately
+        // do not poll the entire database every few seconds; each collection now
+        // has its own realtime onSnapshot listener.
+        await centralSyncService.connectRealtimeStream();
       } catch (err: any) {
-        console.warn('Initial Firestore hydration failed:', err);
+        console.error('Collections Firestore initialization failed:', err);
         setSyncStatus(navigator.onLine ? 'error' : 'offline');
-        setSyncErrorMessage(err?.message || 'تعذر تحميل البيانات المركزية');
-        isInitialHydrationDone.current = true;
+        setSyncErrorMessage(err?.message || 'تعذر تهيئة قاعدة Firestore Collections');
+        isInitialHydrationDone.current = false;
       }
     };
 
-    initializeCentralSync();
+    initializeCollectionsSync();
 
     const unsubscribe = centralSyncService.subscribe(async (evt) => {
       if (!isMounted) return;
 
       if (evt.type === 'REALTIME_SERVER_UPDATE' && evt.payload) {
-        // If a local edit is waiting for its transaction, do not overwrite it mid-flight.
+        // Keep a remote snapshot queued while a local transaction is in flight.
         if (pushDebounceTimer.current || writeInFlightRef.current) {
           queuedRemoteUpdateRef.current = evt;
           return;
         }
-        applyRemoteData(evt.payload, evt.sourceVersion || syncVersionRef.current, evt.lastSyncedBy);
+        applyRemoteData(
+          evt.payload,
+          evt.sourceVersion || Math.max(syncVersionRef.current + 1, Date.now()),
+          evt.lastSyncedBy
+        );
         return;
       }
 
-      if (evt.type === 'SERVER_DATA_UPDATED' || evt.type === 'DATABASE_RESET') {
-        if (!pushDebounceTimer.current) await fetchAndApplyLatest(true);
+      if (evt.type === 'SERVER_DATA_UPDATED') {
+        // Another tab on the same device wrote data. The collection listeners will
+        // deliver the actual payload; no expensive full-database re-fetch here.
         return;
       }
 
       if (evt.type === 'NETWORK_ONLINE') {
         setSyncStatus('syncing');
-        await fetchAndApplyLatest(true); // reconnect = pull, never push stale local state
+        const res = await centralSyncService.fetchServerData(undefined, true);
+        if (!isMounted) return;
+        if (res.success && res.data) {
+          applyRemoteData(res.data, res.version || Math.max(syncVersionRef.current + 1, Date.now()), res.lastSyncedBy);
+          await centralSyncService.connectRealtimeStream();
+        } else {
+          setSyncStatus('error');
+          setSyncErrorMessage(res.message || 'تعذر استعادة الاتصال بقاعدة Firestore');
+        }
         return;
       }
 
@@ -2443,33 +2458,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     });
 
-    // Fallback only. Firestore onSnapshot remains the primary realtime mechanism.
-    const pollInterval = window.setInterval(async () => {
-      if (!isInitialHydrationDone.current || pushDebounceTimer.current || writeInFlightRef.current) return;
-      try {
-        await fetchAndApplyLatest(false);
-      } catch {
-        // transient network error; onSnapshot/reconnect will recover
-      }
-    }, 15000);
-
-    const onWindowFocus = async () => {
-      if (!isInitialHydrationDone.current || pushDebounceTimer.current || writeInFlightRef.current) return;
-      try {
-        await fetchAndApplyLatest(false);
-      } catch {
-        // ignore transient focus refresh error
-      }
-    };
-    window.addEventListener('focus', onWindowFocus);
-
     return () => {
       isMounted = false;
-      window.clearInterval(pollInterval);
       unsubscribe();
-      window.removeEventListener('focus', onWindowFocus);
+      centralSyncService.stopRealtimeStream();
     };
-    // IMPORTANT: one subscription for the lifetime of AppProvider.
+    // One migration/hydration lifecycle for the provider instance.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -2520,12 +2514,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setSyncStatus('synced');
           setSyncErrorMessage(undefined);
 
-          // Transaction returns the canonical merged Firestore state. Applying it also
-          // incorporates edits that other users made concurrently.
+          // The write service touches only changed documents. Advance our local base
+          // immediately so the same edit is not written a second time while the
+          // realtime collection snapshot is travelling back to this browser.
+          const nextBase = { ...(lastSyncedPayloadRef.current || {}) };
+          for (const [changedKey, changedValue] of Object.entries(updates)) {
+            (nextBase as any)[changedKey] = JSON.parse(JSON.stringify(changedValue));
+          }
+          lastSyncedPayloadRef.current = nextBase;
+
           if (res.data) {
             applyRemoteData(res.data, res.version, res.lastSyncedBy || sourceUser);
           }
-          queuedRemoteUpdateRef.current = null;
         } else {
           setSyncStatus(navigator.onLine ? 'error' : 'offline');
           setSyncErrorMessage(res.message);
@@ -2548,8 +2548,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         writeInFlightRef.current = false;
         const queued = queuedRemoteUpdateRef.current;
         queuedRemoteUpdateRef.current = null;
-        if (queued?.payload && queued?.sourceVersion && queued.sourceVersion > syncVersionRef.current) {
-          applyRemoteData(queued.payload, queued.sourceVersion, queued.lastSyncedBy);
+        if (queued?.payload) {
+          applyRemoteData(
+            queued.payload,
+            queued.sourceVersion || Math.max(syncVersionRef.current + 1, Date.now()),
+            queued.lastSyncedBy
+          );
         }
       }
     }, 120);
@@ -3474,10 +3478,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     void centralSyncService.patchKeys(updates, baseValues, sourceUser)
       .then(async (res) => {
-        if (res.success && res.version !== undefined && res.data) {
-          applyRemoteData(res.data, res.version, res.lastSyncedBy || sourceUser);
+        if (res.success && res.version !== undefined) {
+          syncVersionRef.current = res.version;
+          setSyncVersion(res.version);
+          setLastSyncedAt(new Date());
+          setLastSyncedBy(res.lastSyncedBy || sourceUser);
           setSyncStatus('synced');
           setSyncErrorMessage(undefined);
+
+          const nextBase = { ...(lastSyncedPayloadRef.current || {}) };
+          for (const [changedKey, changedValue] of Object.entries(updates)) {
+            (nextBase as any)[changedKey] = JSON.parse(JSON.stringify(changedValue));
+          }
+          lastSyncedPayloadRef.current = nextBase;
           return;
         }
 
