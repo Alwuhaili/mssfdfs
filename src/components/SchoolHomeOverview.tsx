@@ -64,6 +64,8 @@ import {
 // Honor Roll Data for ALL 6 Grades (3 Students each)
 interface HonorStudent {
   studentId?: string;
+  graduateId?: string;
+  sourceType?: 'student' | 'graduate';
   rank: 1 | 2 | 3;
   name: string;
   grade: string;
@@ -463,7 +465,16 @@ const GALLERY_PHOTOS: GalleryPhoto[] = [
 ];
 
 export const SchoolHomeOverview: React.FC = () => {
-  const { lang, role, students, updateStudent, schoolAdminData, updateSchoolAdminData } = useApp();
+  const {
+    lang,
+    role,
+    students,
+    graduates,
+    updateStudent,
+    updateGraduate,
+    schoolAdminData,
+    updateSchoolAdminData,
+  } = useApp();
   const [isEditSchoolAdminModalOpen, setIsEditSchoolAdminModalOpen] = useState(false);
   const principalFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -480,47 +491,119 @@ export const SchoolHomeOverview: React.FC = () => {
     }
   };
 
-  // Honor Roll is derived directly from the central students collection.
-  // This makes Firestore/AppContext the single source of truth across all devices.
+  // Historical Honor Roll for academic year 2025-2026.
+  // IMPORTANT: the board shows the grade the student was in LAST YEAR, not her current grade.
+  // Mapping after annual promotion:
+  // last year's 1st -> current 2nd, 2nd -> current 3rd, ... 5th -> current 6th.
+  // last year's 6th -> graduates collection.
+  const HONOR_ACADEMIC_YEAR = '2025-2026';
+  const LAST_YEAR_TO_CURRENT_GRADE: Record<string, string> = {
+    'الصف الأول المتوسط': 'الصف الثاني المتوسط',
+    'الصف الثاني المتوسط': 'الصف الثالث المتوسط',
+    'الصف الثالث المتوسط': 'الصف الرابع العلمي',
+    'الصف الرابع العلمي': 'الصف الخامس العلمي',
+    'الصف الخامس العلمي': 'الصف السادس العلمي',
+  };
+
+  const isFromHonorAcademicYear = (year: unknown) => {
+    const normalized = String(year ?? '').replace(/[^0-9]/g, '');
+    return normalized.includes('2025') && normalized.includes('2026');
+  };
+
+  const wasEnrolledBy2025 = (student: any) => {
+    const year = Number.parseInt(String(student?.enrollmentYear ?? ''), 10);
+    // If legacy data has no enrollment year, keep it eligible rather than silently dropping it.
+    return !Number.isFinite(year) || year <= 2025;
+  };
+
   const honorRollData = useMemo<Record<string, HonorStudent[]>>(() => {
     const result: Record<string, HonorStudent[]> = {};
 
-    Object.keys(HONOR_ROLL_DATA).forEach((grade) => {
+    Object.keys(HONOR_ROLL_DATA).forEach((historicalGrade) => {
+      // Sixth scientific in 2025-2026 has already graduated, so read from graduates.
+      if (historicalGrade === 'الصف السادس العلمي') {
+        const topGraduates = graduates
+          .filter((graduate: any) => isFromHonorAcademicYear(graduate.graduationYear))
+          .slice()
+          .sort((a: any, b: any) => {
+            const gpaDiff =
+              (Number(b.honorGpa2025_2026 ?? b.gpa) || 0) -
+              (Number(a.honorGpa2025_2026 ?? a.gpa) || 0);
+            if (gpaDiff !== 0) return gpaDiff;
+            return String(a.name || '').localeCompare(String(b.name || ''), 'ar');
+          })
+          .slice(0, 3);
+
+        result[historicalGrade] = topGraduates.map((graduate: any, index: number) => {
+          const legacy = HONOR_ROLL_DATA[historicalGrade]?.[index];
+          return {
+            graduateId: graduate.id,
+            sourceType: 'graduate',
+            rank: (index + 1) as 1 | 2 | 3,
+            name: graduate.name,
+            // Keep the historical grade displayed on the 2025-2026 board.
+            grade: historicalGrade,
+            section: graduate.honorSection2025_2026 || graduate.section || 'أ',
+            gpa: Number(graduate.honorGpa2025_2026 ?? graduate.gpa) || 0,
+            avatar: graduate.avatar || legacy?.avatar || '',
+            specialty:
+              graduate.honorSpecialty ||
+              graduate.collegeOrSpecialty ||
+              legacy?.specialty ||
+              'التفوق الدراسي والتميز الأكاديمي',
+            dream:
+              graduate.honorDream ||
+              graduate.notes ||
+              legacy?.dream ||
+              'مواصلة التفوق وتحقيق الطموح العلمي',
+          };
+        });
+        return;
+      }
+
+      const currentGrade = LAST_YEAR_TO_CURRENT_GRADE[historicalGrade];
       const topStudents = students
-        .filter((student) => student.gradeLevel === grade)
-        .filter((student) => !['محظورة', 'منقولة'].includes(String(student.status || '')))
+        .filter((student: any) => student.gradeLevel === currentGrade)
+        .filter((student: any) => wasEnrolledBy2025(student))
+        .filter((student: any) => !['محظورة', 'منقولة'].includes(String(student.status || '')))
         .slice()
-        .sort((a, b) => {
-          const gpaDiff = (Number(b.gpa) || 0) - (Number(a.gpa) || 0);
+        .sort((a: any, b: any) => {
+          const getHistoricalGpa = (student: any) =>
+            Number(student.honorGpa2025_2026 ?? student.previousAcademicYearGpa ?? student.gpa) || 0;
+          const gpaDiff = getHistoricalGpa(b) - getHistoricalGpa(a);
           if (gpaDiff !== 0) return gpaDiff;
           return String(a.name || '').localeCompare(String(b.name || ''), 'ar');
         })
         .slice(0, 3);
 
-      result[grade] = topStudents.map((student, index) => {
-        const legacy = HONOR_ROLL_DATA[grade]?.[index];
+      result[historicalGrade] = topStudents.map((student: any, index: number) => {
+        const legacy = HONOR_ROLL_DATA[historicalGrade]?.[index];
         return {
           studentId: student.id,
+          sourceType: 'student',
           rank: (index + 1) as 1 | 2 | 3,
           name: student.name,
-          grade: student.gradeLevel,
-          section: student.section || 'أ',
-          gpa: Number(student.gpa) || 0,
-          avatar: (student as any).avatar || legacy?.avatar || '',
+          // Display LAST YEAR'S grade, even though the student has been promoted.
+          grade: historicalGrade,
+          section: student.honorSection2025_2026 || student.previousSection || student.section || 'أ',
+          gpa: Number(student.honorGpa2025_2026 ?? student.previousAcademicYearGpa ?? student.gpa) || 0,
+          avatar: student.avatar || legacy?.avatar || '',
           specialty:
-            (student as any).honorSpecialty ||
-            (student as any).specialty ||
+            student.honorSpecialty ||
+            student.specialty ||
+            legacy?.specialty ||
             'التفوق الدراسي والتميز الأكاديمي',
           dream:
-            (student as any).honorDream ||
-            (student as any).dream ||
+            student.honorDream ||
+            student.dream ||
+            legacy?.dream ||
             'مواصلة التفوق وتحقيق الطموح العلمي',
         };
       });
     });
 
     return result;
-  }, [students]);
+  }, [students, graduates]);
 
   // Honor Roll Admin Editing State
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -532,12 +615,20 @@ export const SchoolHomeOverview: React.FC = () => {
 
   const handleHonorStudentAvatarUpload = (studentRank: 1 | 2 | 3, file: File) => {
     const honorStudent = honorRollData[selectedHonorGrade]?.find((student) => student.rank === studentRank);
-    if (!honorStudent?.studentId) return;
+    if (!honorStudent) return;
 
     const reader = new FileReader();
     reader.onloadend = () => {
       if (typeof reader.result !== 'string') return;
-      updateStudent(honorStudent.studentId!, { avatar: reader.result } as any);
+
+      if (honorStudent.sourceType === 'graduate' && honorStudent.graduateId) {
+        updateGraduate(honorStudent.graduateId, { avatar: reader.result } as any);
+      } else if (honorStudent.studentId) {
+        updateStudent(honorStudent.studentId, { avatar: reader.result } as any);
+      } else {
+        return;
+      }
+
       setSaveToast('تم تحديث صورة الطالبة المتفوقة ومزامنتها مركزياً 📸');
       setTimeout(() => setSaveToast(null), 3000);
     };
@@ -549,32 +640,50 @@ export const SchoolHomeOverview: React.FC = () => {
       (student) => student.rank === updatedStudent.rank,
     );
 
-    if (!currentHonorStudent?.studentId) {
+    if (!currentHonorStudent) {
       setSaveToast('تعذر تحديد سجل الطالبة المركزي.');
       setTimeout(() => setSaveToast(null), 3500);
       return;
     }
 
-    updateStudent(
-      currentHonorStudent.studentId,
-      {
-        name: updatedStudent.name,
-        avatar: updatedStudent.avatar,
-        gradeLevel: updatedStudent.grade as any,
-        section: updatedStudent.section,
-        gpa: Number(updatedStudent.gpa),
-        honorSpecialty: updatedStudent.specialty,
-        honorDream: updatedStudent.dream,
-      } as any,
-    );
+    if (currentHonorStudent.sourceType === 'graduate' && currentHonorStudent.graduateId) {
+      updateGraduate(
+        currentHonorStudent.graduateId,
+        {
+          name: updatedStudent.name,
+          avatar: updatedStudent.avatar,
+          honorSection2025_2026: updatedStudent.section,
+          honorGpa2025_2026: Number(updatedStudent.gpa),
+          honorSpecialty: updatedStudent.specialty,
+          honorDream: updatedStudent.dream,
+        } as any,
+      );
+    } else if (currentHonorStudent.studentId) {
+      updateStudent(
+        currentHonorStudent.studentId,
+        {
+          name: updatedStudent.name,
+          avatar: updatedStudent.avatar,
+          // Do NOT write updatedStudent.grade here: on the historical board it is the 2025-2026 grade,
+          // while the central student record must keep her CURRENT promoted grade.
+          honorSection2025_2026: updatedStudent.section,
+          honorGpa2025_2026: Number(updatedStudent.gpa),
+          honorSpecialty: updatedStudent.specialty,
+          honorDream: updatedStudent.dream,
+        } as any,
+      );
+    } else {
+      setSaveToast('تعذر تحديد سجل الطالبة المركزي.');
+      setTimeout(() => setSaveToast(null), 3500);
+      return;
+    }
 
     setSaveToast(`تم تحديث بيانات الطالبة "${updatedStudent.name}" ومزامنتها مركزياً 🏆`);
     setTimeout(() => setSaveToast(null), 4500);
   };
 
   const handleResetHonorRoll = () => {
-    // Ranking is automatic now; there is no separate local honor-roll dataset to reset.
-    setSaveToast('لوحة الشرف مرتبطة الآن بسجل الطالبات المركزي ويتم ترتيبها تلقائياً حسب المعدل.');
+    setSaveToast(`لوحة الشرف ${HONOR_ACADEMIC_YEAR} تُحتسب تلقائياً من سجلات الطالبات والخريجات ولا تستخدم بيانات افتراضية محلية.`);
     setTimeout(() => setSaveToast(null), 4500);
   };
 
@@ -1090,13 +1199,13 @@ export const SchoolHomeOverview: React.FC = () => {
             </div>
             <div>
               <h2 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <span>لوحة الشرف للطلبة الثلاثة الأوائل</span>
+                <span>لوحة الشرف للطالبات الثلاث الأوائل - العام الدراسي 2025-2026</span>
                 <span className="text-xs px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-300 font-extrabold border border-amber-300">
                   لوحة الأوائل 🏆
                 </span>
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                تكريم الطالبات المتفوقات الحاصلات على أعلى النماذج والمعدلات الأكاديمية لكل صف
+                تكريم أوائل العام الدراسي 2025-2026 حسب الصف الذي كنّ فيه آنذاك؛ بعد الترحيل تُقرأ بياناتهن من الصف الحالي المقابل، وخريجات السادس من سجل الخريجات
               </p>
             </div>
           </div>
@@ -1155,7 +1264,7 @@ export const SchoolHomeOverview: React.FC = () => {
 
         {/* Top 3 Honor Roll Cards Grid */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-5 pt-2">
-          {(honorRollData[selectedHonorGrade] || HONOR_ROLL_DATA[selectedHonorGrade])?.map((student) => {
+          {(honorRollData[selectedHonorGrade] || []).map((student) => {
             const isRank1 = student.rank === 1;
             const isRank2 = student.rank === 2;
             const isRank3 = student.rank === 3;
@@ -1279,7 +1388,7 @@ export const SchoolHomeOverview: React.FC = () => {
             isOpen={isEditModalOpen}
             onClose={() => setIsEditModalOpen(false)}
             grade={selectedHonorGrade}
-            students={honorRollData[selectedHonorGrade] || HONOR_ROLL_DATA[selectedHonorGrade] || []}
+            students={honorRollData[selectedHonorGrade] || []}
             initialSelectedRank={selectedRankToEdit}
             onSaveStudent={handleSaveHonorStudent}
             onResetDefault={handleResetHonorRoll}
