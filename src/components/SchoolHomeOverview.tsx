@@ -468,8 +468,12 @@ export const SchoolHomeOverview: React.FC = () => {
   const {
     lang,
     role,
+    teachers,
     students,
     graduates,
+    addTeacher,
+    updateTeacher,
+    deleteTeacher,
     updateStudent,
     updateGraduate,
     schoolAdminData,
@@ -687,15 +691,26 @@ export const SchoolHomeOverview: React.FC = () => {
     setTimeout(() => setSaveToast(null), 4500);
   };
 
-  // Faculty Members State with localStorage persistence
-  const [facultyList, setFacultyList] = useState<FacultyMember[]>(() => {
-    try {
-      const saved = localStorage.getItem('maysan_faculty_members_v2');
-      return saved ? JSON.parse(saved) : FACULTY_MEMBERS;
-    } catch (e) {
-      return FACULTY_MEMBERS;
-    }
-  });
+  // Faculty members are derived from the centrally synchronized teachers collection.
+  // Academic-achievement fields are stored on the teacher document itself so every device sees the same data.
+  const facultyList = useMemo<FacultyMember[]>(() => {
+    return teachers.map((teacher: any) => ({
+      id: teacher.id,
+      name: teacher.name || '',
+      roleTitle: teacher.facultyRoleTitle || teacher.roleTitle || teacher.title || 'عضو الهيئة التدريسية',
+      subject: teacher.subject || '',
+      avatar: teacher.avatar || '',
+      degree: teacher.facultyDegree || teacher.degree || teacher.qualification || '',
+      researchCount: Number(teacher.researchCount ?? teacher.facultyResearchCount ?? 0) || 0,
+      booksCount: Number(teacher.booksCount ?? teacher.facultyBooksCount ?? 0) || 0,
+      gamesCount: Number(teacher.gamesCount ?? teacher.facultyGamesCount ?? 0) || 0,
+      achievements: Array.isArray(teacher.facultyAchievements)
+        ? teacher.facultyAchievements
+        : Array.isArray(teacher.achievements)
+        ? teacher.achievements
+        : [],
+    }));
+  }, [teachers]);
 
   const [isFacultyModalOpen, setIsFacultyModalOpen] = useState(false);
   const [selectedFacultyIdToEdit, setSelectedFacultyIdToEdit] = useState<string | undefined>(undefined);
@@ -705,61 +720,85 @@ export const SchoolHomeOverview: React.FC = () => {
   const [isGalleryModalOpen, setIsGalleryModalOpen] = useState(false);
   const [isQuickEditPrincipalOpen, setIsQuickEditPrincipalOpen] = useState(false);
 
+  const toCentralTeacherPatch = (faculty: FacultyMember) => ({
+    name: faculty.name,
+    subject: faculty.subject,
+    avatar: faculty.avatar,
+    facultyRoleTitle: faculty.roleTitle,
+    facultyDegree: faculty.degree,
+    researchCount: Number(faculty.researchCount) || 0,
+    booksCount: Number(faculty.booksCount) || 0,
+    gamesCount: Number(faculty.gamesCount) || 0,
+    facultyAchievements: Array.isArray(faculty.achievements) ? faculty.achievements : [],
+  });
+
   const handleSaveFacultyList = (newList: FacultyMember[]) => {
-    setFacultyList(newList);
-    try {
-      localStorage.setItem('maysan_faculty_members_v2', JSON.stringify(newList));
-    } catch (e) {
-      console.error('Failed to persist faculty members list', e);
-    }
-    setSaveToast('تم تحديث بيانات وإنجازات الهيئة التدريسية بنجاح! 🎓');
+    const currentIds = new Set(teachers.map((teacher: any) => teacher.id));
+    const nextIds = new Set(newList.map((faculty) => faculty.id));
+
+    // Persist edits of existing teachers to Firestore through AppContext.
+    newList.forEach((faculty) => {
+      if (currentIds.has(faculty.id)) {
+        updateTeacher(faculty.id, toCentralTeacherPatch(faculty) as any);
+        return;
+      }
+
+      // A new faculty card created from this modal must also become a real central teacher record.
+      addTeacher({
+        name: faculty.name,
+        email: '',
+        phone: '',
+        subject: faculty.subject || '',
+        assignedGrades: [],
+        avatar: faculty.avatar || '',
+        facultyRoleTitle: faculty.roleTitle,
+        facultyDegree: faculty.degree,
+        researchCount: Number(faculty.researchCount) || 0,
+        booksCount: Number(faculty.booksCount) || 0,
+        gamesCount: Number(faculty.gamesCount) || 0,
+        facultyAchievements: Array.isArray(faculty.achievements) ? faculty.achievements : [],
+      } as any);
+    });
+
+    // If EditFacultyModal removed an existing teacher, delete the central teacher document too.
+    teachers.forEach((teacher: any) => {
+      if (!nextIds.has(teacher.id)) deleteTeacher(teacher.id);
+    });
+
+    setSaveToast('تم تحديث بيانات وإنجازات الهيئة التدريسية ومزامنتها مركزياً 🎓');
     setTimeout(() => setSaveToast(null), 4500);
   };
 
   const handleDirectDeleteTeacherInHome = (teacher: FacultyMember) => {
-    const nextList = facultyList.filter((f) => f.id !== teacher.id);
-    setFacultyList(nextList);
-    try {
-      localStorage.setItem('maysan_faculty_members_v2', JSON.stringify(nextList));
-    } catch (e) {
-      console.error('Failed to persist faculty list after deletion', e);
-    }
+    deleteTeacher(teacher.id);
     setDeleteConfirmTeacherInHome(null);
-    setSaveToast(`تم حذف الأستاذة (${teacher.name}) من قائمة الهيئة التدريسية بنجاح 🗑️`);
+    setSaveToast(`تم حذف الأستاذة (${teacher.name}) من السجل المركزي للهيئة التدريسية 🗑️`);
     setTimeout(() => setSaveToast(null), 4500);
   };
 
   const handleResetFacultyList = () => {
-    if (window.confirm('هل أنت متأكد من إعادة تعيين قائمة الهيئة التدريسية إلى القائمة الافتراضية؟')) {
-      setFacultyList(FACULTY_MEMBERS);
-      try {
-        localStorage.removeItem('maysan_faculty_members_v2');
-      } catch (e) {}
-      setSaveToast('تمت إعادة تعيين الهيئة التدريسية إلى القائمة الافتراضية.');
-      setTimeout(() => setSaveToast(null), 4500);
-    }
+    setSaveToast('قائمة الهيئة التدريسية مرتبطة بالسجل المركزي؛ لا يتم استبدال الحسابات الحقيقية ببيانات افتراضية محلية.');
+    setTimeout(() => setSaveToast(null), 4500);
   };
 
   const [facultySortOrder, setFacultySortOrder] = useState<'default' | 'asc' | 'desc'>('default');
 
-  const handleSortFacultyAlphabetically = (ascending: boolean) => {
-    const sorted = [...facultyList].sort((a, b) => {
+  const displayedFacultyList = useMemo(() => {
+    if (facultySortOrder === 'default') return facultyList;
+    return [...facultyList].sort((a, b) => {
       const cmp = a.name.localeCompare(b.name, 'ar', { sensitivity: 'base', numeric: true });
-      return ascending ? cmp : -cmp;
+      return facultySortOrder === 'asc' ? cmp : -cmp;
     });
-    setFacultyList(sorted);
+  }, [facultyList, facultySortOrder]);
+
+  const handleSortFacultyAlphabetically = (ascending: boolean) => {
     setFacultySortOrder(ascending ? 'asc' : 'desc');
-    try {
-      localStorage.setItem('maysan_faculty_members_v2', JSON.stringify(sorted));
-    } catch (e) {
-      console.error('Failed to persist sorted faculty members', e);
-    }
     setSaveToast(
       ascending
-        ? 'تم ترتيب وحفظ أسماء الهيئة التدريسية أبجدياً (أ ← ي) بنجاح 🔤'
-        : 'تم ترتيب وحفظ أسماء الهيئة التدريسية أبجدياً (ي ← أ) بنجاح 🔤'
+        ? 'تم ترتيب أسماء الهيئة التدريسية أبجدياً (أ ← ي) 🔤'
+        : 'تم ترتيب أسماء الهيئة التدريسية أبجدياً (ي ← أ) 🔤'
     );
-    setTimeout(() => setSaveToast(null), 4500);
+    setTimeout(() => setSaveToast(null), 3000);
   };
 
   const handleSaveGalleryList = (newList: GalleryPhoto[]) => {
@@ -811,9 +850,8 @@ export const SchoolHomeOverview: React.FC = () => {
     reader.onloadend = () => {
       if (typeof reader.result === 'string') {
         const newAvatar = reader.result;
-        const updatedList = facultyList.map((f) => (f.id === teacherId ? { ...f, avatar: newAvatar } : f));
-        handleSaveFacultyList(updatedList);
-        setSaveToast('تم تحديث صورة الأستاذة/المدرسة بنجاح 📸');
+        updateTeacher(teacherId, { avatar: newAvatar } as any);
+        setSaveToast('تم تحديث صورة الأستاذة/المدرسة ومزامنتها مركزياً 📸');
         setTimeout(() => setSaveToast(null), 3500);
       }
     };
@@ -1531,7 +1569,7 @@ export const SchoolHomeOverview: React.FC = () => {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {facultyList.map((teacher) => (
+            {displayedFacultyList.map((teacher) => (
               <div
                 key={teacher.id}
                 className="p-5 rounded-3xl bg-slate-50/70 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 hover:border-teal-500/40 hover:shadow-lg transition-all space-y-4 flex flex-col justify-between relative group"
