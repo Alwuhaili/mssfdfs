@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type UserRole = 'admin' | 'teacher' | 'student' | 'parent' | 'supervisor';
+export type UserRole = 'admin' | 'teacher' | 'student' | 'parent' | 'supervisor' | 'guest';
 
 export type Language = 'ar' | 'en';
 

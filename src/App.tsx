@@ -15,6 +15,7 @@ import { SupervisorDashboard } from './components/SupervisorDashboard';
 import { NotificationModal } from './components/NotificationModal';
 import { MessagingModal } from './components/MessagingModal';
 import { ExamTakingModal } from './components/ExamTakingModal';
+import { SchoolHomeOverview } from './components/SchoolHomeOverview';
 
 const AppContent: React.FC = () => {
   const { role, activeTakingExam, setActiveTakingExam } = useApp();
@@ -63,6 +64,7 @@ const AppContent: React.FC = () => {
         {role === 'student' && <StudentDashboard activeTab={activeTab} />}
         {role === 'parent' && <ParentDashboard activeTab={activeTab} />}
         {role === 'supervisor' && <SupervisorDashboard activeTab={activeTab} />}
+        {role === 'guest' && <SchoolHomeOverview />}
       </main>
 
       {/* Footer */}

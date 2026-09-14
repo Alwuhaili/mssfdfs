@@ -760,6 +760,7 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
 
   // Comprehensive Role-Specific Administrative Templates Directory
   const ROLE_ADMIN_TEMPLATES: Record<UserRole, AdminTemplateItem[]> = {
+    guest: [],
     admin: [
       {
         id: 'adm-1',

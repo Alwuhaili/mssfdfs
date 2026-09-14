@@ -204,6 +204,8 @@ export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab 
   if (role === 'student') currentTabs = studentTabs;
   if (role === 'parent') currentTabs = parentTabs;
   if (role === 'supervisor') currentTabs = supervisorTabs;
+  if (role === 'guest') currentTabs = [{ id: 'overview', label: t.navOverview, icon: LayoutDashboard }];
+  if (role === 'guest') return null; // Or just return null to hide nav for guests
 
   return (
     <nav className="bg-[#0f172a] border-b border-slate-800 text-slate-300 shadow-sm print:hidden relative group">

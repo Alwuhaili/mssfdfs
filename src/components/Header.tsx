@@ -264,7 +264,8 @@ export const Header: React.FC<{
               <span>{lang === 'ar' ? 'English' : 'العربية'}</span>
             </button>
 
-            {/* Direct Messages Icon */}
+            {role !== 'guest' && (<>
+{/* Direct Messages Icon */}
             <button
               onClick={onOpenMessages}
               className="relative p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700"
@@ -292,7 +293,8 @@ export const Header: React.FC<{
               )}
             </button>
 
-            {/* Active Logged-in User Badge */}
+            </>)}
+{/* Active Logged-in User Badge */}
             {currentUser?.name && (
               <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-800 dark:text-slate-200">
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
@@ -300,18 +302,33 @@ export const Header: React.FC<{
               </div>
             )}
 
-            {/* Role Switcher Menu */}
+            
+            {/* Role Switcher Menu / Login Button */}
             <div className="relative">
-              <button
-                onClick={() => setShowRoleMenu(!showRoleMenu)}
-                className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs sm:text-sm shadow-sm transition-all border border-indigo-500"
-              >
-                <span>{activeRoleObj?.iconStr}</span>
-                <span className="hidden sm:inline">
-                  {lang === 'ar' ? activeRoleObj?.titleAr : activeRoleObj?.titleEn}
-                </span>
-                <UserCheck className="w-4 h-4 text-white" />
-              </button>
+              {role === 'guest' ? (
+                <button
+                  onClick={() => {
+                    setTargetAuthRole(null);
+                    setIsAuthModalOpen(true);
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs sm:text-sm shadow-md transition-all border border-indigo-500"
+                >
+                  <UserCheck className="w-4 h-4 text-white" />
+                  <span>{lang === 'ar' ? 'تسجيل الدخول' : 'Login'}</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => setShowRoleMenu(!showRoleMenu)}
+                  className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs sm:text-sm shadow-sm transition-all border border-indigo-500"
+                >
+                  <span>{activeRoleObj?.iconStr}</span>
+                  <span className="hidden sm:inline">
+                    {lang === 'ar' ? activeRoleObj?.titleAr : activeRoleObj?.titleEn}
+                  </span>
+                  <UserCheck className="w-4 h-4 text-white" />
+                </button>
+              )}
+
 
               {showRoleMenu && (
                 <div
@@ -364,6 +381,19 @@ export const Header: React.FC<{
                   </div>
 
                   <div className="pt-2 mt-2 border-t border-slate-100 dark:border-slate-800 space-y-1">
+
+                    <button
+                      onClick={() => {
+                        setShowRoleMenu(false);
+                        localStorage.removeItem('maysan_current_user_v1');
+                        localStorage.removeItem('maysan_current_role');
+                        window.location.reload();
+                      }}
+                      className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 text-rose-900 dark:text-rose-200 text-xs font-bold transition-all border border-rose-200/70 dark:border-rose-800"
+                    >
+                      <span>{lang === 'ar' ? 'تسجيل الخروج' : 'Log Out'}</span>
+                    </button>
+
                     <button
                       onClick={() => {
                         setShowRoleMenu(false);

@@ -696,44 +696,51 @@ export const autoOptimizeDecisionMarks = (
 };
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [role, setRoleState] = useState<UserRole>(() => {
-    const savedRole = localStorage.getItem('maysan_current_role');
-    if (savedRole && ['admin', 'teacher', 'student', 'parent', 'supervisor'].includes(savedRole)) {
-      return savedRole as UserRole;
-    }
-    return 'admin';
-  });
+  /**
+   * SECURITY / VISITOR MODE
+   * Every fresh page load (including a typed URL or QR scan) starts as an anonymous
+   * visitor. Authentication is intentionally NOT restored from localStorage.
+   * A role is assigned only after the login flow explicitly calls setCurrentUser().
+   */
+  const [role, setRoleState] = useState<UserRole>(() => 'guest' as UserRole);
 
   const setRole = (newRole: UserRole) => {
     setRoleState(newRole);
-    localStorage.setItem('maysan_current_role', newRole);
+    // Do not persist an authenticated role across page loads.
   };
 
-  const [currentUser, setCurrentUserState] = useState<CurrentUser | null>(() => {
-    const saved = localStorage.getItem('maysan_current_user_v1');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {
-        return null;
-      }
-    }
-    return {
-      id: 'admin-main',
-      name: 'إدارة ثانوية ميسان للمتميزات',
-      role: 'admin',
-      email: 'admin@maysan-gifted.edu.iq',
-    };
-  });
+  const [currentUser, setCurrentUserState] = useState<CurrentUser | null>(null);
 
   const setCurrentUser = (user: CurrentUser | null) => {
     setCurrentUserState(user);
+
     if (user) {
-      localStorage.setItem('maysan_current_user_v1', JSON.stringify(user));
+      // Authentication succeeded explicitly: derive the active role from the
+      // authenticated account instead of trusting a previously cached role.
+      setRoleState(user.role as UserRole);
     } else {
+      // Logout / anonymous access always returns to Visitor mode.
+      setRoleState('guest' as UserRole);
+    }
+
+    // Remove legacy persisted identity so old installations cannot auto-login.
+    try {
       localStorage.removeItem('maysan_current_user_v1');
+      localStorage.removeItem('maysan_current_role');
+    } catch {
+      // localStorage may be unavailable in privacy-restricted browsers.
     }
   };
+
+  // One-time cleanup for browsers that still contain the old automatic-login keys.
+  useEffect(() => {
+    try {
+      localStorage.removeItem('maysan_current_user_v1');
+      localStorage.removeItem('maysan_current_role');
+    } catch {
+      // ignore storage access failures
+    }
+  }, []);
 
   const [lang, setLangState] = useState<Language>(() => {
     const savedLang = localStorage.getItem('maysan_lang');
@@ -1469,7 +1476,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setAuditLogs((prev) => {
       const updated = [newLog, ...prev];
-      // Central Firestore write is handled by the transactional auto-sync effect.
+      centralSyncService.directArrayMutation('auditLogs', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return updated;
     });
   };
@@ -1477,14 +1484,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const deleteAuditLog = (id: string) => {
     setAuditLogs((prev) => {
       const updated = prev.filter((log) => log.id !== id);
-      // Central Firestore write is handled by the transactional auto-sync effect.
+      centralSyncService.directArrayMutation('auditLogs', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return updated;
     });
   };
 
   const clearAuditLogs = () => {
     setAuditLogs([]);
-      // Central Firestore write is handled by the transactional auto-sync effect.
+    centralSyncService.directArrayMutation('auditLogs', [], { id: currentUser?.id || role, name: currentUser?.name || role, role });
   };
 
   const exportAuditLogsJSON = () => {
@@ -1534,7 +1541,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateSchoolAdminData = (updated: Partial<SchoolAdminData>) => {
     setSchoolAdminData((prev) => {
       const newData = { ...prev, ...updated };
-      // Central Firestore write is handled by the transactional auto-sync effect.
+      centralSyncService.directObjectMutation('schoolAdminData', newData, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return newData;
     });
     addAuditLog({
@@ -2226,10 +2233,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ]);
 
   // ─────────────────────────────────────────────────────────────
-  // CENTRAL MULTI-USER DATA SYNCHRONIZATION (Firestore = source of truth)
+  // CENTRAL MULTI-USER DATA SYNCHRONIZATION (مزامنة البيانات لجميع المستخدمين)
   // ─────────────────────────────────────────────────────────────
   const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error'>('syncing');
-  const [syncVersion, setSyncVersion] = useState<number>(0);
+  const [syncVersion, setSyncVersion] = useState<number>(1);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
   const [lastSyncedBy, setLastSyncedBy] = useState<{ id?: string; name?: string; role?: string } | null>(null);
   const [syncLatencyMs, setSyncLatencyMs] = useState<number>(0);
@@ -2238,12 +2245,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const isApplyingRemoteUpdate = useRef<boolean>(false);
   const isInitialHydrationDone = useRef<boolean>(false);
   const pushDebounceTimer = useRef<any>(null);
-  const syncVersionRef = useRef<number>(0);
-  const lastSyncedPayloadRef = useRef<Record<string, any> | null>(null);
-  const queuedRemoteUpdateRef = useRef<any>(null);
-  const writeInFlightRef = useRef<boolean>(false);
 
-  // Prevent accidental refresh while a local change is being committed.
+
+  // Prevent data loss on accidental refresh before sync completes
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       if (syncStatus === 'syncing') {
@@ -2256,63 +2260,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [syncStatus]);
 
-  // Build the complete in-memory representation. Firestore remains authoritative;
-  // this object is used only to calculate which top-level keys changed locally.
-  const getFullPayload = () => ({
-    teachers,
-    students,
-    parents,
-    supervisors,
-    graduates,
-    exams,
-    submissions,
-    attendance,
-    announcements,
-    messages,
-    lectures: lectures.map((l) => ({
-      ...l,
-      pdfDataUrl: l.pdfDataUrl && l.pdfDataUrl.length > 500 ? `idb:${l.id}` : l.pdfDataUrl,
-      fileUrl: l.fileUrl && l.fileUrl.length > 500 ? `idb:${l.id}` : l.fileUrl,
-    })),
-    deletedLectureIds,
-    deletedChallengeIds,
-    timetable,
-    subjectQuotas,
-    financial,
-    notifications,
-    certificates,
-    calendarEvents,
-    challenges,
-    userPasscodes,
-    schoolAdminData,
-    decisionSettings,
-    disciplinarySettings,
-    auditLogs,
-    annualPlans,
-    dailyLessonPlans,
-    examSchedules,
-    customFolders,
-  });
-
-  const safeStableStringify = (value: any): string => {
-    if (value === undefined) return '__undefined__';
-    if (value === null || typeof value !== 'object') return JSON.stringify(value);
-    if (Array.isArray(value)) return `[${value.map(safeStableStringify).join(',')}]`;
-    const keys = Object.keys(value).sort();
-    return `{${keys.map((key) => `${JSON.stringify(key)}:${safeStableStringify(value[key])}`).join(',')}}`;
-  };
-
-  const valuesEqual = (a: any, b: any) => safeStableStringify(a) === safeStableStringify(b);
-
-  // Apply Firestore state to React. This is the only hydration path.
+  // Apply remote data securely to React state
   const applyRemoteData = (remoteData: any, remoteVersion: number, remoteLastSyncedBy?: any) => {
     if (!remoteData || typeof remoteData !== 'object') return;
-
     isApplyingRemoteUpdate.current = true;
-    // Record the Firestore snapshot BEFORE setState calls. The auto-sync effect can
-    // therefore distinguish remote hydration from genuine user edits.
-    lastSyncedPayloadRef.current = JSON.parse(JSON.stringify(remoteData));
-    syncVersionRef.current = remoteVersion;
 
     if (Array.isArray(remoteData.teachers)) setTeachers(remoteData.teachers);
     if (Array.isArray(remoteData.students)) setStudents(remoteData.students);
@@ -2348,225 +2299,206 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setLastSyncedAt(new Date());
     if (remoteLastSyncedBy) setLastSyncedBy(remoteLastSyncedBy);
     setSyncStatus('synced');
-    setSyncErrorMessage(undefined);
 
-    // React batches the setState calls. Release this guard on the next macrotask.
     setTimeout(() => {
       isApplyingRemoteUpdate.current = false;
-    }, 0);
+    }, 400);
   };
 
-  // Firestore Collections bootstrap: migrate legacy database/main once, then
-  // hydrate exclusively from the new collections architecture.
+  // Build full payload for central store
+  const getFullPayload = () => ({
+    teachers,
+    students,
+    parents,
+    supervisors,
+    graduates,
+    exams,
+    submissions,
+    attendance,
+    announcements,
+    messages,
+    lectures: lectures.map((l) => ({
+      ...l,
+      pdfDataUrl: l.pdfDataUrl && l.pdfDataUrl.length > 500 ? `idb:${l.id}` : l.pdfDataUrl,
+      fileUrl: l.fileUrl && l.fileUrl.length > 500 ? `idb:${l.id}` : l.fileUrl,
+    })),
+    deletedLectureIds,
+    deletedChallengeIds,
+    timetable,
+    subjectQuotas,
+    financial,
+    notifications,
+    certificates,
+    calendarEvents,
+    challenges,
+    userPasscodes,
+    schoolAdminData,
+    decisionSettings,
+    auditLogs,
+    annualPlans,
+    dailyLessonPlans,
+    examSchedules,
+    customFolders,
+  });
+
+  // Initial Server Hydration & Seeding
   useEffect(() => {
     let isMounted = true;
 
-    const initializeCollectionsSync = async () => {
-      setSyncStatus('syncing');
-      setSyncErrorMessage(undefined);
-
+    const initializeCentralSync = async () => {
       try {
-        const sourceUser = {
-          id: currentUser?.id || (role === 'admin' ? 'admin-main' : role),
-          name: currentUser?.name || (role === 'admin' ? 'إدارة المدرسة' : role),
-          role: currentUser?.role || role,
-        };
-
-        // Idempotent and non-destructive: database/main is read as the migration
-        // source but is never deleted or modified by the new architecture.
-        // Migration metadata is stored separately in database/migration_collections_v1.
-        const migration = await centralSyncService.ensureCollectionsMigration(
-          getFullPayload(),
-          sourceUser
-        );
-        if (!isMounted) return;
-
-        if (!migration.success) {
-          setSyncStatus(navigator.onLine ? 'error' : 'offline');
-          setSyncErrorMessage(migration.message || 'تعذر ترحيل البيانات إلى Firestore Collections');
-          isInitialHydrationDone.current = false;
-          return;
-        }
-
-        const startedAt = Date.now();
-        const res = await centralSyncService.fetchServerData(undefined, true);
-        if (!isMounted) return;
-        setSyncLatencyMs(Date.now() - startedAt);
-
-        if (!res.success || !res.data) {
-          setSyncStatus(navigator.onLine ? 'error' : 'offline');
-          setSyncErrorMessage(res.message || 'تعذر تحميل البيانات المركزية');
-          isInitialHydrationDone.current = false;
-          return;
-        }
-
-        applyRemoteData(res.data, res.version || 1, res.lastSyncedBy);
-        isInitialHydrationDone.current = true;
-
-        // Start listeners only AFTER migration and first hydration. We deliberately
-        // do not poll the entire database every few seconds; each collection now
-        // has its own realtime onSnapshot listener.
-        await centralSyncService.connectRealtimeStream();
-      } catch (err: any) {
-        console.error('Collections Firestore initialization failed:', err);
-        setSyncStatus(navigator.onLine ? 'error' : 'offline');
-        setSyncErrorMessage(err?.message || 'تعذر تهيئة قاعدة Firestore Collections');
-        isInitialHydrationDone.current = false;
-      }
-    };
-
-    initializeCollectionsSync();
-
-    const unsubscribe = centralSyncService.subscribe(async (evt) => {
-      if (!isMounted) return;
-
-      if (evt.type === 'REALTIME_SERVER_UPDATE' && evt.payload) {
-        // Keep a remote snapshot queued while a local transaction is in flight.
-        if (pushDebounceTimer.current || writeInFlightRef.current) {
-          queuedRemoteUpdateRef.current = evt;
-          return;
-        }
-        applyRemoteData(
-          evt.payload,
-          evt.sourceVersion || Math.max(syncVersionRef.current + 1, Date.now()),
-          evt.lastSyncedBy
-        );
-        return;
-      }
-
-      if (evt.type === 'SERVER_DATA_UPDATED') {
-        // Another tab on the same device wrote data. The collection listeners will
-        // deliver the actual payload; no expensive full-database re-fetch here.
-        return;
-      }
-
-      if (evt.type === 'NETWORK_ONLINE') {
-        // Do not race the initial migration/hydration. The bootstrap sequence above
-        // owns Firestore until the Collections architecture is ready.
-        if (!isInitialHydrationDone.current) return;
         setSyncStatus('syncing');
         const res = await centralSyncService.fetchServerData(undefined, true);
         if (!isMounted) return;
-        if (res.success && res.data) {
-          applyRemoteData(res.data, res.version || Math.max(syncVersionRef.current + 1, Date.now()), res.lastSyncedBy);
-          await centralSyncService.connectRealtimeStream();
-        } else {
-          setSyncStatus('error');
-          setSyncErrorMessage(res.message || 'تعذر استعادة الاتصال بقاعدة Firestore');
-        }
-        return;
-      }
 
-      if (evt.type === 'NETWORK_OFFLINE') {
+        if (res.success && res.data && Object.keys(res.data).length > 5) {
+          applyRemoteData(res.data, res.version || 1, res.lastSyncedBy);
+          isInitialHydrationDone.current = true;
+        } else {
+          // Server database needs initial seed from local authoritative data
+          const payload = getFullPayload();
+          const sourceUser = {
+            id: currentUser?.id || role,
+            name: currentUser?.name || (role === 'admin' ? 'المديرة العامة' : role),
+            role: role,
+          };
+          const pushRes = await centralSyncService.pushUpdates(payload, sourceUser, 1);
+          if (pushRes.success && pushRes.version) {
+            setSyncVersion(pushRes.version);
+            setLastSyncedAt(new Date());
+            setLastSyncedBy(sourceUser);
+            setSyncStatus('synced');
+          }
+          isInitialHydrationDone.current = true;
+        }
+      } catch (err: any) {
+        console.warn('Initial sync error, continuing with local state:', err);
+        setSyncStatus('offline');
+        isInitialHydrationDone.current = true;
+      }
+    };
+
+    initializeCentralSync();
+
+    // Real-time SSE and cross-tab sync channel
+    const unsubscribeBroadcast = centralSyncService.subscribe(async (evt) => {
+      if (evt.type === 'REALTIME_SERVER_UPDATE' && evt.payload) {
+        // Instant Server-Sent Event push from server!
+        applyRemoteData(evt.payload, evt.sourceVersion || syncVersion + 1, evt.lastSyncedBy);
+      } else if (evt.type === 'SERVER_DATA_UPDATED' || evt.type === 'DATABASE_RESET') {
+        try {
+          const res = await centralSyncService.fetchServerData(undefined, true);
+          if (isMounted && res.success && res.data) {
+            applyRemoteData(res.data, res.version || 1, res.lastSyncedBy);
+          }
+        } catch {
+          // ignore
+        }
+      } else if (evt.type === 'NETWORK_ONLINE') {
+        setSyncStatus('synced');
+        forceSyncAll();
+      } else if (evt.type === 'NETWORK_OFFLINE') {
         setSyncStatus('offline');
       }
     });
 
+    // Periodic check for updates as fallback every 6 seconds
+    const pollInterval = setInterval(async () => {
+      if (!isInitialHydrationDone.current) return;
+      try {
+        const res = await centralSyncService.fetchServerData(syncVersion, false);
+        if (!isMounted) return;
+
+        if (res.success) {
+          if (!res.notModified && res.data) {
+            applyRemoteData(res.data, res.version || syncVersion + 1, res.lastSyncedBy);
+          }
+          setSyncStatus('synced');
+          setSyncErrorMessage(undefined);
+        }
+      } catch {
+        // offline or transient
+      }
+    }, 6000);
+
+    // Refresh on window focus / tab switch
+    const onWindowFocus = async () => {
+      if (!isInitialHydrationDone.current) return;
+      try {
+        const res = await centralSyncService.fetchServerData(syncVersion, false);
+        if (res.success && !res.notModified && res.data) {
+          applyRemoteData(res.data, res.version || syncVersion + 1, res.lastSyncedBy);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('focus', onWindowFocus);
+
     return () => {
       isMounted = false;
-      unsubscribe();
-      centralSyncService.stopRealtimeStream();
+      clearInterval(pollInterval);
+      unsubscribeBroadcast();
+      window.removeEventListener('focus', onWindowFocus);
     };
-    // One migration/hydration lifecycle for the provider instance.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [syncVersion]);
 
-  // Single automatic write path: calculate only the keys changed locally and merge
-  // them transactionally into the newest Firestore document.
+  // Debounced auto-push to central server on local changes
   useEffect(() => {
-    if (isApplyingRemoteUpdate.current || writeInFlightRef.current || !isInitialHydrationDone.current) return;
-    if (!lastSyncedPayloadRef.current) return;
+    // Visitors opened from a public URL / QR are strictly read-only.
+    // A central write is allowed only after explicit successful authentication.
+    if (!currentUser) return;
+    if (isApplyingRemoteUpdate.current) return;
+    if (!isInitialHydrationDone.current) return;
 
-    const payload = getFullPayload();
-    const base = lastSyncedPayloadRef.current;
-    const updates: Record<string, any> = {};
-    const baseValues: Record<string, any> = {};
-
-    for (const key of Object.keys(payload)) {
-      const localValue = (payload as any)[key];
-      const baseValue = (base as any)[key];
-      if (!valuesEqual(localValue, baseValue)) {
-        updates[key] = localValue;
-        baseValues[key] = baseValue;
-      }
+    if (pushDebounceTimer.current) {
+      clearTimeout(pushDebounceTimer.current);
     }
 
-    if (Object.keys(updates).length === 0) return;
-
-    if (pushDebounceTimer.current) clearTimeout(pushDebounceTimer.current);
     setSyncStatus('syncing');
 
+    // Administration changes sync ultra-fast (250ms) to ensure immediate school-wide propagation
+    const debounceDelay = 100;
+
     pushDebounceTimer.current = setTimeout(async () => {
-      pushDebounceTimer.current = null;
-      const sourceUser = {
-        id: currentUser?.id || role,
-        name: currentUser?.name || (role === 'admin' ? 'إدارة المدرسة' : role),
-        role: currentUser?.role || role,
-      };
-
-      writeInFlightRef.current = true;
+        pushDebounceTimer.current = null;
       try {
-        const startedAt = Date.now();
-        const res = await centralSyncService.patchKeys(updates, baseValues, sourceUser);
-        setSyncLatencyMs(Date.now() - startedAt);
+        const payload = getFullPayload();
+        
+        // --- OFFLINE FALLBACK ---
+        // Always save to localStorage immediately to prevent data loss 
+        // in case Firebase hits its daily quota limit.
+        try {
+          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload));
+        } catch(e) {
+          console.error("Local storage save failed", e);
+        }
+        
+        const sourceUser = {
+          id: currentUser?.id || role,
+          name: currentUser?.name || (role === 'admin' ? 'المديرة العامة' : role),
+          role: role,
+        };
 
-        if (res.success && res.version !== undefined) {
-          syncVersionRef.current = res.version;
+        const res = await centralSyncService.pushUpdates(payload, sourceUser, syncVersion);
+        if (res.success && res.version) {
           setSyncVersion(res.version);
           setLastSyncedAt(new Date());
           setLastSyncedBy(sourceUser);
           setSyncStatus('synced');
           setSyncErrorMessage(undefined);
-
-          // The write service touches only changed documents. Advance our local base
-          // immediately so the same edit is not written a second time while the
-          // realtime collection snapshot is travelling back to this browser.
-          const nextBase = { ...(lastSyncedPayloadRef.current || {}) };
-          for (const [changedKey, changedValue] of Object.entries(updates)) {
-            (nextBase as any)[changedKey] = JSON.parse(JSON.stringify(changedValue));
-          }
-          lastSyncedPayloadRef.current = nextBase;
-
-          if (res.data) {
-            applyRemoteData(res.data, res.version, res.lastSyncedBy || sourceUser);
-          }
         } else {
-          setSyncStatus(navigator.onLine ? 'error' : 'offline');
+          setSyncStatus('error');
           setSyncErrorMessage(res.message);
-
-          // A failed write must never cause a stale local snapshot to be pushed later.
-          const failedMessage = res.message || 'تعذر حفظ التغييرات في قاعدة Firestore';
-          const latest = await centralSyncService.fetchServerData(undefined, true);
-          if (latest.success && latest.data) {
-            applyRemoteData(latest.data, latest.version || syncVersionRef.current, latest.lastSyncedBy);
-          }
-          // applyRemoteData marks a successful READ as synced. Restore the WRITE failure
-          // so the UI never reports a false central synchronization success.
-          setSyncStatus(navigator.onLine ? 'error' : 'offline');
-          setSyncErrorMessage(failedMessage);
         }
       } catch (err: any) {
-        setSyncStatus(navigator.onLine ? 'error' : 'offline');
-        setSyncErrorMessage(err?.message || 'تعذر حفظ التغييرات');
-      } finally {
-        writeInFlightRef.current = false;
-        const queued = queuedRemoteUpdateRef.current;
-        queuedRemoteUpdateRef.current = null;
-        if (queued?.payload) {
-          applyRemoteData(
-            queued.payload,
-            queued.sourceVersion || Math.max(syncVersionRef.current + 1, Date.now()),
-            queued.lastSyncedBy
-          );
-        }
+        setSyncStatus('offline');
+        setSyncErrorMessage(err.message);
       }
-    }, 120);
+    }, debounceDelay);
 
     return () => {
-      if (pushDebounceTimer.current) {
-        clearTimeout(pushDebounceTimer.current);
-        pushDebounceTimer.current = null;
-      }
+      if (pushDebounceTimer.current) clearTimeout(pushDebounceTimer.current);
     };
   }, [
     teachers,
@@ -2592,7 +2524,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     userPasscodes,
     schoolAdminData,
     decisionSettings,
-    disciplinarySettings,
     auditLogs,
     annualPlans,
     dailyLessonPlans,
@@ -2600,43 +2531,74 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     customFolders,
   ]);
 
-  // Manual sync is now PULL-ONLY. Even an administrator cannot accidentally push an
-  // old browser snapshot over a newer Firestore version.
+  // Manual Force Sync All
   const forceSyncAll = async (): Promise<boolean> => {
     setSyncStatus('syncing');
     try {
-      const startedAt = Date.now();
-      const res = await centralSyncService.fetchServerData(undefined, true);
-      setSyncLatencyMs(Date.now() - startedAt);
-      if (res.success && res.data) {
-        applyRemoteData(res.data, res.version || 0, res.lastSyncedBy);
-        return true;
+      if (role === 'admin') {
+        // If Directress/Admin triggers sync, push immediately so local edits take master authority
+        const payload = getFullPayload();
+        const sourceUser = {
+          id: currentUser?.id || 'admin-main',
+          name: currentUser?.name || 'المديرة العامة',
+          role: 'admin',
+        };
+        const pushRes = await centralSyncService.pushUpdates(payload, sourceUser);
+        if (pushRes.success && pushRes.version) {
+          setSyncVersion(pushRes.version);
+          setLastSyncedAt(new Date());
+          setLastSyncedBy(sourceUser);
+          setSyncStatus('synced');
+          setSyncErrorMessage(undefined);
+          return true;
+        }
+      } else {
+        // Non-admin user: fetch latest server state
+        const fetchRes = await centralSyncService.fetchServerData(undefined, true);
+        if (fetchRes.success && fetchRes.data && Object.keys(fetchRes.data).length > 5) {
+          applyRemoteData(fetchRes.data, fetchRes.version || syncVersion, fetchRes.lastSyncedBy);
+        }
+
+        // Then push any non-admin local edits (submissions, messages)
+        const payload = getFullPayload();
+        const sourceUser = {
+          id: currentUser?.id || role,
+          name: currentUser?.name || role,
+          role: role,
+        };
+        const pushRes = await centralSyncService.pushUpdates(payload, sourceUser);
+        if (pushRes.success && pushRes.version) {
+          setSyncVersion(pushRes.version);
+          setLastSyncedAt(new Date());
+          setLastSyncedBy(sourceUser);
+          setSyncStatus('synced');
+          return true;
+        }
       }
-      setSyncStatus(navigator.onLine ? 'error' : 'offline');
-      setSyncErrorMessage(res.message);
       return false;
     } catch (err: any) {
-      setSyncStatus(navigator.onLine ? 'error' : 'offline');
-      setSyncErrorMessage(err?.message || 'فشلت المزامنة اليدوية');
+      console.warn('Manual sync failed:', err);
+      setSyncStatus('error');
+      setSyncErrorMessage(err.message);
       return false;
     }
   };
 
-  // Destructive reset remains explicit. It is never called by startup/reconnect.
+  // Reset central database to defaults
   const resetCentralDatabase = async (): Promise<boolean> => {
     setSyncStatus('syncing');
     try {
-      const resetRes = await centralSyncService.resetServerDatabase(getFullPayload());
-      if (resetRes.success && resetRes.data) {
-        applyRemoteData(resetRes.data, resetRes.version || syncVersionRef.current + 1, resetRes.lastSyncedBy);
+      const resetRes = await centralSyncService.resetServerDatabase();
+      if (resetRes.success) {
+        resetToDefaultData();
+        setSyncVersion(resetRes.version || 1);
+        setLastSyncedAt(new Date());
+        setSyncStatus('synced');
         return true;
       }
-      setSyncStatus('error');
-      setSyncErrorMessage(resetRes.message);
       return false;
-    } catch (err: any) {
+    } catch (err) {
       setSyncStatus('error');
-      setSyncErrorMessage(err?.message || 'فشل تحديث قاعدة البيانات المركزية');
       return false;
     }
   };
@@ -2646,7 +2608,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDecisionSettings((prev) => {
       const next = { ...prev, ...updated };
       setCertificates((certs) => certs.map((c) => computeCertificateStats(c, next)));
-      // Central Firestore write is handled by the transactional auto-sync effect.
+      centralSyncService.directObjectMutation('decisionSettings', next, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return next;
     });
   };
@@ -3318,7 +3280,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDisciplinarySettings((prev) => {
       const newVal = { ...prev, ...updated };
       finalSettings = newVal;
-      // Central Firestore write is handled by the transactional auto-sync effect.
+      centralSyncService.directObjectMutation('disciplinarySettings', newVal, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return newVal;
     });
     // Give state time to settle or pass explicit config
@@ -3358,7 +3320,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setTeachers((prev) => {
       const updated = [newTeacher, ...prev];
       // Instantly sync to firebase
-      // Central Firestore write is handled by the transactional auto-sync effect.
+      centralSyncService.directArrayMutation('teachers', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return updated;
     });
 
@@ -3394,7 +3356,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       status: 'منتظمة',
       enrollmentYear: data.enrollmentYear?.trim() || '2026',
     };
+    setStudents((prev) => {
+      const updated = [newStudent, ...prev];
+      // Instantly sync to firebase
+      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      return updated;
+    });
 
+    // Auto add parent account link
     const newParent: Parent = {
       id: parentId,
       name: data.parentName,
@@ -3404,7 +3373,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       studentName: newStudent.name,
       gradeLevel: newStudent.gradeLevel,
     };
+    setParents((prev) => {
+      const updated = [newParent, ...prev];
+      centralSyncService.directArrayMutation('parents', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      return updated;
+    });
 
+    // Create initial tuition financial record
     const fin: FinancialRecord = {
       id: `fin-${Date.now()}-${randSuffix}`,
       studentId: newStudent.id,
@@ -3416,24 +3391,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       status: 'غير مدفوع',
       dueDate: '2026-09-01',
     };
+    setFinancial((prev) => {
+      const updated = [fin, ...prev];
+      centralSyncService.directArrayMutation('financial', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      return updated;
+    });
 
-    const newAuditLog: AuditLogEntry = {
-      id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      timestamp: new Date().toISOString(),
-      userId: currentUser?.id || 'admin-principal',
-      userName: currentUser?.name || schoolAdminData.principalName || 'إدارة المدرسة',
-      userRole: (currentUser?.role || role || 'admin') as UserRole,
+    addAuditLog({
       action: `تسجيل طالبة جديدة: ${newStudent.name}`,
       actionType: 'create',
       targetCategory: 'students',
       targetId: newStudent.id,
       targetName: newStudent.name,
       details: `تسجيل الطالبة في ${newStudent.gradeLevel} - شعبة (${newStudent.section}) مع ربط حساب ولي الأمر (${data.parentName})`,
-      ipAddress: '192.168.1.10',
-      deviceInfo: 'لوحة تحكم الإدارة (الويب)',
       severity: 'success',
-    };
+    });
 
+    // Push notification
     const notif: NotificationItem = {
       id: `notif-${Date.now()}-${randSuffix}`,
       title: lang === 'ar' ? 'تسجيل طالبة جديدة بالمدرسة' : 'New Gifted Student Registered',
@@ -3442,84 +3416,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       timestamp: lang === 'ar' ? 'الآن' : 'Just now',
       isRead: false,
     };
-
-    const nextStudents = [newStudent, ...students];
-    const nextParents = [newParent, ...parents];
-    const nextFinancial = [fin, ...financial];
-    const nextAuditLogs = [newAuditLog, ...auditLogs];
-    const nextNotifications = [notif, ...notifications];
-
-    // Optimistic UI, but the same exact bundle is committed to Firestore immediately.
-    writeInFlightRef.current = true;
-    setSyncStatus('syncing');
-    setStudents(nextStudents);
-    setParents(nextParents);
-    setFinancial(nextFinancial);
-    setAuditLogs(nextAuditLogs);
-    setNotifications(nextNotifications);
-
-    const sourceUser = {
-      id: currentUser?.id || role,
-      name: currentUser?.name || 'إدارة المدرسة',
-      role: currentUser?.role || role,
-    };
-
-    const base = lastSyncedPayloadRef.current || {};
-    const updates = {
-      students: nextStudents,
-      parents: nextParents,
-      financial: nextFinancial,
-      auditLogs: nextAuditLogs,
-      notifications: nextNotifications,
-    };
-    const baseValues = {
-      students: base.students || [],
-      parents: base.parents || [],
-      financial: base.financial || [],
-      auditLogs: base.auditLogs || [],
-      notifications: base.notifications || [],
-    };
-
-    void centralSyncService.patchKeys(updates, baseValues, sourceUser)
-      .then(async (res) => {
-        if (res.success && res.version !== undefined) {
-          syncVersionRef.current = res.version;
-          setSyncVersion(res.version);
-          setLastSyncedAt(new Date());
-          setLastSyncedBy(res.lastSyncedBy || sourceUser);
-          setSyncStatus('synced');
-          setSyncErrorMessage(undefined);
-
-          const nextBase = { ...(lastSyncedPayloadRef.current || {}) };
-          for (const [changedKey, changedValue] of Object.entries(updates)) {
-            (nextBase as any)[changedKey] = JSON.parse(JSON.stringify(changedValue));
-          }
-          lastSyncedPayloadRef.current = nextBase;
-          return;
-        }
-
-        const failedMessage = res.message || 'تعذر حفظ الطالبة في قاعدة البيانات المركزية';
-        const latest = await centralSyncService.fetchServerData(undefined, true);
-        if (latest.success && latest.data) {
-          applyRemoteData(latest.data, latest.version || syncVersionRef.current, latest.lastSyncedBy);
-        }
-        // Reading the latest server snapshot succeeded, but the student WRITE failed.
-        // Keep that distinction visible instead of falsely showing "synced".
-        setSyncStatus(navigator.onLine ? 'error' : 'offline');
-        setSyncErrorMessage(failedMessage);
-      })
-      .catch(async (err: any) => {
-        const failedMessage = err?.message || 'تعذر حفظ الطالبة في قاعدة البيانات المركزية';
-        const latest = await centralSyncService.fetchServerData(undefined, true);
-        if (latest.success && latest.data) {
-          applyRemoteData(latest.data, latest.version || syncVersionRef.current, latest.lastSyncedBy);
-        }
-        setSyncStatus(navigator.onLine ? 'error' : 'offline');
-        setSyncErrorMessage(failedMessage);
-      })
-      .finally(() => {
-        writeInFlightRef.current = false;
-      });
+    setNotifications((prev) => [notif, ...prev]);
   };
 
   // User Management Implementations
@@ -3533,7 +3430,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         return t;
       });
-      // Central Firestore write is handled by the transactional auto-sync effect.
+      centralSyncService.directArrayMutation('teachers', updatedArray, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return updatedArray;
     });
 
@@ -3554,7 +3451,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const target = prev.find((t) => t.id === id);
       if (target) deletedName = target.name;
       const updated = prev.filter((t) => t.id !== id);
-      // Central Firestore write is handled by the transactional auto-sync effect.
+      centralSyncService.directArrayMutation('teachers', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return updated;
     });
     // Delete their passcode completely from the system instead of leaving it
@@ -3575,156 +3472,91 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateStudent = (id: string, updated: Partial<Student>) => {
-    // Student edits are latency-sensitive (grades / honor board / identity data).
-    // Commit the student document directly to Firestore instead of waiting for
-    // the generic debounced auto-sync loop.
-    const currentStudent = students.find((s) => s.id === id);
-    if (!currentStudent) return;
+    // 1. Find the target student synchronously from the current state
+    const currentStudent = students.find(s => s.id === id);
+    if (!currentStudent) return; // Prevent crashes if student not found
 
     let targetStudent = { ...currentStudent, ...updated };
     const studentName = targetStudent.name || id;
 
+    // 2. Check if parent needs to be created or updated
     let parentFound = false;
     let newParentId = targetStudent.parentId;
     let updatedParents = parents.map((p) => {
-      if (p.id === targetStudent.parentId || p.studentId === id) {
-        parentFound = true;
-        return {
-          ...p,
-          name: targetStudent.parentName,
-          phone: targetStudent.parentPhone,
-          email: targetStudent.parentEmail,
-          studentName: targetStudent.name,
-          gradeLevel: targetStudent.gradeLevel,
-        };
-      }
-      return p;
+        if (p.id === targetStudent.parentId || p.studentId === id) {
+            parentFound = true;
+            return {
+                ...p,
+                name: targetStudent.parentName,
+                phone: targetStudent.parentPhone,
+                email: targetStudent.parentEmail,
+                studentName: targetStudent.name,
+                gradeLevel: targetStudent.gradeLevel,
+            };
+        }
+        return p;
     });
 
     if (!parentFound && (targetStudent.parentName || targetStudent.parentPhone)) {
-      newParentId = targetStudent.parentId || `prt-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-      const newParent = {
-        id: newParentId,
-        name: targetStudent.parentName || '',
-        phone: targetStudent.parentPhone || '',
-        email: targetStudent.parentEmail || '',
-        studentId: targetStudent.id,
-        studentName: targetStudent.name,
-        gradeLevel: targetStudent.gradeLevel,
-      };
-      updatedParents = [newParent as any, ...updatedParents];
-      targetStudent.parentId = newParentId;
+        newParentId = targetStudent.parentId || `prt-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+        const newParent = {
+            id: newParentId,
+            name: targetStudent.parentName || '',
+            phone: targetStudent.parentPhone || '',
+            email: targetStudent.parentEmail || '',
+            studentId: targetStudent.id,
+            studentName: targetStudent.name,
+            gradeLevel: targetStudent.gradeLevel,
+        };
+        updatedParents = [newParent as any, ...updatedParents];
+        targetStudent.parentId = newParentId;
     }
 
-    const updatedStudents = students.map((s) => (s.id === id ? targetStudent : s));
-
+    // 3. Update students array
+    const updatedStudents = students.map(s => s.id === id ? targetStudent : s);
+    
+    // 4. Update financial record if missing
     let updatedFin = [...financial];
-    const hasFin = updatedFin.some((f) => f.studentId === id);
+    const hasFin = updatedFin.some(f => f.studentId === id);
     if (!hasFin) {
-      const randSuffix = Math.random().toString(36).substring(2, 7);
-      const fin = {
-        id: `fin-${Date.now()}-${randSuffix}`,
-        studentId: targetStudent.id,
-        studentName: targetStudent.name,
-        gradeLevel: targetStudent.gradeLevel,
-        feeType: 'رسوم التسجيل والكتب',
-        totalAmount: 120000,
-        paidAmount: 0,
-        status: 'غير مدفوع' as const,
-        dueDate: '2026-09-01',
-      };
-      updatedFin = [fin, ...updatedFin];
+        const randSuffix = Math.random().toString(36).substring(2, 7);
+        const fin = {
+            id: `fin-${Date.now()}-${randSuffix}`,
+            studentId: targetStudent.id,
+            studentName: targetStudent.name,
+            gradeLevel: targetStudent.gradeLevel,
+            feeType: 'رسوم التسجيل والكتب',
+            totalAmount: 120000,
+            paidAmount: 0,
+            status: 'غير مدفوع' as const,
+            dueDate: '2026-09-01',
+        };
+        updatedFin = [fin, ...updatedFin];
     }
 
-    // Optimistic local UI update. Firestore is still authoritative; a failed
-    // transaction reloads the central value below.
+    // 5. Apply the updates to state and sync
     setStudents(updatedStudents);
+    centralSyncService.directArrayMutation('students', updatedStudents, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+    
     setParents(updatedParents);
-    if (!hasFin) setFinancial(updatedFin);
+    centralSyncService.directArrayMutation('parents', updatedParents, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+    
+    if (!hasFin) {
+        setFinancial(updatedFin);
+        centralSyncService.directArrayMutation('financial', updatedFin, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+    }
 
-    const sourceUser = {
-      id: currentUser?.id || role,
-      name: currentUser?.name || (role === 'admin' ? 'إدارة المدرسة' : role),
-      role: currentUser?.role || role,
-    };
-
-    const baseStudent =
-      (lastSyncedPayloadRef.current?.students || []).find((s: Student) => s.id === id) || currentStudent;
-
-    // Block the generic auto-sync while the direct student transaction is active.
-    writeInFlightRef.current = true;
-    setSyncStatus('syncing');
-    setSyncErrorMessage(undefined);
-
-    void centralSyncService
-      .upsertCollectionDocument('students', id, targetStudent, baseStudent, sourceUser)
-      .then(async (res) => {
-        if (!res.success) {
-          const failedMessage = res.message || 'تعذر حفظ تعديل الطالبة في Firestore';
-          const latest = await centralSyncService.fetchServerData(undefined, true);
-          if (latest.success && latest.data) {
-            applyRemoteData(
-              latest.data,
-              latest.version || syncVersionRef.current,
-              latest.lastSyncedBy
-            );
-          }
-          setSyncStatus(navigator.onLine ? 'error' : 'offline');
-          setSyncErrorMessage(failedMessage);
-          return;
-        }
-
-        // Advance only the student's central base. Other keys remain governed by
-        // their normal collection listeners/auto-sync.
-        const nextBase = { ...(lastSyncedPayloadRef.current || {}) };
-        const baseStudents = Array.isArray(nextBase.students) ? [...nextBase.students] : [...students];
-        const pos = baseStudents.findIndex((s: Student) => s.id === id);
-        if (pos >= 0) baseStudents[pos] = JSON.parse(JSON.stringify(targetStudent));
-        else baseStudents.unshift(JSON.parse(JSON.stringify(targetStudent)));
-        nextBase.students = baseStudents;
-        lastSyncedPayloadRef.current = nextBase;
-
-        syncVersionRef.current = res.version || Math.max(syncVersionRef.current + 1, Date.now());
-        setSyncVersion(syncVersionRef.current);
-        setLastSyncedAt(new Date());
-        setLastSyncedBy(sourceUser);
-        setSyncStatus('synced');
-      })
-      .catch(async (err: any) => {
-        const failedMessage = err?.message || 'تعذر حفظ تعديل الطالبة في Firestore';
-        const latest = await centralSyncService.fetchServerData(undefined, true);
-        if (latest.success && latest.data) {
-          applyRemoteData(latest.data, latest.version || syncVersionRef.current, latest.lastSyncedBy);
-        }
-        setSyncStatus(navigator.onLine ? 'error' : 'offline');
-        setSyncErrorMessage(failedMessage);
-      })
-      .finally(() => {
-        writeInFlightRef.current = false;
-        const queued = queuedRemoteUpdateRef.current;
-        queuedRemoteUpdateRef.current = null;
-        if (queued?.payload) {
-          applyRemoteData(
-            queued.payload,
-            queued.sourceVersion || Math.max(syncVersionRef.current + 1, Date.now()),
-            queued.lastSyncedBy
-          );
-        }
-
-        // Audit is appended only after the central student transaction finishes so
-        // its normal auto-sync is not suppressed by writeInFlightRef.
-        addAuditLog({
-          action: `تعديل بيانات الطالبة: ${studentName}`,
-          actionType: updated.status ? 'status_change' : 'update',
-          targetCategory: 'students',
-          targetId: id,
-          targetName: studentName,
-          details: updated.status
-            ? `تعديل حالة الطالبة (${studentName}) إلى [${updated.status}]`
-            : `تحديث بيانات ومعلومات الطالبة (${studentName})`,
-          severity: 'info',
-        });
-      });
+    addAuditLog({
+      action: `تعديل بيانات الطالبة: ${studentName}`,
+      actionType: updated.status ? 'status_change' : 'update',
+      targetCategory: 'students',
+      targetId: id,
+      targetName: studentName,
+      details: updated.status
+        ? `تعديل حالة الطالبة (${studentName}) إلى [${updated.status}]`
+        : `تحديث بيانات ومعلومات الطالبة (${studentName})`,
+      severity: 'info',
+    });
   };
 
   const addShieldToStudent = (studentId: string, shield: Omit<StudentShieldBadge, 'id'>) => {
@@ -3751,7 +3583,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateStudentBadges = (studentId: string, badges: string[]) => {
-    updateStudent(studentId, { badges } as Partial<Student>);
+    setStudents((prev) =>
+      prev.map((s) => (s.id === studentId ? { ...s, badges } : s))
+    );
   };
 
   const deleteStudent = (id: string) => {
@@ -3760,7 +3594,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const target = prev.find((s) => s.id === id);
       if (target) deletedName = target.name;
       const updated = prev.filter((s) => s.id !== id);
-      // Central Firestore write is handled by the transactional auto-sync effect.
+      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return updated;
     });
     // Delete their passcode completely from the system instead of leaving it
@@ -3772,12 +3606,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Also remove parent linked record if any
     setParents((prev) => {
       const updated = prev.filter((p) => p.studentId !== id);
-      // Central Firestore write is handled by the transactional auto-sync effect.
+      centralSyncService.directArrayMutation('parents', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return updated;
     });
     setFinancial((prev) => {
       const updated = prev.filter((f) => f.studentId !== id);
-      // Central Firestore write is handled by the transactional auto-sync effect.
+      centralSyncService.directArrayMutation('financial', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return updated;
     });
 
@@ -4484,7 +4318,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             warningLevel: newWarn
           };
         });
-      // Central Firestore write is handled by the transactional auto-sync effect.
+        centralSyncService.directArrayMutation('students', updatedArray, { id: currentUser?.id || role, name: currentUser?.name || role, role });
         return updatedArray;
       });
     }
@@ -4564,7 +4398,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               warningLevel: newWarn
             };
           });
-      // Central Firestore write is handled by the transactional auto-sync effect.
+          centralSyncService.directArrayMutation('students', updatedArray, { id: currentUser?.id || role, name: currentUser?.name || role, role });
           return updatedArray;
         });
       }
@@ -4749,7 +4583,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         return s;
       });
-      // Central Firestore write is handled by the transactional auto-sync effect.
+      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return updated;
     });
   };
@@ -4891,7 +4725,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             warningLevel: newWarn
           };
         });
-      // Central Firestore write is handled by the transactional auto-sync effect.
+        centralSyncService.directArrayMutation('students', updatedArray, { id: currentUser?.id || role, name: currentUser?.name || role, role });
         return updatedArray;
       });
     }
@@ -5051,7 +4885,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           warningLevel: newWarn
         };
       });
-      // Central Firestore write is handled by the transactional auto-sync effect.
+      centralSyncService.directArrayMutation('students', updatedArray, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return updatedArray;
     });
 
@@ -5256,7 +5090,7 @@ ${newDecision.notes || 'يرجى مراجعة إدارة المدرسة فورا
           warningLevel: newWarn
         };
       });
-      // Central Firestore write is handled by the transactional auto-sync effect.
+      centralSyncService.directArrayMutation('students', updatedArray, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return updatedArray;
     });
 
@@ -5373,7 +5207,7 @@ ${defaultReason}
         // For now just removing it from the array.
         return { ...s, disciplinaryDecisions: filteredDecisions };
       });
-      // Central Firestore write is handled by the transactional auto-sync effect.
+      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
       return updated;
     });
   };
@@ -5693,7 +5527,7 @@ ${defaultReason}
     if (role === 'admin' || currentUser?.role === 'admin') {
       setMessages(prev => {
         const updated = prev.filter(m => m.id !== id);
-      // Central Firestore write is handled by the transactional auto-sync effect.
+        centralSyncService.directArrayMutation('messages', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
         return updated;
       });
       return;
@@ -5952,7 +5786,7 @@ ${defaultReason}
     if (role === 'admin' || currentUser?.role === 'admin') {
       setNotifications(prev => {
         const updated = prev.filter(n => n.id !== id);
-      // Central Firestore write is handled by the transactional auto-sync effect.
+        centralSyncService.directArrayMutation('notifications', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
         return updated;
       });
       return;

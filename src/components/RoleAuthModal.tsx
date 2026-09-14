@@ -71,6 +71,15 @@ export const ROLE_CREDENTIALS_DEMO: Record<
     defaultPhone: '07709998877',
     defaultPasscode: '1234',
   },
+  guest: {
+    roleTitleAr: 'زائر',
+    roleTitleEn: 'Guest',
+    iconStr: '👀',
+    defaultEmail: '',
+    defaultUsername: '',
+    defaultPhone: '',
+    defaultPasscode: '',
+  },
   supervisor: {
     roleTitleAr: 'المشرف التربوي',
     roleTitleEn: 'Educational Supervisor',
