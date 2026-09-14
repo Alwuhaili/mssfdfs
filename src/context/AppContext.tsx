@@ -396,6 +396,7 @@ const INITIAL_PASSCODES: Record<UserRole, string> = {
   student: '1234',
   parent: '1234',
   supervisor: '1234',
+  guest: '',
 };
 
 const LOCAL_STORAGE_KEY = 'maysan_gifted_school_data_v1';
@@ -3050,6 +3051,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       student: 'طالبات المتميزات',
       parent: 'أولياء الأمور',
       supervisor: 'المشرف التربوي',
+      guest: 'زائر',
     };
 
     const targetUserId = options?.targetUserId || currentUser?.id || `user-${targetRole}`;
@@ -3124,6 +3126,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       student: 'طالبات المتميزات',
       parent: 'أولياء الأمور',
       supervisor: 'المشرف التربوي',
+      guest: 'زائر',
     };
 
     const targetUserId = options?.targetUserId || currentUser?.id || `user-${targetRole}`;
@@ -3231,8 +3234,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         teacher: 'الهيئة التدريسية',
         student: 'طالبات المتميزات',
         parent: 'أولياء الأمور',
-        supervisor: 'المشرف التربوي',
-      };
+      supervisor: 'المشرف التربوي',
+      guest: 'زائر',
+    };
       const nowIso = new Date().toISOString();
       const newNotif: NotificationItem = {
         id: `notif-admin-pass-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
