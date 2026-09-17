@@ -181,9 +181,7 @@ export async function downloadDataUrlOrBlob(
   dataUrlOrBlob: string | Blob,
   fileName: string
 ): Promise<boolean> {
-  const cleanFileName = fileName.trim().endsWith('.pdf')
-    ? fileName.trim()
-    : `${fileName.trim()}.pdf`;
+  const cleanFileName = fileName.trim() || 'library-file'; // DIGITAL_LIBRARY_PRESERVE_ORIGINAL_FILENAME_V2_2G
 
   try {
     let url: string;
