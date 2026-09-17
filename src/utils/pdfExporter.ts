@@ -594,21 +594,74 @@ export async function downloadMultiElementsAsPdf(
       pdf.addPage();
     }
 
-    const canvas = await html2canvas(element, {
-      scale,
-      useCORS: true,
-      allowTaint: true,
-      logging: false,
-      backgroundColor: '#ffffff',
-      imageTimeout: 15000,
-      windowWidth: 1200,
-      windowHeight: 1600,
-      onclone: (clonedDoc: Document) => {
-        applyFontAndStyleFixesToClone(clonedDoc);
-      },
-    });
+    // PDF_EXPORT_HIDDEN_ELEMENT_FIDELITY_V1
+    let renderTarget = element;
+    let exportWrapper: HTMLDivElement | null = null;
 
-    const imgData = canvas.toDataURL('image/jpeg', quality);
+    try {
+      const computed = window.getComputedStyle(element);
+      const isHidden =
+        element.offsetWidth === 0 ||
+        element.offsetHeight === 0 ||
+        computed.display === 'none' ||
+        computed.visibility === 'hidden';
+
+      if (isHidden) {
+        exportWrapper = document.createElement('div');
+        exportWrapper.style.position = 'fixed';
+        exportWrapper.style.left = '-100000px';
+        exportWrapper.style.top = '0';
+        exportWrapper.style.width = orientation === 'landscape' ? '1200px' : '800px';
+        exportWrapper.style.backgroundColor = '#ffffff';
+        exportWrapper.style.display = 'block';
+        exportWrapper.style.visibility = 'visible';
+        exportWrapper.style.opacity = '1';
+        exportWrapper.style.pointerEvents = 'none';
+        exportWrapper.style.zIndex = '-2147483647';
+        exportWrapper.dir = element.dir || 'rtl';
+
+        const clone = element.cloneNode(true) as HTMLElement;
+        clone.classList.remove('hidden');
+        clone.style.setProperty('display', 'block', 'important');
+        clone.style.setProperty('visibility', 'visible', 'important');
+        clone.style.setProperty('opacity', '1', 'important');
+        clone.style.position = 'static';
+
+        exportWrapper.appendChild(clone);
+        document.body.appendChild(exportWrapper);
+
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+        );
+        renderTarget = clone;
+      }
+
+      const captureWidth = Math.max(
+        renderTarget.scrollWidth,
+        renderTarget.offsetWidth,
+        orientation === 'landscape' ? 1200 : 800
+      );
+      const captureHeight = Math.max(renderTarget.scrollHeight, renderTarget.offsetHeight, 1);
+
+      const canvas = await html2canvas(renderTarget, {
+        scale,
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+        backgroundColor: '#ffffff',
+        imageTimeout: 15000,
+        width: captureWidth,
+        height: captureHeight,
+        windowWidth: captureWidth,
+        windowHeight: Math.max(captureHeight, 1600),
+        scrollX: 0,
+        scrollY: 0,
+        onclone: (clonedDoc: Document) => {
+          applyFontAndStyleFixesToClone(clonedDoc);
+        },
+      });
+
+      const imgData = canvas.toDataURL('image/png');
 
     const maxWidth = pdfWidth - (marginMm * 2);
     const maxHeight = pdfHeight - (marginMm * 2);
@@ -624,10 +677,15 @@ export async function downloadMultiElementsAsPdf(
     const posX = marginMm + (maxWidth - imgWidth) / 2;
     const posY = marginMm + (maxHeight - imgHeight) / 2;
 
-    pdf.addImage(imgData, 'JPEG', posX, posY, imgWidth, imgHeight, undefined, 'FAST');
+      pdf.addImage(imgData, 'PNG', posX, posY, imgWidth, imgHeight, undefined, 'FAST');
 
-    canvas.width = 0;
-    canvas.height = 0;
+      canvas.width = 0;
+      canvas.height = 0;
+    } finally {
+      if (exportWrapper && document.body.contains(exportWrapper)) {
+        document.body.removeChild(exportWrapper);
+      }
+    }
   }
 
   const pdfBlob = pdf.output('blob');
