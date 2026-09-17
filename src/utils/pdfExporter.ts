@@ -636,11 +636,8 @@ export async function downloadMultiElementsAsPdf(
         renderTarget = clone;
       }
 
-      const captureWidth = Math.max(
-        renderTarget.scrollWidth,
-        renderTarget.offsetWidth,
-        orientation === 'landscape' ? 1200 : 800
-      );
+      // PDF_EXPORT_INTRINSIC_ELEMENT_SIZE_V1_1
+      const captureWidth = Math.max(renderTarget.scrollWidth, renderTarget.offsetWidth, 1);
       const captureHeight = Math.max(renderTarget.scrollHeight, renderTarget.offsetHeight, 1);
 
       const canvas = await html2canvas(renderTarget, {
@@ -652,8 +649,8 @@ export async function downloadMultiElementsAsPdf(
         imageTimeout: 15000,
         width: captureWidth,
         height: captureHeight,
-        windowWidth: captureWidth,
-        windowHeight: Math.max(captureHeight, 1600),
+        windowWidth: Math.max(captureWidth, 1),
+        windowHeight: Math.max(captureHeight, 1),
         scrollX: 0,
         scrollY: 0,
         onclone: (clonedDoc: Document) => {
