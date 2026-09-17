@@ -1117,10 +1117,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return initialStored?.dailyLessonPlans || DEFAULT_DAILY_LESSON_PLANS;
   });
 
+  // SECURITY_LESSON_PLANS_OWNER_ONLY_V1
+  const lessonPlanIsAdmin = currentUser?.role === 'admin' && role === 'admin';
+  const lessonPlanIsSupervisor = currentUser?.role === 'supervisor' && role === 'supervisor';
+  const lessonPlanIsTeacher = currentUser?.role === 'teacher' && role === 'teacher';
+  const lessonPlanTeacherId = lessonPlanIsTeacher ? (currentUser?.profileId || currentUser?.teacherObj?.id || currentUser?.id || '') : '';
+  const lessonPlanTeacherName = lessonPlanIsTeacher ? (currentUser?.teacherObj?.name || currentUser?.name || '') : '';
+  const ownsLessonPlan = (plan: AnnualPlan | DailyLessonPlan): boolean => {
+    if (!lessonPlanIsTeacher || !lessonPlanTeacherId) return false;
+    const trustedIds = new Set([currentUser?.profileId, currentUser?.teacherObj?.id, currentUser?.id].filter((v): v is string => Boolean(v)));
+    return Boolean((plan.teacherId && trustedIds.has(plan.teacherId)) || (plan.createdBy && trustedIds.has(plan.createdBy)));
+  };
+  const canManageLessonPlan = (plan: AnnualPlan | DailyLessonPlan): boolean => lessonPlanIsAdmin || ownsLessonPlan(plan);
+  const requireLessonPlanCreateAuthority = (): boolean => lessonPlanIsAdmin || (lessonPlanIsTeacher && Boolean(lessonPlanTeacherId));
+
   // Curriculum Plan Actions (Annual & Daily)
   const addAnnualPlan = (plan: Omit<AnnualPlan, 'id' | 'createdAt' | 'updatedAt'>): AnnualPlan => {
+    if (!requireLessonPlanCreateAuthority()) throw new Error('Unauthorized annual lesson plan creation');
+    const securedPlan = lessonPlanIsTeacher ? { ...plan, teacherId: lessonPlanTeacherId, teacherName: lessonPlanTeacherName, createdBy: lessonPlanTeacherId } : plan;
     const newPlan: AnnualPlan = {
-      ...plan,
+      ...securedPlan,
       id: `annual-plan-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       createdAt: new Date().toISOString().split('T')[0],
       updatedAt: new Date().toISOString().split('T')[0],
@@ -1139,10 +1155,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateAnnualPlan = (id: string, updated: Partial<AnnualPlan>) => {
+    const target = annualPlans.find((p) => p.id === id);
+    if (!target || !canManageLessonPlan(target)) return;
+    const securedUpdated = lessonPlanIsTeacher ? { ...updated, teacherId: target.teacherId, teacherName: target.teacherName, createdBy: target.createdBy, status: target.status, approvedBy: target.approvedBy, approvedAt: target.approvedAt, approvalNotes: target.approvalNotes, supervisorNotes: target.supervisorNotes, supervisorName: target.supervisorName, supervisorSignedAt: target.supervisorSignedAt } : updated;
     setAnnualPlans((prev) =>
       prev.map((p) =>
         p.id === id
-          ? { ...p, ...updated, updatedAt: new Date().toISOString().split('T')[0] }
+          ? { ...p, ...securedUpdated, updatedAt: new Date().toISOString().split('T')[0] }
           : p
       )
     );
@@ -1157,6 +1176,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteAnnualPlan = (id: string) => {
+    const target = annualPlans.find((p) => p.id === id);
+    if (!target || !canManageLessonPlan(target)) return;
     setAnnualPlans((prev) => {
       const next = prev.filter((p) => p.id !== id);
       try {
@@ -1178,13 +1199,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const duplicateAnnualPlan = (id: string) => {
     const target = annualPlans.find((p) => p.id === id);
-    if (!target) return;
+    if (!target || !canManageLessonPlan(target)) return;
     const duplicated: AnnualPlan = {
       ...target,
       id: `annual-plan-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       academicYear: target.academicYear,
-      teacherName: currentUser?.name || target.teacherName,
-      teacherId: currentUser?.id || target.teacherId,
+      teacherName: lessonPlanIsTeacher ? lessonPlanTeacherName : target.teacherName,
+      teacherId: lessonPlanIsTeacher ? lessonPlanTeacherId : target.teacherId,
+      createdBy: lessonPlanIsTeacher ? lessonPlanTeacherId : target.createdBy,
       status: 'draft',
       approvedBy: undefined,
       approvedAt: undefined,
@@ -1225,6 +1247,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     monthId: string,
     weekId: string
   ) => {
+    const target = annualPlans.find((p) => p.id === planId);
+    if (!target || !canManageLessonPlan(target)) return;
     setAnnualPlans((prev) =>
       prev.map((plan) => {
         if (plan.id !== planId) return plan;
@@ -1263,7 +1287,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     approverRole?: string,
     approverName?: string
   ) => {
-    const isSupervisor = approverRole === 'supervisor' || role === 'supervisor';
+    if (!lessonPlanIsAdmin && !lessonPlanIsSupervisor) return;
+    const isSupervisor = lessonPlanIsSupervisor;
     const finalApproverName =
       approverName ||
       currentUser?.name ||
@@ -1307,8 +1332,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const addDailyLessonPlan = (
     plan: Omit<DailyLessonPlan, 'id' | 'createdAt' | 'updatedAt'>
   ): DailyLessonPlan => {
+    if (!requireLessonPlanCreateAuthority()) throw new Error('Unauthorized daily lesson plan creation');
+    const securedPlan = lessonPlanIsTeacher ? { ...plan, teacherId: lessonPlanTeacherId, teacherName: lessonPlanTeacherName, createdBy: lessonPlanTeacherId } : plan;
     const newPlan: DailyLessonPlan = {
-      ...plan,
+      ...securedPlan,
       id: `daily-plan-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       createdAt: new Date().toISOString().split('T')[0],
       updatedAt: new Date().toISOString().split('T')[0],
@@ -1327,10 +1354,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateDailyLessonPlan = (id: string, updated: Partial<DailyLessonPlan>) => {
+    const target = dailyLessonPlans.find((p) => p.id === id);
+    if (!target || !canManageLessonPlan(target)) return;
+    const securedUpdated = lessonPlanIsTeacher ? { ...updated, teacherId: target.teacherId, teacherName: target.teacherName, createdBy: target.createdBy, status: target.status, principalNotes: target.principalNotes, principalName: target.principalName, supervisorNotes: target.supervisorNotes, supervisorName: target.supervisorName, reviewedAt: target.reviewedAt } : updated;
     setDailyLessonPlans((prev) =>
       prev.map((p) =>
         p.id === id
-          ? { ...p, ...updated, updatedAt: new Date().toISOString().split('T')[0] }
+          ? { ...p, ...securedUpdated, updatedAt: new Date().toISOString().split('T')[0] }
           : p
       )
     );
@@ -1345,6 +1375,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteDailyLessonPlan = (id: string) => {
+    const target = dailyLessonPlans.find((p) => p.id === id);
+    if (!target || !canManageLessonPlan(target)) return;
     setDailyLessonPlans((prev) => {
       const next = prev.filter((p) => p.id !== id);
       try {
@@ -1366,12 +1398,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const duplicateDailyLessonPlan = (id: string) => {
     const target = dailyLessonPlans.find((p) => p.id === id);
-    if (!target) return;
+    if (!target || !canManageLessonPlan(target)) return;
     const duplicated: DailyLessonPlan = {
       ...target,
       id: `daily-plan-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-      teacherName: currentUser?.name || target.teacherName,
-      teacherId: currentUser?.id || target.teacherId,
+      teacherName: lessonPlanIsTeacher ? lessonPlanTeacherName : target.teacherName,
+      teacherId: lessonPlanIsTeacher ? lessonPlanTeacherId : target.teacherId,
+      createdBy: lessonPlanIsTeacher ? lessonPlanTeacherId : target.createdBy,
       date: new Date().toISOString().split('T')[0],
       status: 'draft',
       principalNotes: undefined,
@@ -1399,7 +1432,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     reviewerRole?: string,
     reviewerName?: string
   ) => {
-    const isSupervisor = reviewerRole === 'supervisor' || role === 'supervisor';
+    if (!lessonPlanIsAdmin && !lessonPlanIsSupervisor) return;
+    const isSupervisor = lessonPlanIsSupervisor;
     const finalReviewerName =
       reviewerName ||
       currentUser?.name ||

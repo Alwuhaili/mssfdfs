@@ -257,7 +257,7 @@ export const LessonPlanningHub: React.FC<Props> = ({
           (currentUser.authUid && t.authUid && t.authUid === currentUser.authUid) ||
           (t.id && t.id === currentUser.id) ||
           (currentUser.teacherObj?.id && t.id === currentUser.teacherObj.id) ||
-          (currentUser.email && t.email && t.email.toLowerCase() === currentUser.email.toLowerCase())
+          (currentUser.profileId && t.id === currentUser.profileId)
       ) ||
       (currentUser.role === 'teacher' ? (currentUser.teacherObj as any) : null)
     );
@@ -1691,7 +1691,7 @@ export const LessonPlanningHub: React.FC<Props> = ({
             } else {
               addAnnualPlan({
                 ...data,
-                createdBy: currentUser?.id || 'user-admin',
+                createdBy: currentUser?.profileId || currentUser?.teacherObj?.id || currentUser?.id || '',
               });
               showToast(`تمت إضافة الخطة السنوية لمادة (${data.subject}) بنجاح`);
             }
@@ -1718,7 +1718,7 @@ export const LessonPlanningHub: React.FC<Props> = ({
             } else {
               addDailyLessonPlan({
                 ...data,
-                createdBy: currentUser?.id || 'user-admin',
+                createdBy: currentUser?.profileId || currentUser?.teacherObj?.id || currentUser?.id || '',
               });
               showToast(`تمت إضافة خطة درس (${data.lessonTitle}) بنجاح`);
             }
