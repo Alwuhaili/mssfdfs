@@ -3057,7 +3057,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
 
       {/* DEDICATED HIGH-PRECISION PRINT & PDF CAPTURE CONTAINERS (OFFICIAL TWO-PAGE DOCUMENT LAYOUT & TEACHER SCHEDULE) */}
       <div className="fixed -left-[9999px] top-0 pointer-events-none">
-        <div id="timetable-pdf-page-1">
+        <div id="timetable-pdf-page-1" className="bg-white" style={{ width: "1120px", minWidth: "1120px", backgroundColor: "#ffffff" }} data-pdf-fidelity="TIMETABLE_PDF_PAGE1_FIDELITY_V1_2">
           {renderPage1Timetable(true)}
         </div>
         <div id="timetable-pdf-page-2">
