@@ -407,21 +407,36 @@ export const DigitalLibraryHub: React.FC<DigitalLibraryHubProps> = ({
       });
   }, [lectures, selectedTeacher, selectedSubject, selectedGrade, selectedCategory, searchQuery, sortBy, bookmarkedIds, allTeachersList]);
 
-  // Handle Download PDF with Full Official Formatting
+  // DIGITAL_LIBRARY_ORIGINAL_FILE_V2_2E
+  const getOriginalLibraryFileName = (lec: LectureResource): string => {
+    const explicit = (lec.originalFileName || '').trim();
+    if (explicit) return explicit;
+    const extension = (lec.fileExtension || '').trim().replace(/^\./, '');
+    if (extension) return `${lec.title}.${extension}`;
+    if (lec.pdfDataUrl || lec.type === 'pdf') return `${lec.title}.pdf`;
+    return lec.title || 'library-file';
+  };
+  const isFirebaseOriginalResource = (lec: LectureResource): boolean =>
+    lec.storageProvider === 'firebase' || !!lec.storagePath || !!lec.originalFileName;
   const handleDownload = async (lec: LectureResource) => {
     recordLectureDownload(lec.id);
 
     // If PDF binary data is attached in IndexedDB or memory
     if (lec.pdfDataUrl && lec.pdfDataUrl !== '#') {
-      const ok = await downloadDataUrlOrBlob(lec.pdfDataUrl, `${lec.title}.pdf`);
+      const ok = await downloadDataUrlOrBlob(lec.pdfDataUrl, getOriginalLibraryFileName(lec));
       if (ok) return;
     }
     if (lec.fileUrl && lec.fileUrl !== '#' && !lec.fileUrl.startsWith('idb:')) {
-      const ok = await downloadDataUrlOrBlob(lec.fileUrl, `${lec.title}.pdf`);
+      const ok = await downloadDataUrlOrBlob(lec.fileUrl, getOriginalLibraryFileName(lec));
       if (ok) return;
     }
 
-    // Generate comprehensive ministerial study guide PDF
+    if (isFirebaseOriginalResource(lec)) {
+      console.error('Original file unavailable; synthetic PDF blocked.', { resourceId: lec.id, storagePath: lec.storagePath });
+      window.alert('تعذر تنزيل الملف الأصلي حالياً. لم يتم إنشاء PDF بديل.');
+      return;
+    }
+    // Legacy-only synthetic PDF fallback.
     const chaptersText = (lec.chapters || [])
       .map((ch, idx) => `• ${ch.title} (ص ${ch.pageNumber})\n  ملخص: ${ch.summary || 'تغطية شاملة للمفاهيم والمسائل'}`)
       .join('\n\n');
@@ -1459,10 +1474,10 @@ ${lec.sampleContentText || 'تم إعداد هذا المرجع التعليمي
                         type="button"
                         onClick={() => handleDownload(lec)}
                         className="px-3 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs flex items-center justify-center gap-1.5 shadow-md shadow-emerald-600/20 transition-all cursor-pointer"
-                        title="تنزيل ملف PDF إلى جهازك"
+                        title="تنزيل الملف الأصلي إلى جهازك"
                       >
                         <Download className="w-3.5 h-3.5" />
-                        <span>تحميل PDF 📥</span>
+                        <span>تحميل الملف 📥</span>
                       </button>
                     </div>
 
@@ -1592,7 +1607,7 @@ ${lec.sampleContentText || 'تم إعداد هذا المرجع التعليمي
                               type="button"
                               onClick={() => handleDownload(lec)}
                               className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1 shadow-sm cursor-pointer"
-                              title="تحميل PDF"
+                              title="تحميل الملف"
                             >
                               <Download className="w-3.5 h-3.5" />
                               <span>تحميل</span>
@@ -1790,7 +1805,7 @@ ${lec.sampleContentText || 'تم إعداد هذا المرجع التعليمي
                   className="px-5 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs flex items-center justify-center gap-2 cursor-pointer transition-all"
                 >
                   <Download className="w-4 h-4" />
-                  <span>تحميل PDF 📥</span>
+                  <span>تحميل الملف 📥</span>
                 </button>
               </div>
             </div>

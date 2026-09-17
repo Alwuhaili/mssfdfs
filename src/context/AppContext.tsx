@@ -3,6 +3,7 @@
  */
 
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import { assertUniqueIdentity, stableUsername, type IdentityRecord } from '../utils/identityPolicy';
 import { centralSyncService } from '../services/syncService';
 import {
   UserRole,
@@ -398,6 +399,8 @@ const INITIAL_PASSCODES: Record<UserRole, string> = {
   supervisor: '1234',
   guest: '',
 };
+
+const LEGACY_AUTH_ENABLED = import.meta.env.DEV && import.meta.env.VITE_ALLOW_LEGACY_AUTH === 'true';
 
 const LOCAL_STORAGE_KEY = 'maysan_gifted_school_data_v1';
 
@@ -797,11 +800,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [activeTakingExam, setActiveTakingExam] = useState<Exam | null>(null);
 
-  const initialStored = getInitialStoredData();
+  const initialStored = LEGACY_AUTH_ENABLED ? getInitialStoredData() : null;
 
   // User Security Passcodes (strictly per userKey/userId)
   const [userPasscodes, setUserPasscodes] = useState<Record<string, string>>(
-    () => initialStored?.userPasscodes || INITIAL_PASSCODES
+    () => LEGACY_AUTH_ENABLED ? (initialStored?.userPasscodes || INITIAL_PASSCODES) : {}
   );
 
   // Check if a person/teacher name is excluded
@@ -1540,6 +1543,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateSchoolAdminData = (updated: Partial<SchoolAdminData>) => {
+    // SECURITY_SCHOOL_ACCOUNT_ADMIN_ONLY_V1
+    if (role !== 'admin' || currentUser?.role !== 'admin') {
+      console.warn('[SECURITY] Blocked unauthorized school administration update.');
+      return;
+    }
     setSchoolAdminData((prev) => {
       const newData = { ...prev, ...updated };
       centralSyncService.directObjectMutation('schoolAdminData', newData, { id: currentUser?.id || role, name: currentUser?.name || role, role });
@@ -2146,8 +2154,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, []);
 
-  // Save to LocalStorage on changes with safe handling for large files
+  // Save to LocalStorage only in explicitly-enabled development legacy mode.
+  // Production security mode never persists private school records in browser localStorage.
   useEffect(() => {
+    if (!LEGACY_AUTH_ENABLED) {
+      try {
+        localStorage.removeItem(LOCAL_STORAGE_KEY);
+        localStorage.removeItem('maysan_annual_plans_v1');
+        localStorage.removeItem('maysan_daily_lesson_plans_v1');
+        localStorage.removeItem('maysan_exam_schedules_v1');
+      } catch { /* ignore restricted storage */ }
+      return;
+    }
     try {
       // Sanitize lectures for localStorage to avoid 5MB quota exhaustion
       const safeLectures = lectures.map((l) => {
@@ -2188,7 +2206,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         certificates,
         calendarEvents,
         challenges,
-        userPasscodes,
+        ...(LEGACY_AUTH_ENABLED ? { userPasscodes } : {}),
         schoolAdminData,
         decisionSettings,
         auditLogs,
@@ -2224,7 +2242,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     certificates,
     calendarEvents,
     challenges,
-    userPasscodes,
     schoolAdminData,
     decisionSettings,
     auditLogs,
@@ -2286,7 +2303,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (Array.isArray(remoteData.certificates)) setCertificates(remoteData.certificates);
     if (Array.isArray(remoteData.calendarEvents)) setCalendarEvents(remoteData.calendarEvents);
     if (Array.isArray(remoteData.challenges)) setChallenges(remoteData.challenges);
-    if (remoteData.userPasscodes) setUserPasscodes(remoteData.userPasscodes);
     if (remoteData.schoolAdminData) setSchoolAdminData(remoteData.schoolAdminData);
     if (remoteData.decisionSettings) setDecisionSettings(remoteData.decisionSettings);
     if (remoteData.disciplinarySettings) setDisciplinarySettings(remoteData.disciplinarySettings);
@@ -2332,7 +2348,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     certificates,
     calendarEvents,
     challenges,
-    userPasscodes,
     schoolAdminData,
     decisionSettings,
     auditLogs,
@@ -2345,6 +2360,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Initial Server Hydration & Seeding
   useEffect(() => {
     let isMounted = true;
+
+    // Security Hardening V1: anonymous visitors must never hydrate private school data.
+    // Public website data must live in the dedicated publicContent collection.
+    if (!currentUser) {
+      isInitialHydrationDone.current = false;
+      setSyncStatus('synced');
+      centralSyncService.stopRealtimeStream();
+      return () => { isMounted = false; };
+    }
 
     const initializeCentralSync = async () => {
       try {
@@ -2442,7 +2466,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       unsubscribeBroadcast();
       window.removeEventListener('focus', onWindowFocus);
     };
-  }, [syncVersion]);
+  }, [syncVersion, currentUser?.id]);
 
   // Debounced auto-push to central server on local changes
   useEffect(() => {
@@ -2466,13 +2490,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try {
         const payload = getFullPayload();
         
-        // --- OFFLINE FALLBACK ---
-        // Always save to localStorage immediately to prevent data loss 
-        // in case Firebase hits its daily quota limit.
-        try {
-          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload));
-        } catch(e) {
-          console.error("Local storage save failed", e);
+        // Legacy-only offline fallback. Security mode never persists private school data in localStorage.
+        if (LEGACY_AUTH_ENABLED) {
+          try {
+            localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload));
+          } catch(e) {
+            console.error("Local storage save failed", e);
+          }
         }
         
         const sourceUser = {
@@ -2522,7 +2546,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     certificates,
     calendarEvents,
     challenges,
-    userPasscodes,
     schoolAdminData,
     decisionSettings,
     auditLogs,
@@ -3166,6 +3189,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Helper to read passcode for any user or role (strictly isolated per userKey)
   const getUserPasscode = (userKey: string, fallbackRole?: UserRole): string => {
+    if (!LEGACY_AUTH_ENABLED) return '••••••••';
     if (userPasscodes && userPasscodes[userKey]) {
       return userPasscodes[userKey];
     }
@@ -3188,6 +3212,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       sendNotification?: boolean;
     }
   ): { success: boolean; message: string } => {
+    if (!LEGACY_AUTH_ENABLED) {
+      return { success: false, message: lang === 'ar' ? 'إدارة كلمات المرور المحلية معطلة. استخدم Firebase Authentication.' : 'Legacy local password management is disabled.' };
+    }
     if (role !== 'admin') {
       return {
         success: false,
@@ -3350,12 +3377,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setNotifications((prev) => [notif, ...prev]);
   };
 
+  const identityRecords = (): IdentityRecord[] => [
+    ...students.map((x) => ({ id: x.id, role: 'student' as const, email: x.email, phone: x.phone, nationalId: x.nationalId })),
+    ...teachers.map((x) => ({ id: x.id, role: 'teacher' as const, email: x.email, phone: x.phone, nationalId: x.nationalId })),
+    ...parents.map((x) => ({ id: x.id, role: 'parent' as const, email: x.email, phone: x.phone, nationalId: x.nationalId })),
+    ...supervisors.map((x: any) => ({ id: x.id, role: 'supervisor' as const, email: x.email, phone: x.phone, nationalId: x.nationalId })),
+  ];
+
   const addStudent = (data: Omit<Student, 'id' | 'status' | 'enrollmentYear'> & { enrollmentYear?: string }) => {
     const randSuffix = Math.random().toString(36).substring(2, 7);
     const parentId = `prt-${Date.now()}-${randSuffix}`;
+    const studentId = `std-${Date.now()}-${randSuffix}`;
+    const existingIdentities = identityRecords();
+    assertUniqueIdentity({ id: studentId, role: 'student', email: data.email, phone: data.phone, nationalId: data.nationalId }, existingIdentities);
+    assertUniqueIdentity({ id: parentId, role: 'parent', email: data.parentEmail, phone: data.parentPhone }, existingIdentities);
     const newStudent: Student = {
       ...data,
-      id: `std-${Date.now()}-${randSuffix}`,
+      id: studentId,
+      username: stableUsername('student', studentId),
       parentId,
       status: 'منتظمة',
       enrollmentYear: data.enrollmentYear?.trim() || '2026',
@@ -3370,6 +3409,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Auto add parent account link
     const newParent: Parent = {
       id: parentId,
+      username: stableUsername('parent', parentId),
       name: data.parentName,
       phone: data.parentPhone,
       email: data.parentEmail,
@@ -3425,6 +3465,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // User Management Implementations
   const updateTeacher = (id: string, updateData: Partial<Teacher>) => {
+    // SECURITY_TEACHER_PROFILE_ADMIN_MANAGED_V1
+    if (role !== 'admin' || currentUser?.role !== 'admin') {
+      console.warn('[SECURITY] Blocked unauthorized teacher profile update.');
+      return;
+    }
     let teacherName = '';
     setTeachers((prev) => {
       const updatedArray = prev.map((t) => {
@@ -3480,7 +3525,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const currentStudent = students.find(s => s.id === id);
     if (!currentStudent) return; // Prevent crashes if student not found
 
-    let targetStudent = { ...currentStudent, ...updated };
+    let targetStudent = { ...currentStudent, ...updated, username: currentStudent.username || stableUsername('student', id) };
+    assertUniqueIdentity({ id, role: 'student', email: targetStudent.email, phone: targetStudent.phone, nationalId: targetStudent.nationalId }, identityRecords(), id);
+    const existingParent = parents.find((p) => p.id === targetStudent.parentId || p.studentId === id);
+    if (existingParent) {
+      assertUniqueIdentity({ id: existingParent.id, role: 'parent', email: targetStudent.parentEmail, phone: targetStudent.parentPhone, nationalId: existingParent.nationalId }, identityRecords(), existingParent.id);
+    }
     const studentName = targetStudent.name || id;
 
     // 2. Check if parent needs to be created or updated
@@ -3491,6 +3541,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             parentFound = true;
             return {
                 ...p,
+                username: p.username || stableUsername('parent', p.id),
                 name: targetStudent.parentName,
                 phone: targetStudent.parentPhone,
                 email: targetStudent.parentEmail,
@@ -3505,6 +3556,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         newParentId = targetStudent.parentId || `prt-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
         const newParent = {
             id: newParentId,
+            username: stableUsername('parent', newParentId),
             name: targetStudent.parentName || '',
             phone: targetStudent.parentPhone || '',
             email: targetStudent.parentEmail || '',
@@ -5662,8 +5714,16 @@ ${defaultReason}
     );
   };
 
-  const addLecture = (data: Omit<LectureResource, 'id' | 'uploadedAt'>) => {
-    const lectureId = `lec-${Date.now()}`;
+  const addLecture = (
+    data: Omit<LectureResource, 'id' | 'uploadedAt'>,
+    options?: {
+      resourceId?: string;
+    }
+  ): LectureResource => {
+    // DIGITAL_LIBRARY_RESOURCE_ID_V2_2A
+    const lectureId =
+      options?.resourceId?.trim() ||
+      `lec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const newLec: LectureResource = {
       ...data,
       id: lectureId,
@@ -5672,7 +5732,11 @@ ${defaultReason}
       viewsCount: data.viewsCount ?? 1,
     };
 
-    if (data.pdfDataUrl && data.pdfDataUrl.length > 50) {
+    if (
+      data.storageProvider !== 'firebase' &&
+      data.pdfDataUrl &&
+      data.pdfDataUrl.length > 50
+    ) {
       saveStoredFile(lectureId, data.pdfDataUrl, {
         name: `${newLec.title}.pdf`,
         type: 'application/pdf',
@@ -5690,6 +5754,10 @@ ${defaultReason}
       isRead: false,
     };
     setNotifications((prev) => [notif, ...prev]);
+
+    // Return the exact resource that was inserted.
+    // Storage integration must reuse this same immutable resource ID.
+    return newLec;
   };
 
   const deleteLecture = (id: string) => {
@@ -5750,7 +5818,11 @@ ${defaultReason}
   };
 
   const updateLecture = (id: string, data: Partial<LectureResource>) => {
-    if (data.pdfDataUrl && data.pdfDataUrl.length > 50) {
+    if (
+      data.storageProvider !== 'firebase' &&
+      data.pdfDataUrl &&
+      data.pdfDataUrl.length > 50
+    ) {
       saveStoredFile(id, data.pdfDataUrl, {
         name: `${data.title || 'document'}.pdf`,
         type: 'application/pdf',
@@ -6320,6 +6392,7 @@ ${defaultReason}
   const exportDataJSON = () => {
     const payload = {
       exportDate: new Date().toISOString(),
+      securityNote: 'Security Hardening V1: authentication secrets are intentionally excluded from backups.',
       school: 'مدرسة ثانوية ميسان للمتميزات',
       teachers,
       students,
@@ -6337,7 +6410,6 @@ ${defaultReason}
       notifications,
       certificates,
       calendarEvents,
-      userPasscodes,
       schoolAdminData,
       challenges,
       decisionSettings,
@@ -6379,7 +6451,6 @@ ${defaultReason}
       if (parsed.notifications) setNotifications(parsed.notifications);
       if (parsed.certificates) setCertificates(parsed.certificates);
       if (parsed.calendarEvents) setCalendarEvents(parsed.calendarEvents);
-      if (parsed.userPasscodes) setUserPasscodes(parsed.userPasscodes);
       if (parsed.schoolAdminData) setSchoolAdminData(parsed.schoolAdminData);
       if (parsed.challenges) setChallenges(parsed.challenges);
       if (parsed.deletedChallengeIds && Array.isArray(parsed.deletedChallengeIds)) {

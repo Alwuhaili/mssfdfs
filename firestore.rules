@@ -1,10 +1,156 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // We will allow open access for now as the app uses local passcode roles and we don't have FirebaseAuth fully wired for these custom roles yet.
-    // In a production scenario, we'd use Custom Claims, but this matches the local SSE security model.
-    match /{document=**} {
-      allow read, write: if true;
+    function signedIn() { return request.auth != null; }
+    function role() { return signedIn() ? request.auth.token.role : null; }
+    function isAdmin() { return role() in ['admin', 'director', 'school_manager']; }
+    function isTeacher() { return role() == 'teacher'; }
+    function isStudent() { return role() == 'student'; }
+    function isParent() { return role() == 'parent'; }
+    function isSupervisor() { return role() == 'supervisor'; }
+    function owns(resourceData) {
+      return signedIn() && (
+        resourceData.authUid == request.auth.uid ||
+        resourceData.uid == request.auth.uid ||
+        resourceData.userId == request.auth.uid
+      );
     }
+
+    // Pre-authentication identifier resolver. IDs are SHA-256 hashes of normalized
+    // email/username/phone values. Public clients may GET a known hash but may not list.
+    match /authDirectory/{identifierHash} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Public website content only. Never put private student/parent data here.
+    match /publicContent/{document=**} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /announcements/{id} {
+      allow read: if isAdmin() || signedIn() || resource.data.visibility == 'public' || resource.data.isPublic == true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /teachers/{id} {
+      allow read: if isAdmin() || isSupervisor() || (isTeacher() && owns(resource.data));
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (isTeacher() && owns(resource.data) && owns(request.resource.data));
+    }
+
+    match /students/{id} {
+      allow read: if isAdmin() || isTeacher() || isSupervisor() || (isStudent() && owns(resource.data));
+      allow write: if isAdmin();
+    }
+
+    match /parents/{id} {
+      allow read: if isAdmin() || (isParent() && owns(resource.data));
+      allow write: if isAdmin();
+    }
+
+    match /supervisors/{id} {
+      allow read: if isAdmin() || (isSupervisor() && owns(resource.data));
+      allow write: if isAdmin();
+    }
+
+    match /graduates/{id} {
+      allow read: if isAdmin() || isTeacher() || isSupervisor();
+      allow write: if isAdmin();
+    }
+
+    match /attendance/{id} {
+      allow read: if isAdmin() || isTeacher() || isSupervisor() ||
+        (isStudent() && resource.data.studentAuthUid == request.auth.uid) ||
+        (isParent() && resource.data.parentAuthUid == request.auth.uid);
+      allow create, update: if isAdmin() || isTeacher();
+      allow delete: if isAdmin();
+    }
+
+    match /exams/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin() || isTeacher();
+    }
+
+    match /submissions/{id} {
+      allow read: if isAdmin() || isTeacher() ||
+        (isStudent() && resource.data.studentAuthUid == request.auth.uid);
+      allow create: if isAdmin() || isTeacher() ||
+        (isStudent() && request.resource.data.studentAuthUid == request.auth.uid);
+      allow update: if isAdmin() || isTeacher() ||
+        (isStudent() && resource.data.studentAuthUid == request.auth.uid && request.resource.data.studentAuthUid == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    match /messages/{id} {
+      allow read: if isAdmin() || (signedIn() && (
+        resource.data.senderAuthUid == request.auth.uid ||
+        resource.data.receiverAuthUid == request.auth.uid ||
+        resource.data.recipientAuthUid == request.auth.uid
+      ));
+      allow create: if signedIn() && (
+        isAdmin() || request.resource.data.senderAuthUid == request.auth.uid
+      );
+      allow update, delete: if isAdmin() || (signedIn() && resource.data.senderAuthUid == request.auth.uid);
+    }
+
+    match /notifications/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.targetAuthUid == request.auth.uid);
+      allow write: if isAdmin();
+    }
+
+    match /financial/{id} {
+      allow read: if isAdmin() || (isParent() && resource.data.parentAuthUid == request.auth.uid);
+      allow write: if isAdmin();
+    }
+
+    match /certificates/{id} {
+      allow read: if isAdmin() || isTeacher() || isSupervisor() ||
+        (isStudent() && resource.data.studentAuthUid == request.auth.uid) ||
+        (isParent() && resource.data.parentAuthUid == request.auth.uid);
+      allow write: if isAdmin() || isTeacher();
+    }
+
+    // DIGITAL_LIBRARY_LECTURES_OWNER_RULES_V2_2D
+    // Firebase Auth UID is the authority for teacher-owned lecture metadata.
+    // Legacy lecture documents without uploaderId remain readable, but only admins
+    // can modify/delete them until they are migrated deliberately.
+    match /lectures/{id} {
+      allow read: if signedIn();
+
+      allow create: if isAdmin() ||
+        (isTeacher() &&
+         request.resource.data.uploaderId == request.auth.uid);
+
+      allow update: if isAdmin() ||
+        (isTeacher() &&
+         resource.data.uploaderId == request.auth.uid &&
+         request.resource.data.uploaderId == request.auth.uid);
+
+      allow delete: if isAdmin() ||
+        (isTeacher() &&
+         resource.data.uploaderId == request.auth.uid);
+    }
+    match /calendarEvents/{id} { allow read: if signedIn(); allow write: if isAdmin() || isTeacher(); }
+    match /challenges/{id} { allow read: if signedIn(); allow write: if isAdmin() || isTeacher(); }
+    match /annualPlans/{id} { allow read: if isAdmin() || isTeacher() || isSupervisor(); allow write: if isAdmin() || isTeacher(); }
+    match /dailyLessonPlans/{id} { allow read: if isAdmin() || isTeacher() || isSupervisor(); allow write: if isAdmin() || isTeacher(); }
+    match /examSchedules/{id} { allow read: if signedIn(); allow write: if isAdmin(); }
+    match /customFolders/{id} { allow read, write: if isAdmin() || isTeacher(); }
+
+    // System / settings / migration data is never public.
+    match /appSettings/{id} {
+      allow read: if isAdmin() || (signedIn() && id in ['schoolAdminData', 'timetable', 'subjectQuotas', 'decisionSettings', 'disciplinarySettings']);
+      allow write: if isAdmin();
+    }
+    match /database/migration_collections_v1 { allow read: if signedIn(); allow write: if isAdmin(); }
+    match /database/{id} { allow read, write: if isAdmin(); }
+    match /system/{id} { allow read, write: if isAdmin(); }
+    match /auditLogs/{id} { allow read: if isAdmin(); allow create: if signedIn(); allow update, delete: if false; }
+
+    // Fail closed for every collection not explicitly listed above.
+    match /{document=**} { allow read, write: if false; }
   }
 }

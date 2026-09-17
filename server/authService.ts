@@ -6,13 +6,13 @@
 import { sendOtpEmail } from "./emailService.js";
 import { sendOtpSms } from "./smsService.js";
 import { otpDatabase } from "./otpDatabase.js";
+import { randomInt } from "node:crypto";
 
 export interface RequestOtpParams {
   recipient: string;
   method: "email" | "phone";
   role?: string;
   accountName?: string;
-  customCode?: string;
 }
 
 export interface RequestOtpResponse {
@@ -44,7 +44,7 @@ export class ServerAuthService {
    * Generates a cryptographically sound 6-digit numeric OTP code
    */
   public static generateOtpCode(): string {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+    return randomInt(100000, 1000000).toString();
   }
 
   /**
@@ -52,15 +52,13 @@ export class ServerAuthService {
    * and saves the verification entry in the temporary database store with a 10-minute TTL.
    */
   public static async sendOtp(params: RequestOtpParams): Promise<RequestOtpResponse> {
-    const { recipient, method, role = "student", accountName = "المستخدم", customCode } = params;
+    const { recipient, method, role = "student", accountName = "المستخدم" } = params;
 
     const cleanRecipient = recipient.trim().toLowerCase();
     const deliveryMethod = method === "phone" ? "phone" : "email";
 
-    // 1. Generate or assign the 6-digit code
-    const otpCode = customCode && String(customCode).length === 6
-      ? String(customCode)
-      : this.generateOtpCode();
+    // 1. Generate the OTP exclusively on the trusted server.
+    const otpCode = this.generateOtpCode();
 
     let realSent = false;
     let deliveryDetails = "";
@@ -93,7 +91,20 @@ export class ServerAuthService {
       messageId = smsResult.sid;
     }
 
-    // 3. Store in the temporary database with TTL (10 minutes)
+    // 3. Never create a valid OTP if delivery failed.
+    if (!realSent) {
+      return {
+        success: false,
+        message: "تعذر إرسال رمز التحقق عبر القناة المطلوبة. يرجى المحاولة لاحقاً.",
+        deliveryMethod,
+        recipient: cleanRecipient,
+        realDelivered: false,
+        deliveryDetails,
+        expiresInSeconds: 0,
+      };
+    }
+
+    // 4. Store in the temporary database with TTL (10 minutes)
     otpDatabase.saveOtp({
       recipient: cleanRecipient,
       method: deliveryMethod,

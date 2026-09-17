@@ -239,21 +239,30 @@ export const DigitalLibraryReaderModal: React.FC<DigitalLibraryReaderModalProps>
     setTimeout(() => setShowToast(null), 3000);
   };
 
+  // DIGITAL_LIBRARY_ORIGINAL_FILE_V2_2E
+  const originalFileName = resource?.originalFileName?.trim() ||
+    (resource?.fileExtension ? `${resource?.title || 'library-file'}.${resource.fileExtension.replace(/^\./, '')}` :
+    (resource?.type === 'pdf' || resource?.pdfDataUrl ? `${resource?.title || 'library-file'}.pdf` : resource?.title || 'library-file'));
+  const isFirebaseOriginalResource = resource?.storageProvider === 'firebase' || !!resource?.storagePath || !!resource?.originalFileName;
   const handleDownloadPdf = async () => {
     if (onDownload) {
       onDownload(resource);
-      triggerToast('جاري بدء تحميل ملف الـ PDF بنجاح 📥');
+      triggerToast('جاري بدء تحميل الملف الأصلي 📥');
       return;
     }
 
     if (rawDocumentUrl) {
-      const ok = await downloadDataUrlOrBlob(rawDocumentUrl, `${resource.title}.pdf`);
+      const ok = await downloadDataUrlOrBlob(rawDocumentUrl, originalFileName);
       if (ok) {
         triggerToast('تم تنزيل المستند الأصلي بنجاح 📥');
         return;
       }
     }
 
+    if (isFirebaseOriginalResource) {
+      triggerToast('تعذر تنزيل الملف الأصلي حالياً، ولم يتم إنشاء PDF بديل.');
+      return;
+    }
     const summaryText = `
 المكتبة الرقمية والمناهج المدرسية - ثانوية ميسان للمتميزات
 =====================================================
@@ -284,7 +293,7 @@ ${resource.sampleContentText || 'تم تحميل الكتاب والمورد ا�
     `;
 
     downloadTextOrAttachmentAsPdf(`${resource.title}.pdf`, resource.title, summaryText);
-    triggerToast('جاري بدء تحميل ملف الـ PDF بنجاح 📥');
+    triggerToast('جاري بدء تحميل الملف الأصلي 📥');
   };
 
   const handlePrint = () => {
@@ -696,10 +705,10 @@ ${resource.sampleContentText || 'تم تحميل الكتاب والمورد ا�
             <button
               onClick={handleDownloadPdf}
               className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-              title="تحميل ملف PDF إلى جهازكِ"
+              title="تحميل الملف الأصلي إلى جهازكِ"
             >
               <Download className="w-3.5 h-3.5" />
-              <span className="hidden md:inline">تحميل PDF</span>
+              <span className="hidden md:inline">تحميل الملف</span>
             </button>
 
             {/* Print Button */}
@@ -737,7 +746,7 @@ ${resource.sampleContentText || 'تم تحميل الكتاب والمورد ا�
             <div className="flex-1 w-full h-full bg-slate-950 flex flex-col p-2">
               <UniversalDocumentViewer
                 url={rawDocumentUrl}
-                fileName={resource.title}
+                fileName={originalFileName}
                 title={resource.title}
                 className="w-full h-full border-0 rounded-2xl"
                 maxHeight="100%"

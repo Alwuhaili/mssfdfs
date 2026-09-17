@@ -172,7 +172,10 @@ export const UniversalDocumentViewer: React.FC<UniversalDocumentViewerProps> = (
   const [totalPages, setTotalPages] = useState<number>(1);
   const [scale, setScale] = useState<number>(() => loadSavedFontSettings().fontSizeScale);
   const [rotation, setRotation] = useState<number>(0);
+  // DIGITAL_LIBRARY_ORIGINAL_FILE_V2_2E
   const [isImage, setIsImage] = useState<boolean>(false);
+  const [isVideo, setIsVideo] = useState<boolean>(false);
+  const [isAudio, setIsAudio] = useState<boolean>(false);
   const [isOtherDoc, setIsOtherDoc] = useState<boolean>(false);
   const [directBlobUrl, setDirectBlobUrl] = useState<string>('');
 
@@ -181,7 +184,7 @@ export const UniversalDocumentViewer: React.FC<UniversalDocumentViewerProps> = (
   const [showFormattingPopover, setShowFormattingPopover] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const effectiveFileName = fileName || file?.name || title || 'document.pdf';
+  const effectiveFileName = fileName || file?.name || title || 'document';
 
   const triggerToast = (msg: string) => {
     setToastMessage(msg);
@@ -209,6 +212,9 @@ export const UniversalDocumentViewer: React.FC<UniversalDocumentViewerProps> = (
       (dataUrl && dataUrl.startsWith('data:image/'))
     );
   }, []);
+
+  const isVideoFile = useCallback((name: string) => ['.mp4','.webm','.mov','.m4v'].some(e => name.toLowerCase().endsWith(e)), []);
+  const isAudioFile = useCallback((name: string) => ['.mp3','.wav','.m4a','.aac','.ogg'].some(e => name.toLowerCase().endsWith(e)), []);
 
   const isOfficeDoc = useCallback((name: string) => {
     const lower = name.toLowerCase();
@@ -263,15 +269,10 @@ export const UniversalDocumentViewer: React.FC<UniversalDocumentViewerProps> = (
         return;
       }
 
-      if (isOfficeDoc(targetName)) {
-        setIsOtherDoc(true);
-        setIsImage(false);
-        setLoading(false);
-        return;
-      }
-
-      setIsImage(false);
-      setIsOtherDoc(false);
+      if (isVideoFile(targetName)) { setIsVideo(true); setIsAudio(false); setIsImage(false); setIsOtherDoc(false); setLoading(false); return; }
+      if (isAudioFile(targetName)) { setIsAudio(true); setIsVideo(false); setIsImage(false); setIsOtherDoc(false); setLoading(false); return; }
+      if (isOfficeDoc(targetName)) { setIsOtherDoc(true); setIsImage(false); setIsVideo(false); setIsAudio(false); setLoading(false); return; }
+      setIsImage(false); setIsVideo(false); setIsAudio(false); setIsOtherDoc(false);
 
       if (!targetUrl && !file) {
         setError('لا يتوفر مسار أو ملف للمعاينة.');
@@ -345,7 +346,7 @@ export const UniversalDocumentViewer: React.FC<UniversalDocumentViewerProps> = (
     return () => {
       isCancelled = true;
     };
-  }, [directBlobUrl, url, file, effectiveFileName, isImageFile, isOfficeDoc]);
+  }, [directBlobUrl, url, file, effectiveFileName, isImageFile, isVideoFile, isAudioFile, isOfficeDoc]);
 
   // Render current PDF page onto HTML5 Canvas with High-DPI Vector Clarity
   const renderCurrentPage = useCallback(async () => {
@@ -520,7 +521,7 @@ export const UniversalDocumentViewer: React.FC<UniversalDocumentViewerProps> = (
               {title || effectiveFileName}
             </span>
 
-            {totalPages > 1 && !isImage && !isOtherDoc && (
+            {totalPages > 1 && !isImage && !isVideo && !isAudio && !isOtherDoc && (
               <span className="text-[10px] bg-slate-800 border border-slate-700 px-2 py-0.5 rounded-md font-mono text-indigo-300 font-bold shrink-0">
                 {currentPage} / {totalPages}
               </span>
@@ -530,7 +531,7 @@ export const UniversalDocumentViewer: React.FC<UniversalDocumentViewerProps> = (
           {/* Viewer Controls */}
           <div className="flex items-center gap-1 sm:gap-1.5 shrink-0 flex-wrap">
             {/* Pagination controls for PDF */}
-            {totalPages > 1 && !isImage && !isOtherDoc && (
+            {totalPages > 1 && !isImage && !isVideo && !isAudio && !isOtherDoc && (
               <div className="flex items-center bg-slate-800/90 rounded-xl border border-slate-700 px-1 py-0.5">
                 <button
                   type="button"
@@ -803,6 +804,12 @@ export const UniversalDocumentViewer: React.FC<UniversalDocumentViewerProps> = (
           </div>
         )}
 
+        {isVideo && (directBlobUrl || url) && !loading && !error && (
+          <div className="w-full h-full flex items-center justify-center p-3 bg-black"><video src={directBlobUrl || url} controls preload="metadata" className="max-w-full max-h-full rounded-xl" /></div>
+        )}
+        {isAudio && (directBlobUrl || url) && !loading && !error && (
+          <div className="w-full h-full flex items-center justify-center p-6"><audio src={directBlobUrl || url} controls preload="metadata" className="w-full max-w-2xl" /></div>
+        )}
         {/* Image Preview Mode */}
         {isImage && (directBlobUrl || url) && !loading && !error && (
           <div
@@ -842,7 +849,7 @@ export const UniversalDocumentViewer: React.FC<UniversalDocumentViewerProps> = (
         )}
 
         {/* PDF Canvas Rendering Surface with Active Font & Color Integrity */}
-        {!isImage && !isOtherDoc && (
+        {!isImage && !isVideo && !isAudio && !isOtherDoc && (
           <div
             className={`transition-opacity duration-200 flex items-center justify-center ${
               loading || error ? 'hidden' : 'block'

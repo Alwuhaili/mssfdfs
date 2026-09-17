@@ -1,3 +1,4 @@
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 /**
  * In-Memory & Cache-backed Database Store for One-Time Passwords (OTP)
  * قاعدة بيانات مؤقتة لإدارة وتخزين رموز التحقق OTP بصلاحية محددة (TTL) وحماية ضد الهجمات
@@ -5,7 +6,8 @@
 
 export interface StoredOtpRecord {
   id: string;
-  code: string;
+  codeHash: string;
+  salt: string;
   recipient: string;
   method: "email" | "phone";
   role: string;
@@ -52,8 +54,9 @@ export class OtpDatabaseStore {
     const key = this.getStorageKey(data.method, data.recipient);
 
     const record: StoredOtpRecord = {
-      id: `otp-${now}-${Math.random().toString(36).substring(2, 7)}`,
-      code: String(data.code).trim(),
+      id: `otp-${now}-${randomBytes(5).toString("hex")}`,
+      salt: randomBytes(16).toString("hex"),
+      codeHash: "",
       recipient: data.recipient.trim().toLowerCase(),
       method: data.method,
       role: data.role || "student",
@@ -66,6 +69,7 @@ export class OtpDatabaseStore {
       deliveryProvider: data.deliveryProvider,
       messageId: data.messageId,
     };
+    record.codeHash = createHash("sha256").update(`${record.salt}:${String(data.code).trim()}`).digest("hex");
 
     this.records.set(key, record);
     console.log(`[OTP DB] Saved OTP for ${key} (Expires in ${ttlMs / 1000}s)`);
@@ -136,8 +140,10 @@ export class OtpDatabaseStore {
     }
 
     const cleanInput = String(inputCode).trim();
-    // Verify against real code or master preview code
-    if (cleanInput !== record.code && cleanInput !== "123456") {
+    const inputHash = createHash("sha256").update(`${record.salt}:${cleanInput}`).digest();
+    const storedHash = Buffer.from(record.codeHash, "hex");
+    const matches = inputHash.length === storedHash.length && timingSafeEqual(inputHash, storedHash);
+    if (!matches) {
       const remaining = Math.max(0, record.maxAttempts - record.attempts);
       return {
         valid: false,

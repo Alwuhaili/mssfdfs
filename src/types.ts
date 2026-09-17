@@ -190,10 +190,14 @@ export interface CurrentUser {
   studentObj?: Student;
   parentObj?: Parent;
   supervisorObj?: EducationalSupervisor;
+  authUid?: string;
+  profileId?: string;
+  profileCollection?: string;
 }
 
 export interface Teacher {
   id: string;
+  username?: string;
   name: string;
   subject: string;
   specialization?: string;
@@ -249,6 +253,7 @@ export interface StudentShieldBadge {
 
 export interface Student {
   id: string;
+  username?: string;
   studentCode?: string;
   name: string;
   nationalId: string;
@@ -277,6 +282,8 @@ export interface Student {
 
 export interface Parent {
   id: string;
+  username?: string;
+  nationalId?: string;
   name: string;
   phone: string;
   email: string;
@@ -491,8 +498,17 @@ export interface LectureResource {
   subject: string;
   teacherName: string;
   gradeLevel: GradeLevel;
-  type: 'video' | 'pdf' | 'doc' | 'ppt';
+  type: 'video' | 'pdf' | 'doc' | 'ppt' | 'sheet' | 'image' | 'audio' | 'text' | 'other';
   fileUrl: string;
+
+  // DIGITAL_LIBRARY_STORAGE_V2
+  // Optional to preserve compatibility with existing legacy resources.
+  storagePath?: string;
+  originalFileName?: string;
+  fileExtension?: string;
+  mimeType?: string;
+  fileSizeBytes?: number;
+  storageProvider?: 'firebase' | 'legacy';
   description: string;
   uploadedAt: string;
   fileSize?: string;

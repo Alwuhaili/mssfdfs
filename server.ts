@@ -1,6 +1,7 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
+import { timingSafeEqual } from "node:crypto";
 import { ServerAuthService } from "./server/authService.js";
 import { serverDataStore } from "./server/dataStore.js";
 
@@ -8,9 +9,75 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Support large payloads (school data, lesson plans, exams, certificates)
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+  app.disable("x-powered-by");
+  app.set("trust proxy", 1);
+
+  // Security headers without an extra runtime dependency.
+  app.use((_req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+    next();
+  });
+
+  // Normal API requests should be small. Files belong in object storage, not JSON bodies.
+  app.use(express.json({ limit: "1mb" }));
+  app.use(express.urlencoded({ extended: true, limit: "256kb" }));
+
+  type RateBucket = { count: number; resetAt: number };
+  const rateBuckets = new Map<string, RateBucket>();
+  const rateLimit = (name: string, max: number, windowMs: number) => (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const ip = req.ip || req.socket.remoteAddress || "unknown";
+    const recipient = String(req.body?.recipient || "").trim().toLowerCase().slice(0, 160);
+    const key = `${name}:${ip}:${recipient}`;
+    const now = Date.now();
+    const current = rateBuckets.get(key);
+    if (!current || current.resetAt <= now) {
+      rateBuckets.set(key, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+    if (current.count >= max) {
+      res.setHeader("Retry-After", Math.ceil((current.resetAt - now) / 1000));
+      return res.status(429).json({ success: false, message: "تم تجاوز عدد المحاولات المسموح مؤقتاً. حاول لاحقاً." });
+    }
+    current.count += 1;
+    next();
+  };
+
+  const rateLimitIpOnly = (name: string, max: number, windowMs: number) => (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const ip = req.ip || req.socket.remoteAddress || "unknown";
+    const key = `${name}:${ip}`;
+    const now = Date.now();
+    const current = rateBuckets.get(key);
+    if (!current || current.resetAt <= now) {
+      rateBuckets.set(key, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+    if (current.count >= max) {
+      res.setHeader("Retry-After", Math.ceil((current.resetAt - now) / 1000));
+      return res.status(429).json({ success: false, message: "تم تجاوز عدد المحاولات المسموح من هذا الاتصال مؤقتاً." });
+    }
+    current.count += 1;
+    next();
+  };
+
+  const safeEqual = (a: string, b: string) => {
+    const aa = Buffer.from(a || "");
+    const bb = Buffer.from(b || "");
+    return aa.length === bb.length && aa.length > 0 && timingSafeEqual(aa, bb);
+  };
+
+  // Legacy maintenance endpoints are server-admin only. Browser roles are never trusted here.
+  const requireAdminApiKey = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const expected = process.env.ADMIN_API_KEY || "";
+    const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+    const provided = String(req.headers["x-admin-api-key"] || bearer || "");
+    if (!expected) return res.status(503).json({ success: false, message: "ADMIN_API_KEY غير مهيأ على الخادم." });
+    if (!safeEqual(provided, expected)) return res.status(401).json({ success: false, message: "غير مخول." });
+    next();
+  };
 
   // Health check & SMTP / Twilio configuration status
   app.get("/api/health", (_req, res) => {
@@ -25,7 +92,7 @@ async function startServer() {
 
   // Central School Data Synchronization Endpoints (مزامنة البيانات لجميع المستخدمين)
   // SSE: Real-Time Instant Data Stream for all connected users and roles
-  app.get("/api/data/events", (req, res) => {
+  app.get("/api/data/events", requireAdminApiKey, (req, res) => {
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
@@ -69,7 +136,7 @@ async function startServer() {
   });
 
   // GET: Fetch latest data or check if client has the latest version
-  app.get("/api/data/sync", (req, res) => {
+  app.get("/api/data/sync", requireAdminApiKey, (req, res) => {
     try {
       const clientVersion = req.query.version ? Number(req.query.version) : null;
       const force = req.query.force === "true";
@@ -104,9 +171,9 @@ async function startServer() {
   });
 
   // POST: Push updates from client to server central store
-  app.post("/api/data/sync", (req, res) => {
+  app.post("/api/data/sync", requireAdminApiKey, (req, res) => {
     try {
-      const { updates, sourceUser } = req.body;
+      const { updates } = req.body;
 
       if (!updates || typeof updates !== "object") {
         return res.status(400).json({
@@ -115,7 +182,7 @@ async function startServer() {
         });
       }
 
-      const updated = serverDataStore.updateData(updates, sourceUser);
+      const updated = serverDataStore.updateData(updates, { id: "server-admin", name: "Secure Server Admin", role: "admin" });
 
       return res.json({
         success: true,
@@ -135,7 +202,7 @@ async function startServer() {
   });
 
   // GET: Central Data Sync Status & Entity Counts
-  app.get("/api/data/status", (_req, res) => {
+  app.get("/api/data/status", requireAdminApiKey, (_req, res) => {
     try {
       const status = serverDataStore.getStatus();
       return res.json({
@@ -153,8 +220,11 @@ async function startServer() {
   });
 
   // POST: Reset Central Database (with optional seed data)
-  app.post("/api/data/reset", (req, res) => {
+  app.post("/api/data/reset", requireAdminApiKey, (req, res) => {
     try {
+      if (process.env.ALLOW_DATABASE_RESET !== "true" || req.headers["x-reset-confirmation"] !== "RESET-MAYSAN-SCHOOL") {
+        return res.status(403).json({ success: false, message: "إعادة ضبط قاعدة البيانات معطلة أمنياً." });
+      }
       const { seedData } = req.body;
       const reset = serverDataStore.resetDatabase(seedData);
       return res.json({
@@ -173,11 +243,11 @@ async function startServer() {
   });
 
   // API Route: Send Real OTP via Email (SMTP) or SMS (Twilio)
-  app.post("/api/auth/send-otp", async (req, res) => {
+  app.post("/api/auth/send-otp", rateLimitIpOnly("otp-send-ip", 20, 15 * 60 * 1000), rateLimit("otp-send-target", 5, 15 * 60 * 1000), async (req, res) => {
     try {
-      const { recipient, method, role, accountName, customCode } = req.body;
+      const { recipient, method, role, accountName } = req.body;
 
-      if (!recipient || !method) {
+      if (!recipient || !["email", "phone"].includes(method)) {
         return res.status(400).json({
           success: false,
           message: "Recipient and delivery method are required.",
@@ -188,8 +258,7 @@ async function startServer() {
         recipient,
         method: method === "phone" ? "phone" : "email",
         role: role || "student",
-        accountName: accountName || "المستخدم",
-        customCode,
+        accountName: String(accountName || "المستخدم").slice(0, 120),
       });
 
       return res.json(result);
@@ -203,11 +272,11 @@ async function startServer() {
   });
 
   // API Route: Verify OTP Code
-  app.post("/api/auth/verify-otp", (req, res) => {
+  app.post("/api/auth/verify-otp", rateLimitIpOnly("otp-verify-ip", 40, 15 * 60 * 1000), rateLimit("otp-verify-target", 10, 15 * 60 * 1000), (req, res) => {
     try {
       const { recipient, method, code } = req.body;
 
-      if (!recipient || !code) {
+      if (!recipient || !code || !["email", "phone"].includes(method)) {
         return res.status(400).json({
           success: false,
           message: "Recipient and code are required.",

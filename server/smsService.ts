@@ -93,10 +93,13 @@ export async function sendOtpSms(options: SendSmsOptions): Promise<SmsSendResult
   }
 
   // 2. Fallback logger
-  console.log(`[SMS DISPATCH] Simulated SMS for ${formattedPhone} with OTP ${otpCode}`);
+  if (process.env.NODE_ENV === "development") {
+    console.warn(`[SMS DEV] SMS provider unavailable for ${formattedPhone}; OTP not exposed in logs.`);
+  }
   return {
-    success: true,
-    provider: "simulator",
-    details: `مزود الاتصالات المحلي المعتمد (${formattedPhone})`,
+    success: false,
+    provider: "none",
+    details: "لم يتم إعداد مزود SMS موثوق أو تعذر الإرسال.",
+    error: "SMS provider unavailable",
   };
 }

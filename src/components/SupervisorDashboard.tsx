@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Educational Supervisor Dashboard Component
  * ثانوية ميسان للمتميزات
  */
@@ -14,7 +14,6 @@ import { InteractiveChallengesManager } from './InteractiveChallengesManager';
 import { DigitalLibraryHub } from './DigitalLibraryHub';
 import { ExamManagementHub } from './ExamManagementHub';
 import { PlatformIntegrationsHub } from './PlatformIntegrationsHub';
-import { AcademicReportsHub } from './AcademicReportsHub';
 import { LessonPlanningHub } from './LessonPlanningHub';
 import {
   Building2,
@@ -115,11 +114,7 @@ export const SupervisorDashboard: React.FC<{ activeTab: string }> = ({ activeTab
 
       {/* External LMS & Platforms Integrations Tab */}
       {activeTab === 'integrations' && <PlatformIntegrationsHub userRole="supervisor" />}
-
-      {/* Academic Reports & Statistical Analytics Tab */}
-      {activeTab === 'reports' && <AcademicReportsHub userRole="supervisor" />}
-
-      {/* Overview Cards */}
+{/* Overview Cards */}
       {(activeTab === 'overview' || !activeTab) && (
         <div className="space-y-6">
           <SchoolHomeOverview />
@@ -181,3 +176,4 @@ export const SupervisorDashboard: React.FC<{ activeTab: string }> = ({ activeTab
     </div>
   );
 };
+

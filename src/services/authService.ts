@@ -8,7 +8,6 @@ export interface RequestOtpPayload {
   method: 'email' | 'phone';
   role?: string;
   accountName?: string;
-  customCode?: string;
 }
 
 export interface RequestOtpResult {
@@ -94,7 +93,6 @@ export class AuthService {
           method: payload.method,
           role: payload.role || 'student',
           accountName: payload.accountName || 'المستخدم',
-          customCode: payload.customCode,
         }),
       });
 
@@ -108,7 +106,7 @@ export class AuthService {
           recipient: data.recipient || cleanRecipient,
           realDelivered: Boolean(data.realDelivered),
           deliveryDetails: data.deliveryDetails || '',
-          previewUrl: data.previewUrl,
+          previewUrl: import.meta.env.DEV ? data.previewUrl : undefined,
           expiresInSeconds: data.expiresInSeconds || 600,
         };
       } else {
@@ -123,15 +121,15 @@ export class AuthService {
       }
     } catch (err: any) {
       console.error('[AuthService] Network error during send-otp:', err);
-      // Client-side fallback if server connection drops
+      // Security: never claim delivery if the trusted backend is unreachable.
       return {
-        success: true,
-        message: `تم إرسال رمز التحقق إلى (${cleanRecipient}). يرجى التحقق من الرسائل الواردة.`,
+        success: false,
+        message: 'تعذر الاتصال بخدمة التحقق الآمنة. لم يتم إنشاء رمز صالح. يرجى المحاولة لاحقاً.',
         deliveryMethod: payload.method,
         recipient: cleanRecipient,
-        realDelivered: true,
-        deliveryDetails: 'Direct Fallback Queue',
-        expiresInSeconds: 600,
+        realDelivered: false,
+        deliveryDetails: 'Backend unavailable',
+        expiresInSeconds: 0,
       };
     }
   }

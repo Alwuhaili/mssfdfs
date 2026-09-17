@@ -21,14 +21,13 @@ export const INITIAL_PLATFORM_INTEGRATIONS: PlatformIntegrationConfig[] = [
     description: 'المزامنة المباشرة لقوائم الطالبات ودفتر الدرجات الرسمي وسجلات الغياب اليومي مع خوادم وزارة التربية العراقية.',
     iconName: 'NewtonFlag',
     colorTheme: 'blue',
-    status: 'connected',
+    status: 'disconnected',
     lastSyncTime: 'اليوم، 09:30 صباحاً',
     syncedRecordsCount: 1420,
     autoSyncEnabled: true,
     syncIntervalHours: 4,
     authConfig: {
       schoolCode: 'IQ-MYS-GIFTED-8841',
-      apiKey: 'newton_live_key_9942a78e41bc90a',
       environment: 'production',
       syncGrades: true,
       syncAttendance: true,
@@ -44,7 +43,7 @@ export const INITIAL_PLATFORM_INTEGRATIONS: PlatformIntegrationConfig[] = [
     description: 'ربط الفصول الدراسية والمناهج، استيراد وتصدير الواجبات، ومزامنة حسابات الطالبات على نطاق المدرسة.',
     iconName: 'GoogleClassroom',
     colorTheme: 'emerald',
-    status: 'connected',
+    status: 'disconnected',
     lastSyncTime: 'اليوم، 10:15 صباحاً',
     syncedRecordsCount: 890,
     autoSyncEnabled: true,
@@ -66,7 +65,7 @@ export const INITIAL_PLATFORM_INTEGRATIONS: PlatformIntegrationConfig[] = [
     description: 'إدارة وتكامل القاعات الافتراضية، مزامنة الجداول الأسبوعية للبث التفاعلي المباشر، وسجلات حضور الحصص.',
     iconName: 'MSTeams',
     colorTheme: 'indigo',
-    status: 'connected',
+    status: 'disconnected',
     lastSyncTime: 'أمس، 08:45 مساءً',
     syncedRecordsCount: 650,
     autoSyncEnabled: true,
@@ -88,14 +87,13 @@ export const INITIAL_PLATFORM_INTEGRATIONS: PlatformIntegrationConfig[] = [
     description: 'تكامل بنك الأسئلة للموهوبات، مؤشرات الأداء والتقويم الأكاديمي، والمقررات الإثرائية المتخصصة.',
     iconName: 'Madrasati',
     colorTheme: 'amber',
-    status: 'connected',
+    status: 'disconnected',
     lastSyncTime: 'منذ يومين',
     syncedRecordsCount: 420,
     autoSyncEnabled: false,
     syncIntervalHours: 24,
     authConfig: {
       schoolCode: 'MDR-MYS-7703',
-      apiKey: 'mdr_sec_991823abce8472',
       environment: 'production',
       syncGrades: true,
       syncAttendance: false,
@@ -110,7 +108,7 @@ export const INITIAL_PLATFORM_INTEGRATIONS: PlatformIntegrationConfig[] = [
     description: 'تصدير واستيراد سجلات المدرسة والمقررات بصيغ قياسية متوافقة مع أنظمة إدارة التعلم الدولية (Canvas, Moodle, Blackboard).',
     iconName: 'LtiStandard',
     colorTheme: 'purple',
-    status: 'connected',
+    status: 'disconnected',
     lastSyncTime: 'اليوم، 11:00 صباحاً',
     syncedRecordsCount: 2150,
     autoSyncEnabled: true,
@@ -126,60 +124,9 @@ export const INITIAL_PLATFORM_INTEGRATIONS: PlatformIntegrationConfig[] = [
   },
 ];
 
-export const INITIAL_API_TOKENS: IntegrationApiToken[] = [
-  {
-    id: 'tok_mobile_app',
-    title: 'تطبيق هاتف ثانوية ميسان (Maysan Mobile App)',
-    token: 'mys_live_tok_998410293481029348123984',
-    scope: 'full_access',
-    createdAt: '2026-01-15',
-    lastUsed: 'منذ 5 دقائق',
-    isActive: true,
-  },
-  {
-    id: 'tok_parent_portal',
-    title: 'بوابة أولياء الأمور والرسائل النصية SMS Gateway',
-    token: 'mys_live_tok_parent_gateway_7718934',
-    scope: 'attendance_dispatch',
-    createdAt: '2026-02-01',
-    lastUsed: 'اليوم، 08:30 ص',
-    isActive: true,
-  },
-  {
-    id: 'tok_supervisor_audit',
-    title: 'واجهة التدقيق والرقابة للإشراف التربوي بميسان',
-    token: 'mys_live_tok_sup_audit_3389102384',
-    scope: 'read_only',
-    createdAt: '2026-02-10',
-    lastUsed: 'اليوم، 10:15 ص',
-    isActive: true,
-  },
-];
+export const INITIAL_API_TOKENS: IntegrationApiToken[] = [];
 
-export const INITIAL_WEBHOOKS: IntegrationWebhook[] = [
-  {
-    id: 'wh_attendance_instant',
-    name: 'إرسال إشعار فوري لغياب وتأخر الطالبات (Webhook)',
-    targetUrl: 'https://api.maysan-gifted.edu.iq/webhooks/attendance-alerts',
-    secretKey: 'whsec_991823901823908129038',
-    events: ['attendance.dispatched'],
-    isEnabled: true,
-    lastDispatchedAt: 'اليوم، 09:15 ص',
-    deliverySuccessCount: 148,
-    deliveryFailureCount: 0,
-  },
-  {
-    id: 'wh_grade_publish',
-    name: 'مزامنة اعتماد ونشر النتائج الوزارية (Webhook)',
-    targetUrl: 'https://newton.moedu.gov.iq/api/v1/sync/maysan/grades-hook',
-    secretKey: 'whsec_moe_iraq_88391209381',
-    events: ['grades.published', 'student.promoted'],
-    isEnabled: true,
-    lastDispatchedAt: 'أمس، 02:00 م',
-    deliverySuccessCount: 32,
-    deliveryFailureCount: 0,
-  },
-];
+export const INITIAL_WEBHOOKS: IntegrationWebhook[] = [];
 
 export const INITIAL_SYNC_LOGS: IntegrationSyncLog[] = [
   {

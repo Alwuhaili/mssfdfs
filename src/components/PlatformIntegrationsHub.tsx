@@ -57,6 +57,12 @@ interface PlatformIntegrationsHubProps {
 }
 
 export const PlatformIntegrationsHub: React.FC<PlatformIntegrationsHubProps> = ({ userRole = 'admin' }) => {
+  const ALLOW_CLIENT_SIDE_SECRETS = import.meta.env.DEV && import.meta.env.VITE_ALLOW_CLIENT_SIDE_INTEGRATION_SECRETS === 'true';
+  const sanitizePlatformSecrets = (items: PlatformIntegrationConfig[]) =>
+    items.map((item) => ({
+      ...item,
+      authConfig: { ...item.authConfig, apiKey: undefined, apiSecret: undefined },
+    }));
   const { students, teachers, certificates, lang } = useApp();
 
   // Storage Persistence Keys
@@ -70,13 +76,15 @@ export const PlatformIntegrationsHub: React.FC<PlatformIntegrationsHubProps> = (
   const [platforms, setPlatforms] = useState<PlatformIntegrationConfig[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_PLATFORMS);
-      return saved ? JSON.parse(saved) : INITIAL_PLATFORM_INTEGRATIONS;
+      const parsed = saved ? JSON.parse(saved) : INITIAL_PLATFORM_INTEGRATIONS;
+      return ALLOW_CLIENT_SIDE_SECRETS ? parsed : sanitizePlatformSecrets(parsed);
     } catch {
       return INITIAL_PLATFORM_INTEGRATIONS;
     }
   });
 
   const [apiTokens, setApiTokens] = useState<IntegrationApiToken[]>(() => {
+    if (!ALLOW_CLIENT_SIDE_SECRETS) return [];
     try {
       const saved = localStorage.getItem(STORAGE_KEY_TOKENS);
       return saved ? JSON.parse(saved) : INITIAL_API_TOKENS;
@@ -86,6 +94,7 @@ export const PlatformIntegrationsHub: React.FC<PlatformIntegrationsHubProps> = (
   });
 
   const [webhooks, setWebhooks] = useState<IntegrationWebhook[]>(() => {
+    if (!ALLOW_CLIENT_SIDE_SECRETS) return [];
     try {
       const saved = localStorage.getItem(STORAGE_KEY_WEBHOOKS);
       return saved ? JSON.parse(saved) : INITIAL_WEBHOOKS;
@@ -136,16 +145,18 @@ export const PlatformIntegrationsHub: React.FC<PlatformIntegrationsHubProps> = (
 
   // Save to localStorage
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY_PLATFORMS, JSON.stringify(platforms));
+    localStorage.setItem(STORAGE_KEY_PLATFORMS, JSON.stringify(ALLOW_CLIENT_SIDE_SECRETS ? platforms : sanitizePlatformSecrets(platforms)));
   }, [platforms]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY_TOKENS, JSON.stringify(apiTokens));
-  }, [apiTokens]);
+    if (ALLOW_CLIENT_SIDE_SECRETS) localStorage.setItem(STORAGE_KEY_TOKENS, JSON.stringify(apiTokens));
+    else localStorage.removeItem(STORAGE_KEY_TOKENS);
+  }, [apiTokens, ALLOW_CLIENT_SIDE_SECRETS]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY_WEBHOOKS, JSON.stringify(webhooks));
-  }, [webhooks]);
+    if (ALLOW_CLIENT_SIDE_SECRETS) localStorage.setItem(STORAGE_KEY_WEBHOOKS, JSON.stringify(webhooks));
+    else localStorage.removeItem(STORAGE_KEY_WEBHOOKS);
+  }, [webhooks, ALLOW_CLIENT_SIDE_SECRETS]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_LOGS, JSON.stringify(syncLogs));
@@ -238,7 +249,8 @@ export const PlatformIntegrationsHub: React.FC<PlatformIntegrationsHubProps> = (
 
   // Save Platform Config Modal
   const handleSavePlatformConfig = (updated: PlatformIntegrationConfig) => {
-    setPlatforms((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+    const safeUpdated = ALLOW_CLIENT_SIDE_SECRETS ? updated : sanitizePlatformSecrets([updated])[0];
+    setPlatforms((prev) => prev.map((p) => (p.id === updated.id ? safeUpdated : p)));
     setSelectedConfigPlatform(null);
     setToastMessage({
       title: 'تم حفظ الإعدادات',
@@ -250,11 +262,16 @@ export const PlatformIntegrationsHub: React.FC<PlatformIntegrationsHubProps> = (
   // Create API Token
   const handleCreateToken = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!ALLOW_CLIENT_SIDE_SECRETS) {
+      setIsCreateTokenModalOpen(false);
+      setToastMessage({ title: 'تم منع إنشاء المفتاح في المتصفح', desc: 'أنشئ مفاتيح التكامل من خدمة خادمية آمنة فقط، ولا تخزن الأسرار في localStorage.', type: 'info' });
+      return;
+    }
     if (!newTokenTitle.trim()) return;
 
-    const tokenRandom = Array.from({ length: 32 }, () =>
-      Math.floor(Math.random() * 16).toString(16)
-    ).join('');
+    const randomBytes = new Uint8Array(24);
+    crypto.getRandomValues(randomBytes);
+    const tokenRandom = Array.from(randomBytes, (b) => b.toString(16).padStart(2, '0')).join('');
 
     const tokenObj: IntegrationApiToken = {
       id: `tok_${Date.now()}`,
@@ -297,11 +314,16 @@ export const PlatformIntegrationsHub: React.FC<PlatformIntegrationsHubProps> = (
   // Create Webhook
   const handleCreateWebhook = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!ALLOW_CLIENT_SIDE_SECRETS) {
+      setIsCreateWebhookModalOpen(false);
+      setToastMessage({ title: 'تم منع تخزين Webhook Secret في المتصفح', desc: 'إدارة Webhooks والأسرار يجب أن تتم من الخادم/Cloud Functions.', type: 'info' });
+      return;
+    }
     if (!newWebhookName.trim() || !newWebhookUrl.trim()) return;
 
-    const secretRandom = Array.from({ length: 24 }, () =>
-      Math.floor(Math.random() * 16).toString(16)
-    ).join('');
+    const randomBytes = new Uint8Array(24);
+    crypto.getRandomValues(randomBytes);
+    const secretRandom = Array.from(randomBytes, (b) => b.toString(16).padStart(2, '0')).join('');
 
     const webhookObj: IntegrationWebhook = {
       id: `wh_${Date.now()}`,
@@ -1313,7 +1335,7 @@ export const PlatformIntegrationsHub: React.FC<PlatformIntegrationsHubProps> = (
                 </label>
                 <input
                   type="password"
-                  value={selectedConfigPlatform.authConfig.apiKey || 'newton_live_key_9942a78e41bc90a'}
+                  value={selectedConfigPlatform.authConfig.apiKey || ''}
                   onChange={(e) =>
                     setSelectedConfigPlatform({
                       ...selectedConfigPlatform,

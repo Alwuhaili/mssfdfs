@@ -508,14 +508,7 @@ export const StudentDashboard: React.FC<{ activeTab: string }> = ({ activeTab })
       {/* Graduates Tab */}
       {activeTab === 'graduates' && <GraduatesView />}
 
-      {/* Digital Library & Lectures Tab (المكتبة والمحاضرات الرقمية) */}
-      {activeTab === 'lectures' && (
-        <div className="space-y-6">
-          <DigitalLibraryHub userRole="student" />
-        </div>
-      )}
-
-      {/* Overview Tab */}
+{/* Overview Tab */}
       {activeTab === 'overview' && (
         <div className="space-y-6">
           <SchoolHomeOverview />

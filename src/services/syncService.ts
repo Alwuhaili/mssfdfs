@@ -518,9 +518,19 @@ class CentralSyncService {
       }
 
       const entries = await Promise.all(
-        Object.entries(map).map(async ([key, mode]) => [key, await this.readKey(key, mode)] as const)
+        Object.entries(map).map(async ([key, mode]) => {
+          try {
+            return [key, await this.readKey(key, mode)] as const;
+          } catch (err: any) {
+            // Security rules intentionally deny collections outside the active user's scope.
+            // A denied collection must not prevent permitted collections from loading.
+            const code = String(err?.code || '');
+            if (code.includes('permission-denied')) return null;
+            throw err;
+          }
+        })
       );
-      const data = Object.fromEntries(entries);
+      const data = Object.fromEntries(entries.filter((entry): entry is readonly [string, any] => entry !== null));
 
       this.currentVersion = Math.max(this.currentVersion, version);
       this.lastSyncedBy = migration?.completedBy || migration?.startedBy;
@@ -718,11 +728,14 @@ class CentralSyncService {
       const map = await this.ensureStorageMapLoaded();
 
       const blocked = Object.keys(updates || {}).filter((key) => !this.canWriteKey(key, sourceUser));
-      if (blocked.length > 0) {
-        return { success: false, message: `تم منع حفظ الحقول بسبب الصلاحيات: ${blocked.join(', ')}` };
+      const permittedUpdates = Object.fromEntries(
+        Object.entries(updates || {}).filter(([key]) => !blocked.includes(key))
+      );
+      if (Object.keys(permittedUpdates).length === 0 && blocked.length > 0) {
+        return { success: false, message: `لا توجد تغييرات مخولة للحفظ. تم منع: ${blocked.join(', ')}` };
       }
 
-      for (const [key, localValue] of Object.entries(updates || {})) {
+      for (const [key, localValue] of Object.entries(permittedUpdates)) {
         const mode = map[key] || this.chooseStorageMode(key, localValue);
         if (!map[key]) {
           map[key] = mode;

@@ -9,7 +9,9 @@
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "migrate:auth": "node scripts/migrate_legacy_auth_to_firebase.mjs",
+    "migrate:auth:preflight": "node scripts/migrate_legacy_auth_to_firebase.mjs --dry-run"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -34,6 +36,7 @@
     "vite": "^6.2.3"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
     "@types/express": "^4.17.21",
     "@types/html2pdf.js": "^0.10.0",
     "@types/node": "^22.14.0",

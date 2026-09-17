@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
+import { FirebaseAuthService } from '../services/firebaseAuthService';
 import { UserRole, EducationalSupervisor } from '../types';
 import {
   Lock,
@@ -15,6 +16,8 @@ import {
   AlertCircle,
   Sparkles,
 } from 'lucide-react';
+
+const ALLOW_LEGACY_AUTH = import.meta.env.DEV && import.meta.env.VITE_ALLOW_LEGACY_AUTH === 'true';
 
 interface RoleAuthModalProps {
   isOpen: boolean;
@@ -120,21 +123,21 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
         setSelectedParentId('');
         setSelectedSupervisorId('');
         setIdentifier(teachers[0].email);
-        setPasscode(ROLE_CREDENTIALS_DEMO.teacher.defaultPasscode);
+        setPasscode('');
       } else if (targetRole === 'student' && students && students.length > 0) {
         setSelectedTeacherId('');
         setSelectedStudentId(students[0].id);
         setSelectedParentId('');
         setSelectedSupervisorId('');
-        setIdentifier(students[0].nationalId || students[0].email || ROLE_CREDENTIALS_DEMO.student.defaultEmail);
-        setPasscode(ROLE_CREDENTIALS_DEMO.student.defaultPasscode);
+        setIdentifier(students[0].nationalId .email || ROLE_CREDENTIALS_DEMO.student.defaultEmail);
+        setPasscode('');
       } else if (targetRole === 'parent' && parents && parents.length > 0) {
         setSelectedTeacherId('');
         setSelectedStudentId('');
         setSelectedParentId(parents[0].id);
         setSelectedSupervisorId('');
-        setIdentifier(parents[0].email || parents[0].phone || ROLE_CREDENTIALS_DEMO.parent.defaultEmail);
-        setPasscode(ROLE_CREDENTIALS_DEMO.parent.defaultPasscode);
+        setIdentifier(parents[0].email .phone || ROLE_CREDENTIALS_DEMO.parent.defaultEmail);
+        setPasscode('');
       } else if (targetRole === 'supervisor' && supervisors && supervisors.length > 0) {
         setSelectedTeacherId('');
         setSelectedStudentId('');
@@ -142,8 +145,7 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
         const primaryOrFirstSup = supervisors.find((s) => s.isPrimary) || supervisors[0];
         setSelectedSupervisorId(primaryOrFirstSup.id);
         setIdentifier(primaryOrFirstSup.email || primaryOrFirstSup.phone || primaryOrFirstSup.name);
-        const customPass = userPasscodes?.[primaryOrFirstSup.id] || '1234';
-        setPasscode(customPass);
+        setPasscode('');
       } else if (targetRole) {
         setSelectedTeacherId('');
         setSelectedStudentId('');
@@ -151,7 +153,7 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
         setSelectedSupervisorId('');
         const info = ROLE_CREDENTIALS_DEMO[targetRole];
         setIdentifier(info.defaultEmail);
-        setPasscode(info.defaultPasscode);
+        setPasscode('');
       } else {
         setSelectedTeacherId('');
         setSelectedStudentId('');
@@ -170,36 +172,35 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
   const handleAutoFill = () => {
     if (targetRole === 'teacher' && teachers && teachers.length > 0) {
       const targetTech = selectedTeacherId
-        ? teachers.find((t) => t.id === selectedTeacherId) || teachers[0]
+        ? teachers.find((t) => t.id === selectedTeacherId) 
         : teachers[0];
       setSelectedTeacherId(targetTech.id);
       setIdentifier(targetTech.email);
-      setPasscode(ROLE_CREDENTIALS_DEMO.teacher.defaultPasscode);
+      setPasscode('');
     } else if (targetRole === 'student' && students && students.length > 0) {
       const targetStd = selectedStudentId
-        ? students.find((s) => s.id === selectedStudentId) || students[0]
+        ? students.find((s) => s.id === selectedStudentId) 
         : students[0];
       setSelectedStudentId(targetStd.id);
       setIdentifier(targetStd.nationalId || targetStd.name || ROLE_CREDENTIALS_DEMO.student.defaultEmail);
-      setPasscode(ROLE_CREDENTIALS_DEMO.student.defaultPasscode);
+      setPasscode('');
     } else if (targetRole === 'parent' && parents && parents.length > 0) {
       const targetPr = selectedParentId
-        ? parents.find((p) => p.id === selectedParentId) || parents[0]
+        ? parents.find((p) => p.id === selectedParentId) 
         : parents[0];
       setSelectedParentId(targetPr.id);
       setIdentifier(targetPr.email || targetPr.phone || ROLE_CREDENTIALS_DEMO.parent.defaultEmail);
-      setPasscode(ROLE_CREDENTIALS_DEMO.parent.defaultPasscode);
+      setPasscode('');
     } else if (targetRole === 'supervisor' && supervisors && supervisors.length > 0) {
       const targetSup = selectedSupervisorId
         ? supervisors.find((s) => s.id === selectedSupervisorId) || supervisors[0]
         : (supervisors.find((s) => s.isPrimary) || supervisors[0]);
       setSelectedSupervisorId(targetSup.id);
       setIdentifier(targetSup.email || targetSup.phone || targetSup.name);
-      const customPass = userPasscodes?.[targetSup.id] || '1234';
-      setPasscode(customPass);
+      setPasscode('');
     } else {
       setIdentifier(roleInfo.defaultEmail);
-      setPasscode(roleInfo.defaultPasscode);
+      setPasscode('');
     }
     setErrorMsg('');
   };
@@ -355,7 +356,7 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
     return undefined;
   };
 
-  const handleVerifyAndSwitch = (e: React.FormEvent) => {
+  const handleVerifyAndSwitch = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     setMatchedRoleTitle('');
@@ -381,105 +382,75 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
       return;
     }
 
-    // Auto-detect user role from registered database entities & demo credentials
+    // Firebase Authentication is ALWAYS authoritative and is attempted first.
+    // Legacy auth is only a temporary DEV-only fallback when explicitly enabled.
+    try {
+      const authenticatedUser = await FirebaseAuthService.login(cleanId, cleanPass, targetRole);
+      setCurrentUser(authenticatedUser);
+      setMatchedRoleTitle(authenticatedUser.name);
+      setIsSuccess(true);
+      setTimeout(() => {
+        setIsSuccess(false);
+        setIdentifier('');
+        setPasscode('');
+        onSuccess(authenticatedUser.role);
+        onClose();
+      }, 500);
+      return;
+    } catch (error: any) {
+      if (!ALLOW_LEGACY_AUTH) {
+        setErrorMsg(error?.message || (lang === 'ar' ? 'تعذر تسجيل الدخول الآمن.' : 'Secure sign-in failed.'));
+        return;
+      }
+    }
+
+    // TEMPORARY DEV-ONLY FALLBACK. Never enable VITE_ALLOW_LEGACY_AUTH in production.
+    //
+    // SECURITY_LEGACY_AUTH_FAIL_CLOSED_V1
+    //
+    // Firebase Authentication has already been attempted above.
+    // This compatibility path may identify only an EXISTING legacy entity.
+    //
+    // Forbidden here:
+    // - master passwords
+    // - role inference from words such as admin/supervisor
+    // - first-record fallbacks
+    // - assigning targetRole without a matched entity
     let detectedRole: UserRole | null = null;
     let accountName = '';
 
-    // Check targetRole first if explicitly selected
-    if (targetRole === 'admin') {
-      if (
-        cleanId === ROLE_CREDENTIALS_DEMO.admin.defaultEmail.toLowerCase() ||
-        cleanId === ROLE_CREDENTIALS_DEMO.admin.defaultUsername.toLowerCase() ||
-        cleanId === ROLE_CREDENTIALS_DEMO.admin.defaultPhone.toLowerCase() ||
-        cleanId.includes('admin') ||
-        cleanId.includes('إدارة') ||
-        cleanId.includes('مديرة') ||
-        cleanPass === '1234'
-      ) {
-        detectedRole = 'admin';
-        accountName = 'إدارة ثانوية ميسان';
-      }
-    } else if (targetRole === 'teacher') {
+    if (targetRole === 'teacher') {
       const matchedTeacher = findTeacher(cleanId);
+
       if (matchedTeacher) {
         detectedRole = 'teacher';
         accountName = `${matchedTeacher.name} - قسم ${matchedTeacher.subject}`;
-      } else if (cleanPass === '1234') {
-        detectedRole = 'teacher';
-        accountName = teachers[0]?.name ? `${teachers[0].name} - قسم ${teachers[0].subject}` : 'الهيئة التدريسية';
       }
     } else if (targetRole === 'student') {
       const matchedStudent = findStudent(cleanId);
+
       if (matchedStudent) {
         detectedRole = 'student';
         accountName = matchedStudent.name;
-      } else if (cleanPass === '1234') {
-        detectedRole = 'student';
-        accountName = students[0]?.name || 'الطالبات المتميزات';
       }
     } else if (targetRole === 'parent') {
       const matchedParent = findParent(cleanId);
+
       if (matchedParent) {
         detectedRole = 'parent';
         accountName = matchedParent.name;
-      } else if (cleanPass === '1234') {
-        detectedRole = 'parent';
-        accountName = parents[0]?.name || 'أولياء الأمور';
       }
     } else if (targetRole === 'supervisor') {
-      const matchedSup = findSupervisor(cleanId);
-      if (matchedSup) {
+      const matchedSupervisor = findSupervisor(cleanId);
+
+      if (matchedSupervisor) {
         detectedRole = 'supervisor';
-        accountName = `${matchedSup.name} - ${matchedSup.title}`;
-      } else if (
-        cleanId === ROLE_CREDENTIALS_DEMO.supervisor.defaultEmail.toLowerCase() ||
-        cleanId === ROLE_CREDENTIALS_DEMO.supervisor.defaultUsername.toLowerCase() ||
-        cleanId === ROLE_CREDENTIALS_DEMO.supervisor.defaultPhone.toLowerCase() ||
-        cleanId.includes('supervisor') ||
-        cleanId.includes('مشرف') ||
-        cleanPass === '1234'
-      ) {
-        detectedRole = 'supervisor';
-        const primarySup = supervisors?.find(s => s.isPrimary) || supervisors?.[0];
-        accountName = primarySup ? `${primarySup.name} - ${primarySup.title}` : 'المشرف التربوي المعتمد';
+        accountName = `${matchedSupervisor.name} - ${matchedSupervisor.title}`;
       }
     }
 
-    // Generic fallback checks if not matched via targetRole
-    if (!detectedRole) {
-      if (
-        cleanId === ROLE_CREDENTIALS_DEMO.admin.defaultEmail.toLowerCase() ||
-        cleanId === ROLE_CREDENTIALS_DEMO.admin.defaultUsername.toLowerCase() ||
-        cleanId.includes('admin') ||
-        cleanId.includes('مديرة')
-      ) {
-        detectedRole = 'admin';
-        accountName = 'إدارة ثانوية ميسان';
-      } else if (findTeacher(cleanId)) {
-        const t = findTeacher(cleanId)!;
-        detectedRole = 'teacher';
-        accountName = `${t.name} - قسم ${t.subject}`;
-      } else if (supervisors && supervisors.some((s) => (s.email && s.email.toLowerCase() === cleanId) || (s.phone && s.phone === cleanId) || s.name.toLowerCase() === cleanId || s.id.toLowerCase() === cleanId)) {
-        const s = supervisors.find((sup) => (sup.email && sup.email.toLowerCase() === cleanId) || (sup.phone && sup.phone === cleanId) || sup.name.toLowerCase() === cleanId || sup.id.toLowerCase() === cleanId)!;
-        detectedRole = 'supervisor';
-        accountName = `${s.name} - ${s.title}`;
-      } else if (students.some((s) => s.nationalId.toLowerCase() === cleanId || s.email?.toLowerCase() === cleanId || s.name?.toLowerCase() === cleanId)) {
-        const s = students.find((st) => st.nationalId.toLowerCase() === cleanId || st.email?.toLowerCase() === cleanId || st.name?.toLowerCase() === cleanId)!;
-        detectedRole = 'student';
-        accountName = s.name;
-      } else if (parents.some((p) => p.email.toLowerCase() === cleanId || p.phone === cleanId || p.name?.toLowerCase() === cleanId)) {
-        const p = parents.find((pr) => pr.email.toLowerCase() === cleanId || pr.phone === cleanId || pr.name?.toLowerCase() === cleanId)!;
-        detectedRole = 'parent';
-        accountName = p.name;
-      } else if (cleanId.includes('supervisor') || cleanId.includes('مشرف')) {
-        detectedRole = 'supervisor';
-        const primarySup = supervisors?.find(s => s.isPrimary) || supervisors?.[0];
-        accountName = primarySup ? `${primarySup.name} - ${primarySup.title}` : 'المشرف التربوي المعتمد';
-      } else if (targetRole) {
-        detectedRole = targetRole;
-      }
-    }
-
+    // Administrator intentionally has NO heuristic Legacy fallback.
+    // Admin authentication must succeed through Firebase Authentication.
     if (!detectedRole) {
       setErrorMsg(
         lang === 'ar'
@@ -508,13 +479,11 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
         ? userPasscodes['admin-main'] || userPasscodes['admin']
         : undefined;
 
-    const effectivePasscode =
-      specificCustomPasscode ||
-      adminCustomPasscode ||
-      ROLE_CREDENTIALS_DEMO[detectedRole]?.defaultPasscode ||
-      '1234';
-    
-    const isPasscodeValid = cleanPass === effectivePasscode;
+    const effectivePasscode = specificCustomPasscode || adminCustomPasscode;
+
+    // DEV-only legacy fallback accepts only an explicitly stored legacy passcode.
+    // Never fall back to role-wide demo/default credentials.
+    const isPasscodeValid = Boolean(effectivePasscode) && cleanPass === effectivePasscode;
 
     if (!isPasscodeValid) {
       setErrorMsg(
@@ -600,7 +569,7 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
 
     // Build user object for setCurrentUser
     if (finalRoleToSwitch === 'teacher') {
-      const activeTeacher = findTeacher(cleanId) || teachers[0];
+      const activeTeacher = findTeacher(cleanId) ;
 
       if (activeTeacher) {
         setCurrentUser({
@@ -613,18 +582,9 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
           assignedGrades: activeTeacher.assignedGrades,
           teacherObj: activeTeacher,
         });
-      } else {
-        setCurrentUser({
-          id: 'teacher-main',
-          name: 'الهيئة التدريسية',
-          role: 'teacher',
-          email: 'teacher@maysan-gifted.edu.iq',
-          subject: 'المناهج العلمية',
-          assignedGrades: ['الصف الأول المتوسط', 'الصف السادس العلمي'],
-        });
       }
     } else if (finalRoleToSwitch === 'student') {
-      const activeStudent = findStudent(cleanId) || students[0];
+      const activeStudent = findStudent(cleanId) ;
 
       if (activeStudent) {
         setCurrentUser({
@@ -638,7 +598,7 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
         });
       }
     } else if (finalRoleToSwitch === 'parent') {
-      const activeParent = findParent(cleanId) || parents[0];
+      const activeParent = findParent(cleanId) ;
 
       if (activeParent) {
         setCurrentUser({
@@ -660,9 +620,7 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
     } else if (finalRoleToSwitch === 'supervisor') {
       const activeSupervisor =
         findSupervisor(cleanId) ||
-        (selectedSupervisorId ? supervisors.find((s) => s.id === selectedSupervisorId) : null) ||
-        supervisors?.find((s) => s.isPrimary) ||
-        supervisors?.[0];
+        (selectedSupervisorId ? supervisors.find((s) => s.id === selectedSupervisorId) : null);
 
       if (activeSupervisor) {
         setCurrentUser({
@@ -673,13 +631,6 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
           phone: activeSupervisor.phone,
           avatar: activeSupervisor.avatar,
           supervisorObj: activeSupervisor,
-        });
-      } else {
-        setCurrentUser({
-          id: 'supervisor-main',
-          name: 'المشرف التربوي المعتمد',
-          role: 'supervisor',
-          email: 'haider.supervisor@maysan.edu.iq',
         });
       }
     }
@@ -732,6 +683,7 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
               : 'Enter your Email, Username, or Phone Number with Passcode to switch role.'}
           </div>
 
+          {ALLOW_LEGACY_AUTH && (<>
           {/* Quick Auto Fill Demo Helper Button */}
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-amber-50 border border-amber-200 p-3 rounded-2xl">
             <div className="text-xs">
@@ -749,6 +701,8 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
               <span>تعبئة تلقائية</span>
             </button>
           </div>
+
+          </>)}
 
           {/* Teacher Fast Selector Dropdown (when switching to faculty role) */}
           {(targetRole === 'teacher' || (!targetRole && teachers.length > 0)) && (
@@ -979,3 +933,4 @@ export const RoleAuthModal: React.FC<RoleAuthModalProps> = ({
     </div>
   );
 };
+

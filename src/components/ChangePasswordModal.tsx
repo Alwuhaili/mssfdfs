@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
+import { FirebaseAuthService } from '../services/firebaseAuthService';
 import { UserRole } from '../types';
 import {
   KeyRound,
@@ -95,7 +96,7 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
 
   const strength = getPasswordStrength(newPassword);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     setSuccessMsg('');
@@ -114,10 +115,10 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
       return;
     }
 
-    if (newPassword.trim().length < 4) {
+    if (newPassword.trim().length < (import.meta.env.VITE_ALLOW_LEGACY_AUTH === 'true' ? 4 : 10)) {
       setErrorMsg(
         lang === 'ar'
-          ? 'يجب أن تتكون كلمة السر الجديدة من 4 خانات على الأقل.'
+          ? (import.meta.env.VITE_ALLOW_LEGACY_AUTH === 'true' ? 'يجب أن تتكون كلمة السر الجديدة من 4 خانات على الأقل.' : 'يجب أن تتكون كلمة المرور الجديدة من 10 أحرف على الأقل.')
           : 'New password must be at least 4 characters.'
       );
       return;
@@ -127,6 +128,20 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
       setErrorMsg(
         lang === 'ar' ? 'كلمات السر الجديدة غير متطابقة!' : 'New passwords do not match!'
       );
+      return;
+    }
+
+    if (import.meta.env.VITE_ALLOW_LEGACY_AUTH !== 'true') {
+      try {
+        await FirebaseAuthService.changeCurrentPassword(currentPassword.trim(), newPassword.trim());
+        setSuccessMsg(lang === 'ar' ? 'تم تغيير كلمة المرور الآمنة بنجاح.' : 'Password changed successfully.');
+        setCurrentPassword('');
+        setNewPassword('');
+        setConfirmPassword('');
+        setTimeout(() => { setSuccessMsg(''); onClose(); }, 1500);
+      } catch (error: any) {
+        setErrorMsg(error?.message || 'تعذر تغيير كلمة المرور.');
+      }
       return;
     }
 

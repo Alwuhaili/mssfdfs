@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Role-Based Navigation Bar for Maysan High School for Gifted Girls
  */
 
@@ -152,8 +152,7 @@ export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab 
     graduatesTab,
     { id: 'exams', label: t.navExams, icon: FileCheck2 },
     { id: 'attendance', label: t.navAttendance, icon: CalendarCheck },
-    { id: 'reports', label: t.navReports, icon: BarChart3 },
-    { id: 'lectures', label: t.navLectures, icon: BookOpen },
+{ id: 'lectures', label: t.navLectures, icon: BookOpen },
     { id: 'timetable', label: t.navTimetable, icon: CalendarDays },
   ];
 
@@ -194,8 +193,7 @@ export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab 
     messagesTab,
     graduatesTab,
     certTab,
-    { id: 'reports', label: t.navReports, icon: BarChart3 },
-    { id: 'teachers', label: t.navTeachers, icon: Users },
+{ id: 'teachers', label: t.navTeachers, icon: Users },
     { id: 'integrations', label: t.navIntegrations, icon: Network },
   ];
 
@@ -257,3 +255,4 @@ export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab 
     </nav>
   );
 };
+

@@ -218,34 +218,31 @@ export const LessonPlanningHub: React.FC<Props> = ({
   const [isTeacherSelectModalOpen, setIsTeacherSelectModalOpen] = useState(false);
   const [teacherSearchTerm, setTeacherSearchTerm] = useState('');
 
+  // SECURITY_TEACHER_ACCOUNT_ADMIN_ONLY_V1
   const handleOpenEditTeacher = (teacher: any) => {
-    if (!teacher) {
-      const fallback = teachers[0] || null;
-      setTeacherToEdit(fallback);
-    } else {
-      setTeacherToEdit(teacher);
+    const adminAuthorized =
+      role === 'admin' &&
+      currentUser?.role === 'admin';
+
+    if (!adminAuthorized || !teacher) {
+      setTeacherToEdit(null);
+      setIsTeacherSelectModalOpen(false);
+      setIsEditTeacherModalOpen(false);
+      return;
     }
+
+    setTeacherToEdit(teacher);
     setIsTeacherSelectModalOpen(false);
     setIsEditTeacherModalOpen(true);
   };
 
   // 1. Management & Directress: Full permissions across the entire school
   const isManagement = useMemo(() => {
-    if (!currentUser) return role === 'admin';
-    const name = (currentUser.name || '').toLowerCase();
-    return (
-      role === 'admin' ||
-      currentUser.role === 'admin' ||
-      Boolean((currentUser as any).isDirectress) ||
-      (currentUser as any).role === 'principal' ||
-      currentUser.id === 'admin-main' ||
-      currentUser.id === 'admin' ||
-      name.includes('الهام') ||
-      name.includes('إلهام') ||
-      name.includes('المديرة') ||
-      name.includes('إدارة') ||
-      name.includes('ادارة')
-    );
+    if (!currentUser) return false;
+
+    // Fail closed: management authority comes from the authenticated role,
+    // never from a person's name, title, or a guessed identifier.
+    return role === 'admin' && currentUser.role === 'admin';
   }, [role, currentUser]);
 
   const isSupervisor = role === 'supervisor' || currentUser?.role === 'supervisor';
@@ -257,10 +254,10 @@ export const LessonPlanningHub: React.FC<Props> = ({
     return (
       teachers.find(
         (t) =>
+          (currentUser.authUid && t.authUid && t.authUid === currentUser.authUid) ||
           (t.id && t.id === currentUser.id) ||
           (currentUser.teacherObj?.id && t.id === currentUser.teacherObj.id) ||
-          (currentUser.email && t.email && t.email.toLowerCase() === currentUser.email.toLowerCase()) ||
-          (currentUser.name && t.name && t.name.trim().toLowerCase() === currentUser.name.trim().toLowerCase())
+          (currentUser.email && t.email && t.email.toLowerCase() === currentUser.email.toLowerCase())
       ) ||
       (currentUser.role === 'teacher' ? (currentUser.teacherObj as any) : null)
     );
@@ -283,13 +280,6 @@ export const LessonPlanningHub: React.FC<Props> = ({
       if (cb === currentUser.id || cb === currentUser.teacherObj?.id || cb === activeTeacher?.id) return true;
     }
 
-    // Check by teacherName
-    const planTeacher = (plan.teacherName || '').trim().toLowerCase();
-    if (planTeacher) {
-      if (currentUser.name && planTeacher === currentUser.name.trim().toLowerCase()) return true;
-      if (currentUser.teacherObj?.name && planTeacher === currentUser.teacherObj.name.trim().toLowerCase()) return true;
-      if (activeTeacher?.name && planTeacher === activeTeacher.name.trim().toLowerCase()) return true;
-    }
 
     return false;
   };
@@ -453,16 +443,7 @@ export const LessonPlanningHub: React.FC<Props> = ({
                     <span>
                       {getTeacherAccountLabel(activeTeacher || currentUser)} ({activeTeacher?.name || currentUser?.name}): تعديل وحذف الخطط التي أعددتها فقط، مع إمكانية استنساخ أي خطة كقالب
                     </span>
-                    <button
-                      type="button"
-                      id="btn-edit-active-teacher-badge"
-                      onClick={() => handleOpenEditTeacher(activeTeacher || teachers[0])}
-                      className="mr-1 px-2.5 py-0.5 bg-white hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-bold transition flex items-center gap-1 shadow-xs cursor-pointer"
-                      title={getTeacherAccountLabel(activeTeacher || currentUser, undefined, true)}
-                    >
-                      <Edit className="w-3 h-3 text-indigo-600" />
-                      <span>{getTeacherAccountLabel(activeTeacher || currentUser, undefined, true)}</span>
-                    </button>
+
                   </span>
                 ) : isSupervisor ? (
                   <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-800 rounded-full text-xs font-bold border border-blue-200 shadow-xs">
@@ -509,7 +490,7 @@ export const LessonPlanningHub: React.FC<Props> = ({
                   handleOpenEditTeacher(activeTeacher);
                 } else if (selectedTeacherFilter !== 'all') {
                   const found = teachers.find((t) => t.id === selectedTeacherFilter);
-                  handleOpenEditTeacher(found || teachers[0]);
+                  if (found) handleOpenEditTeacher(found);
                 } else {
                   setIsTeacherSelectModalOpen(true);
                 }

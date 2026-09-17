@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Academic Reports & Statistical Analytics Hub
  * ثانوية ميسان للمتميزات - جمهورية العراق
  */
@@ -72,7 +72,7 @@ interface AcademicReportsHubProps {
 }
 
 export const AcademicReportsHub: React.FC<AcademicReportsHubProps> = ({
-  userRole = 'admin',
+  userRole,
   preselectedStudentId,
 }) => {
   const {
@@ -292,6 +292,12 @@ ${summary.smartRecommendations.map((r, i) => `${i + 1}. ${r}`).join('\n')}
     },
   ];
 
+  // SECURITY_ACADEMIC_REPORTS_ADMIN_ONLY_V1
+  // Defense in depth: this component is fail-closed.
+  // Navigation/dashboard restrictions are not sufficient by themselves.
+  if (userRole !== 'admin') {
+    return null;
+  }
   return (
     <div className="space-y-6 font-arabic" ref={reportContainerRef}>
       
@@ -1456,3 +1462,4 @@ ${summary.smartRecommendations.map((r, i) => `${i + 1}. ${r}`).join('\n')}
     </div>
   );
 };
+

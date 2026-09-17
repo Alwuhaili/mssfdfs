@@ -30,6 +30,13 @@ import {
   getTeacherSubjectTitle,
 } from '../utils/teacherUtils';
 import { UniversalDocumentViewer } from './UniversalDocumentViewer';
+import {
+  uploadLibraryFile,
+  deleteLibraryFile,
+  validateLibraryFile,
+  getLibraryFileExtension,
+} from '../services/storageService';
+import { auth } from '../lib/firebase';
 
 interface UploadPdfModalProps {
   isOpen: boolean;
@@ -39,6 +46,12 @@ interface UploadPdfModalProps {
   defaultGrade?: GradeLevel;
   defaultTeacherName?: string;
   defaultCategory?: LibraryCategory;
+
+  // SECURITY_UPLOAD_PDF_AUTH_V1
+  verifiedTeacherId?: string;
+  verifiedTeacherRole?: string;
+  authorizedSubject?: string;
+  authorizedGrades?: GradeLevel[];
 }
 
 const ALL_GRADES: GradeLevel[] = [
@@ -74,6 +87,10 @@ export const UploadPdfModal: React.FC<UploadPdfModalProps> = ({
   defaultGrade,
   defaultTeacherName,
   defaultCategory,
+  verifiedTeacherId,
+  verifiedTeacherRole,
+  authorizedSubject,
+  authorizedGrades,
 }) => {
   const { currentUser, addLecture, teachers } = useApp();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -97,32 +114,33 @@ export const UploadPdfModal: React.FC<UploadPdfModalProps> = ({
       );
       if (match?.name) return match.name;
     }
-    if (teachers && teachers.length > 0) {
-      return teachers[0].name;
-    }
-    return 'أستاذة المادة';
+    return '';
   }, [currentUser, defaultTeacherName, teachers]);
 
   // Derive initial subject from current user or defaults
   const autoResolvedSubject = useMemo(() => {
-    if (defaultSubject) return defaultSubject;
-    if (currentUser?.subject) return currentUser.subject;
-    if (currentUser?.teacherObj?.subject) return currentUser.teacherObj.subject;
-    return DEFAULT_SUBJECTS[0];
-  }, [defaultSubject, currentUser]);
+    if (authorizedSubject?.trim()) return authorizedSubject.trim();
+    if (defaultSubject?.trim()) return defaultSubject.trim();
+
+    // No arbitrary subject fallback.
+    // handleSubmit will fail closed if no verified subject exists.
+    return '';
+  }, [authorizedSubject, defaultSubject]);
 
   // Derive initial grade
   const autoResolvedGrade = useMemo<GradeLevel>(() => {
-    if (defaultGrade) return defaultGrade;
-    if (currentUser?.gradeLevel) return currentUser.gradeLevel;
-    if (currentUser?.assignedGrades && currentUser.assignedGrades.length > 0) {
-      return currentUser.assignedGrades[0];
+    if (authorizedGrades && authorizedGrades.length > 0) {
+      if (defaultGrade && authorizedGrades.includes(defaultGrade)) {
+        return defaultGrade;
+      }
+
+      return authorizedGrades[0];
     }
-    if (currentUser?.teacherObj?.assignedGrades && currentUser.teacherObj.assignedGrades.length > 0) {
-      return currentUser.teacherObj.assignedGrades[0];
-    }
-    return 'الصف السادس العلمي';
-  }, [defaultGrade, currentUser]);
+
+    // UI-only placeholder. It grants no authorization.
+    // handleSubmit fails closed when authorizedGrades is empty.
+    return defaultGrade || ALL_GRADES[0];
+  }, [authorizedGrades, defaultGrade]);
 
   const [title, setTitle] = useState('');
   const [subject, setSubject] = useState(autoResolvedSubject);
@@ -171,50 +189,20 @@ export const UploadPdfModal: React.FC<UploadPdfModalProps> = ({
 
   const handleFileProcess = (file: File) => {
     if (!file) return;
-
     setErrorMessage('');
-    setSelectedFile(file);
-
-    // Format size text
-    const sizeInMB = file.size / (1024 * 1024);
-    const sizeText = sizeInMB >= 1 ? `${sizeInMB.toFixed(1)} MB` : `${(file.size / 1024).toFixed(0)} KB`;
-    const ext = file.name.split('.').pop()?.toUpperCase() || 'PDF';
-    setFileSizeText(`${ext} ${sizeText}`);
-
-    // Auto populate title if currently empty
-    if (!title.trim()) {
-      const cleanName = file.name
-        .replace(/\.[^/.]+$/, '')
-        .replace(/[-_]/g, ' ')
-        .trim();
-      setTitle(cleanName);
+    // DIGITAL_LIBRARY_ORIGINAL_FILE_V2_2B
+    try { validateLibraryFile(file); } catch (err: any) {
+      setSelectedFile(null); setFileDataUrl(''); setIsReadingFile(false);
+      setErrorMessage(err?.message || 'نوع الملف أو حجمه غير مسموح به في المكتبة الرقمية.'); return;
     }
-
-    // Create synchronous preview URL immediately
-    try {
-      if (previewBlobUrl) {
-        URL.revokeObjectURL(previewBlobUrl);
-      }
-      const newBlobUrl = URL.createObjectURL(file);
-      setPreviewBlobUrl(newBlobUrl);
-    } catch (e) {
-      console.warn('Blob URL creation error:', e);
-    }
-
-    // Read as Data URL for offline/IndexedDB caching
-    setIsReadingFile(true);
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setIsReadingFile(false);
-      if (e.target?.result) {
-        setFileDataUrl(e.target.result as string);
-      }
-    };
-    reader.onerror = (err) => {
-      setIsReadingFile(false);
-      console.warn('FileReader error:', err);
-    };
-    reader.readAsDataURL(file);
+    setSelectedFile(file); setFileDataUrl(''); setIsReadingFile(false);
+    const sizeMB = file.size / (1024 * 1024);
+    const readableSize = sizeMB >= 1 ? `${sizeMB.toFixed(1)} MB` : `${Math.max(1, file.size / 1024).toFixed(0)} KB`;
+    const extension = getLibraryFileExtension(file.name).toUpperCase() || 'FILE';
+    setFileSizeText(`${extension} ${readableSize}`);
+    if (!title.trim()) setTitle(file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ').trim());
+    try { if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl); setPreviewBlobUrl(URL.createObjectURL(file)); }
+    catch (err) { console.warn('Unable to create local preview URL:', err); setPreviewBlobUrl(''); }
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -245,92 +233,51 @@ export const UploadPdfModal: React.FC<UploadPdfModalProps> = ({
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMessage('');
-
-    if (!title.trim()) {
-      setErrorMessage('يرجى كتابة عنوان المرجع أو الكتاب التعليمي!');
-      return;
+    e.preventDefault(); setErrorMessage('');
+    // DIGITAL_LIBRARY_FIREBASE_IDENTITY_V2_2B
+    const firebaseUser = auth.currentUser;
+    if (!firebaseUser?.uid) { setErrorMessage('يجب تسجيل الدخول بحساب Firebase موثق قبل رفع الملفات.'); return; }
+    let tokenRole = '';
+    try { const tokenResult = await firebaseUser.getIdTokenResult(true); tokenRole = String(tokenResult.claims?.role || '').trim(); }
+    catch (err) { console.error('Firebase claims verification failed:', err); setErrorMessage('تعذر التحقق من صلاحيات الحساب. يرجى تسجيل الدخول من جديد.'); return; }
+    const isAdminUploader = tokenRole === 'admin'; const isTeacherUploader = tokenRole === 'teacher';
+    if (!isAdminUploader && !isTeacherUploader) { setErrorMessage('هذا الحساب غير مخول لرفع الملفات إلى المكتبة الرقمية.'); return; }
+    if (!selectedFile) { setErrorMessage('يرجى اختيار ملف للرفع.'); return; }
+    try { validateLibraryFile(selectedFile); } catch (err: any) { setErrorMessage(err?.message || 'نوع الملف أو حجمه غير مسموح به.'); return; }
+    const finalSubject = (customSubject.trim() ? customSubject.trim() : subject).trim(); const finalGrade = gradeLevel;
+    if (!finalSubject) { setErrorMessage('يرجى تحديد المادة الدراسية.'); return; }
+    if (!finalGrade) { setErrorMessage('يرجى تحديد الصف الدراسي.'); return; }
+    if (isTeacherUploader) {
+      if (!verifiedTeacherId || verifiedTeacherRole !== 'teacher') { setErrorMessage('تعذر التحقق من ملف المدرس المرتبط بالحساب.'); return; }
+      const teacherSubject = authorizedSubject?.trim(); const teacherGrades = authorizedGrades || [];
+      if (!teacherSubject) { setErrorMessage('لا توجد مادة مخولة لهذا المدرس.'); return; }
+      if (teacherGrades.length === 0) { setErrorMessage('لا توجد صفوف مخولة لهذا المدرس.'); return; }
+      if (finalSubject !== teacherSubject) { setErrorMessage(`لا تملك صلاحية رفع محتوى لمادة (${finalSubject}).`); return; }
+      if (!teacherGrades.includes(finalGrade)) { setErrorMessage(`لا تملك صلاحية رفع محتوى للصف (${finalGrade}).`); return; }
     }
-
-    setIsSubmitting(true);
-
-    const finalSubject = customSubject.trim() ? customSubject.trim() : subject;
-    const isMale = isMaleTeacher(teacherName || autoResolvedTeacherName);
-    const supervisorRoleLabel = getSupervisorLabel(teacherName || autoResolvedTeacherName);
-    const fallbackTitle = isMale ? 'أستاذ المادة' : 'أستاذة المادة';
-    const finalTeacherName = teacherName.trim() || autoResolvedTeacherName || fallbackTitle;
-
-    // Use fileDataUrl if ready, or fallback to previewBlobUrl or generated descriptor
-    const finalPdfUrl = fileDataUrl || previewBlobUrl || '#';
-
-    const newResourceData: Omit<LectureResource, 'id' | 'uploadedAt'> = {
-      title: title.trim(),
-      subject: finalSubject,
-      teacherName: finalTeacherName,
-      gradeLevel,
-      type: 'pdf',
-      fileUrl: finalPdfUrl,
-      pdfDataUrl: finalPdfUrl,
-      description:
-        description.trim() ||
-        `ملف تعليمي ومورد رقمي بصيغة PDF في مادة ${finalSubject} لـ (${gradeLevel})، تم إعداده وتوفيره من قِبل ${finalTeacherName}.`,
-      fileSize: fileSizeText,
-      category,
-      pageCount: Number(pageCount) || 30,
-      chapterOrUnit: chapterOrUnit || 'شامل المنهج',
-      isOfficialBook: category === 'curriculum_book',
-      sampleContentText:
-        sampleContentText.trim() ||
-        `ملخص المورد التعليمي: ${title.trim()}\nالمادة: ${finalSubject} | الصف: ${gradeLevel}\n${supervisorRoleLabel}: ${finalTeacherName}\n\nيحتوي هذا الملف على شرح مفصل للمفاهيم الأساسية، ملخص القوانين والمسائل المحلولة، والتطبيقات النموذجية وفق المنهج الدراسي لثانوية ميسان للمتميزات.`,
-      chapters: [
-        {
-          id: 'ch-1',
-          title: `الوحدة الأولى: أساسيات ${finalSubject}`,
-          pageNumber: 1,
-          summary: 'المفاهيم والنظريات الأساسية للمقرر',
-        },
-        {
-          id: 'ch-2',
-          title: `الوحدة الثانية: التمارين والمسائل المحلولة`,
-          pageNumber: Math.max(2, Math.round((Number(pageCount) || 30) * 0.3)),
-          summary: 'أمثلة تطبيقية وتدريبات نموذجية',
-        },
-        {
-          id: 'ch-3',
-          title: `الوحدة الثالثة: الأسئلة الوزارية والمراجعة الشاملة`,
-          pageNumber: Math.max(3, Math.round((Number(pageCount) || 30) * 0.7)),
-          summary: 'بنك الأسئلة والحلول النموذجية المعتمدة',
-        },
-      ],
-      downloadCount: 1,
-      viewsCount: 1,
-      academicYear: '2026 - 2027',
-      uploaderId: currentUser?.id || currentUser?.teacherObj?.id || 'uploader-current',
-      uploaderName: currentUser?.name || currentUser?.teacherObj?.name || finalTeacherName,
-      uploaderRole: currentUser?.role || 'teacher',
-    };
-
+    if (!title.trim()) { setErrorMessage('يرجى كتابة عنوان المورد التعليمي.'); return; }
+    const finalTeacherName = teacherName.trim() || autoResolvedTeacherName || (isAdminUploader ? 'إدارة المدرسة' : 'أستاذ المادة');
+    const extension = getLibraryFileExtension(selectedFile.name).toLowerCase();
+    const resourceType: LectureResource['type'] = extension === 'pdf' ? 'pdf' : ['doc','docx'].includes(extension) ? 'doc' : ['ppt','pptx'].includes(extension) ? 'ppt' : ['xls','xlsx','csv'].includes(extension) ? 'sheet' : ['jpg','jpeg','png','webp','gif'].includes(extension) ? 'image' : ['mp4','webm','mov'].includes(extension) ? 'video' : ['mp3','wav','m4a'].includes(extension) ? 'audio' : extension === 'txt' ? 'text' : 'other';
+    const resourceId = `lec-${Date.now()}-${Math.random().toString(36).slice(2,10)}`; setIsSubmitting(true); let uploadedStoragePath: string | undefined;
     try {
-      addLecture(newResourceData);
-
-      setUploadSuccess(true);
-      setTimeout(() => {
-        setIsSubmitting(false);
-        setUploadSuccess(false);
-        onClose();
-        if (onSuccess) {
-          onSuccess({
-            ...newResourceData,
-            id: `lec-${Date.now()}`,
-            uploadedAt: new Date().toISOString().split('T')[0],
-          });
-        }
-      }, 1000);
+      const uploaded = await uploadLibraryFile(selectedFile, { uploaderId: firebaseUser.uid, resourceId }); uploadedStoragePath = uploaded.storagePath;
+      const resourceData: Omit<LectureResource, 'id' | 'uploadedAt'> = {
+        title: title.trim(), subject: finalSubject, teacherName: finalTeacherName, gradeLevel: finalGrade, type: resourceType,
+        fileUrl: uploaded.downloadUrl, pdfDataUrl: undefined, storagePath: uploaded.storagePath, originalFileName: uploaded.originalFileName,
+        fileExtension: uploaded.fileExtension, mimeType: uploaded.mimeType, fileSizeBytes: uploaded.fileSizeBytes, storageProvider: 'firebase',
+        description: description.trim() || `مورد تعليمي في مادة ${finalSubject} للصف ${finalGrade}.`, fileSize: fileSizeText, category,
+        pageCount: resourceType === 'pdf' ? Number(pageCount) || undefined : undefined, chapterOrUnit: chapterOrUnit || 'شامل المنهج',
+        isOfficialBook: category === 'curriculum_book', sampleContentText: sampleContentText.trim() || `المورد التعليمي: ${title.trim()}\nالمادة: ${finalSubject}\nالصف: ${finalGrade}\nاسم الملف الأصلي: ${uploaded.originalFileName}`,
+        chapters: [], downloadCount: 0, viewsCount: 0, academicYear: '2026 - 2027', uploaderId: firebaseUser.uid, uploaderName: finalTeacherName, uploaderRole: tokenRole,
+      };
+      const createdResource = addLecture(resourceData, { resourceId });
+      if (!createdResource || createdResource.id !== resourceId) throw new Error('لم يتطابق معرف ملف Storage مع معرف مورد المكتبة.');
+      setUploadSuccess(true); setTimeout(() => { setIsSubmitting(false); setUploadSuccess(false); if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl); onClose(); if (onSuccess) onSuccess(createdResource); }, 1000);
     } catch (err: any) {
-      console.error('Error adding lecture:', err);
-      setIsSubmitting(false);
-      setErrorMessage('حدث خطأ أثناء حفظ الملف، يرجى المحاولة مجدداً.');
+      console.error('Digital Library V2.2B upload failed:', err);
+      if (uploadedStoragePath) { try { await deleteLibraryFile(uploadedStoragePath); } catch (rollbackError) { console.error('Storage rollback failed:', rollbackError); } }
+      setIsSubmitting(false); setErrorMessage(err?.message || 'حدث خطأ أثناء رفع الملف أو إنشاء سجل المكتبة.');
     }
   };
 
@@ -399,7 +346,7 @@ export const UploadPdfModal: React.FC<UploadPdfModalProps> = ({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.png,.jpg,.jpeg"
+                accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.jpg,.jpeg,.png,.webp,.gif,.mp4,.webm,.mov,.mp3,.wav,.m4a"
                 onChange={handleFileChange}
                 className="hidden"
               />
@@ -686,3 +633,5 @@ export const UploadPdfModal: React.FC<UploadPdfModalProps> = ({
     </div>
   );
 };
+
+

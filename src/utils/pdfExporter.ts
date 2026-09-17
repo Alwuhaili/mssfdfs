@@ -13,6 +13,14 @@ export interface ExportPdfOptions {
   fitToPage?: boolean;
 }
 
+
+const escapeHtmlForTemplate = (value: unknown): string => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
 /**
  * Saves a Blob as a file with a forced download prompt / save file dialog.
  */
@@ -353,7 +361,7 @@ export async function exportAttendanceDispatchReportAsPdf(
 ): Promise<boolean> {
   const fileName =
     options?.fileName ||
-    `سجل_حضور_طالبات_${report.gradeLevel.replace(/\s+/g, '_')}_${report.section === 'الكل' ? 'جميع_الشعب' : `شعبة_${report.section}`}_${report.date}.pdf`;
+    `سجل_حضور_طالبات_${report.gradeLevel.replace(/\s+/g, '_')}_${report.section === 'الكل' ? 'جميع_الشعب' : `شعبة_${report.section}`}_${escapeHtmlForTemplate(report.date)}.pdf`;
 
   await ensureFontsLoaded();
 
@@ -376,8 +384,8 @@ export async function exportAttendanceDispatchReportAsPdf(
       (std, idx) => `
     <tr style="border-bottom: 1px solid #1e293b; background-color: ${idx % 2 === 0 ? '#ffffff' : '#f8fafc'};">
       <td style="padding: 7px 8px; border: 1px solid #1e293b; text-align: center; font-weight: bold; font-size: 11px;">${idx + 1}</td>
-      <td style="padding: 7px 8px; border: 1px solid #1e293b; font-weight: 800; color: #0f172a; font-size: 11px;">${std.name}</td>
-      <td style="padding: 7px 8px; border: 1px solid #1e293b; text-align: center; font-weight: bold; color: #0f766e; font-size: 11px;">شعبة (${std.section})</td>
+      <td style="padding: 7px 8px; border: 1px solid #1e293b; font-weight: 800; color: #0f172a; font-size: 11px;">${escapeHtmlForTemplate(std.name)}</td>
+      <td style="padding: 7px 8px; border: 1px solid #1e293b; text-align: center; font-weight: bold; color: #0f766e; font-size: 11px;">شعبة (${escapeHtmlForTemplate(std.section)})</td>
       <td style="padding: 7px 8px; border: 1px solid #1e293b; text-align: center; font-weight: 900; font-size: 11px; color: ${
         std.status === 'حاضرة'
           ? '#059669'
@@ -387,12 +395,12 @@ export async function exportAttendanceDispatchReportAsPdf(
           ? '#d97706'
           : '#4f46e5'
       };">
-        ${std.status}
+        ${escapeHtmlForTemplate(std.status)}
       </td>
-      <td style="padding: 7px 8px; border: 1px solid #1e293b; font-size: 11px; color: #334155;">${std.parentName}</td>
-      <td style="padding: 7px 8px; border: 1px solid #1e293b; font-family: monospace; font-size: 10px; color: #475569; direction: ltr; text-align: right;">${std.parentPhone}</td>
+      <td style="padding: 7px 8px; border: 1px solid #1e293b; font-size: 11px; color: #334155;">${escapeHtmlForTemplate(std.parentName)}</td>
+      <td style="padding: 7px 8px; border: 1px solid #1e293b; font-family: monospace; font-size: 10px; color: #475569; direction: ltr; text-align: right;">${escapeHtmlForTemplate(std.parentPhone)}</td>
       <td style="padding: 7px 8px; border: 1px solid #1e293b; font-family: monospace; font-size: 9.5px; color: #334155; direction: ltr; text-align: right;">
-        ${std.parentEmail} (تم الإرسال ✉️)
+        ${escapeHtmlForTemplate(std.parentEmail)} (تم الإرسال ✉️)
       </td>
     </tr>
   `
@@ -418,10 +426,10 @@ export async function exportAttendanceDispatchReportAsPdf(
         </div>
 
         <div style="text-align: left; font-size: 11px; line-height: 1.5; font-family: monospace; color: #1e293b;">
-          <p style="margin: 0;"><span style="font-weight: bold; font-family: sans-serif;">التاريخ:</span> ${report.date}</p>
-          <p style="margin: 0;"><span style="font-weight: bold; font-family: sans-serif;">توقيت التوثيق:</span> ${report.dispatchedAt}</p>
-          <p style="margin: 0;"><span style="font-weight: bold; font-family: sans-serif;">الصف:</span> ${report.gradeLevel}</p>
-          <p style="margin: 0;"><span style="font-weight: bold; font-family: sans-serif;">الشعبة:</span> (${report.section === 'الكل' ? 'جميع الشعب' : report.section})</p>
+          <p style="margin: 0;"><span style="font-weight: bold; font-family: sans-serif;">التاريخ:</span> ${escapeHtmlForTemplate(report.date)}</p>
+          <p style="margin: 0;"><span style="font-weight: bold; font-family: sans-serif;">توقيت التوثيق:</span> ${escapeHtmlForTemplate(report.dispatchedAt)}</p>
+          <p style="margin: 0;"><span style="font-weight: bold; font-family: sans-serif;">الصف:</span> ${escapeHtmlForTemplate(report.gradeLevel)}</p>
+          <p style="margin: 0;"><span style="font-weight: bold; font-family: sans-serif;">الشعبة:</span> (${report.section === 'الكل' ? 'جميع الشعب' : escapeHtmlForTemplate(report.section)})</p>
         </div>
       </div>
 
@@ -429,15 +437,15 @@ export async function exportAttendanceDispatchReportAsPdf(
       <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 10px; border: 1px solid #0f172a; border-radius: 8px; margin-bottom: 14px; background: #f8fafc; font-size: 11px;">
         <div>
           <span style="display: block; font-weight: bold; color: #64748b; font-size: 9.5px;">المادة الدراسية:</span>
-          <span style="font-weight: 900; color: #0f172a;">${report.subject}</span>
+          <span style="font-weight: 900; color: #0f172a;">${escapeHtmlForTemplate(report.subject)}</span>
         </div>
         <div>
           <span style="display: block; font-weight: bold; color: #64748b; font-size: 9.5px;">أستاذة المادة:</span>
-          <span style="font-weight: 900; color: #0f172a;">${report.teacherName}</span>
+          <span style="font-weight: 900; color: #0f172a;">${escapeHtmlForTemplate(report.teacherName)}</span>
         </div>
         <div>
           <span style="display: block; font-weight: bold; color: #64748b; font-size: 9.5px;">البريد المعتمد:</span>
-          <span style="font-weight: bold; font-family: monospace; color: #0f172a; font-size: 10px;">${report.teacherEmail}</span>
+          <span style="font-weight: bold; font-family: monospace; color: #0f172a; font-size: 10px;">${escapeHtmlForTemplate(report.teacherEmail)}</span>
         </div>
         <div>
           <span style="display: block; font-weight: bold; color: #64748b; font-size: 9.5px;">إجمالي الطالبات:</span>
@@ -483,7 +491,7 @@ export async function exportAttendanceDispatchReportAsPdf(
       <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; text-align: center; font-size: 11px; font-weight: bold; padding-top: 16px; border-top: 2px solid #0f172a; margin-top: 24px;">
         <div style="display: flex; flex-direction: column; justify-content: space-between; min-height: 80px;">
           <p style="margin: 0; font-weight: bold; color: #334155;">أستاذة المادة</p>
-          <p style="margin: 4px 0; font-weight: 900; font-size: 13px; color: #0f172a;">${report.teacherName}</p>
+          <p style="margin: 4px 0; font-weight: 900; font-size: 13px; color: #0f172a;">${escapeHtmlForTemplate(report.teacherName)}</p>
           <p style="margin: 0; font-size: 9.5px; color: #64748b; font-family: monospace;">التوقيع: ................................</p>
         </div>
 
@@ -520,8 +528,8 @@ export async function exportAttendanceDispatchReportAsPdf(
     // Fallback: plain text / minimal PDF
     return downloadTextOrAttachmentAsPdf(
       fileName,
-      `تقرير حضور - ${report.gradeLevel} (${report.section}) - ${report.date}`,
-      `تاريخ التقرير: ${report.date}\nالصف والشعبة: ${report.gradeLevel} (${report.section})\nالمادة: ${report.subject}\nالأستاذة: ${report.teacherName}\n\nالإحصائيات:\n- الحاضرات: ${report.stats.present}\n- الغائبات: ${report.stats.absent}\n- المتأخرات: ${report.stats.late}\n- المجازات: ${report.stats.excused}\n\nسجل الطالبات:\n` +
+      `تقرير حضور - ${escapeHtmlForTemplate(report.gradeLevel)} (${report.section}) - ${escapeHtmlForTemplate(report.date)}`,
+      `تاريخ التقرير: ${escapeHtmlForTemplate(report.date)}\nالصف والشعبة: ${escapeHtmlForTemplate(report.gradeLevel)} (${report.section})\nالمادة: ${escapeHtmlForTemplate(report.subject)}\nالأستاذة: ${escapeHtmlForTemplate(report.teacherName)}\n\nالإحصائيات:\n- الحاضرات: ${report.stats.present}\n- الغائبات: ${report.stats.absent}\n- المتأخرات: ${report.stats.late}\n- المجازات: ${report.stats.excused}\n\nسجل الطالبات:\n` +
         report.studentDetails.map((s, i) => `${i + 1}. ${s.name} (${s.section}) - الحالة: ${s.status} - ولي الأمر: ${s.parentName} (${s.parentPhone}) - البريد: ${s.parentEmail}`).join('\n')
     );
   } finally {

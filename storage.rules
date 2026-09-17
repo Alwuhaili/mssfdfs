@@ -1,0 +1,62 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // DIGITAL_LIBRARY_STORAGE_RULES_V2_2C_R2
+    function signedIn() { return request.auth != null; }
+    function role() { return signedIn() ? request.auth.token.role : null; }
+    function isAdmin() { return role() in ['admin', 'director', 'school_manager']; }
+    function isTeacher() { return role() == 'teacher'; }
+    function isLibraryOwner(ownerUid) {
+      return signedIn() && request.auth.uid == ownerUid;
+    }
+    function validLibraryCreate(ownerUid, resourceId) {
+      return request.resource != null
+        && request.resource.size > 0
+        && request.resource.size <= 50 * 1024 * 1024
+        && request.resource.contentType != null
+        && request.resource.metadata.uploaderId == ownerUid
+        && request.resource.metadata.resourceId == resourceId
+        && request.resource.metadata.originalFileName is string
+        && request.resource.metadata.originalFileName.size() > 0
+        && request.resource.metadata.fileExtension is string
+        && request.resource.metadata.fileExtension.size() > 0
+        && request.resource.metadata.source == 'digital-library-v2';
+    }
+
+    match /public/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /library/{ownerUid}/{resourceId}/{fileName} {
+      allow read: if signedIn();
+
+      // DIGITAL_LIBRARY_STORAGE_IMMUTABLE_V2_2F_R1
+      // Explicitly require that no object already exists at this exact path.
+      // This prevents an upload API from replacing an existing object even if
+      // the emulator/API classifies the request through create semantics.
+      allow create: if resource == null
+        && validLibraryCreate(ownerUid, resourceId)
+        && (isAdmin() || (isTeacher() && isLibraryOwner(ownerUid)));
+
+      // Existing library objects are immutable. A replacement must use a new resource/object.
+      allow update: if false;
+
+      allow delete: if isAdmin()
+        || (isTeacher() && isLibraryOwner(ownerUid));
+    }
+
+    // Reject unexpected/nested library paths.
+    match /library/{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    match /private/{uid}/{allPaths=**} {
+      allow read, write: if signedIn() && (request.auth.uid == uid || isAdmin());
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

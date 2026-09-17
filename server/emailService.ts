@@ -22,6 +22,16 @@ export interface EmailSendResult {
   error?: string;
 }
 
+
+function escapeHtml(value: string): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /**
  * Creates and returns a configured Nodemailer Transporter instance based on .env
  */
@@ -46,7 +56,7 @@ export function createSmtpTransporter(): Transporter | null {
         pass: rawPass,
       },
       tls: {
-        rejectUnauthorized: false,
+        rejectUnauthorized: process.env.NODE_ENV !== 'development',
       },
     });
   }
@@ -60,7 +70,7 @@ export function createSmtpTransporter(): Transporter | null {
       pass: rawPass,
     },
     tls: {
-      rejectUnauthorized: false, // Prevents self-signed cert blocks on custom school mail servers
+      rejectUnauthorized: process.env.NODE_ENV !== 'development',
     },
   });
 }
@@ -70,6 +80,7 @@ export function createSmtpTransporter(): Transporter | null {
  */
 function buildOtpEmailContent(accountName: string, otpCode: string): { html: string; text: string } {
   const currentYear = new Date().getFullYear();
+  const safeAccountName = escapeHtml(accountName);
 
   const text = `
 ثانوية ميسان للمتميزات - منظومة الأمان وإعادة تعيين الرمز السري
@@ -219,7 +230,7 @@ function buildOtpEmailContent(accountName: string, otpCode: string): { html: str
     </div>
 
     <div class="greeting">
-      مرحباً <strong>${accountName}</strong>،<br>
+      مرحباً <strong>${safeAccountName}</strong>،<br>
       تلقينا طلباً لإعادة تعيين كلمة السر الخاصة بحسابك. يرجى استخدام رمز التحقق المؤقت (OTP) أدناه لإتمام عملية التعيين:
     </div>
 
@@ -251,7 +262,7 @@ function buildOtpEmailContent(accountName: string, otpCode: string): { html: str
 export async function sendOtpEmail(options: SendOtpOptions): Promise<EmailSendResult> {
   const { recipientEmail, otpCode, accountName = "عزيزي المستخدم" } = options;
   const cleanRecipient = recipientEmail.trim().toLowerCase();
-  const subject = `رمز التحقق لإعادة تعيين كلمة السر - ثانوية ميسان للمتميزات: ${otpCode}`;
+  const subject = `رمز التحقق لإعادة تعيين كلمة السر - ثانوية ميسان للمتميزات`;
   const { html, text } = buildOtpEmailContent(accountName, otpCode);
 
   const defaultSender = process.env.SMTP_FROM || `"ثانوية ميسان للمتميزات" <no-reply@maysan-gifted.edu.iq>`;
@@ -329,7 +340,16 @@ export async function sendOtpEmail(options: SendOtpOptions): Promise<EmailSendRe
     }
   }
 
-  // 3. Fallback: Ethereal Cloud Mailbox (for testing/development before full SMTP credentials are set)
+  // 3. Development-only fallback: never expose a preview mailbox in production.
+  if (process.env.NODE_ENV !== "development") {
+    return {
+      success: false,
+      provider: "none",
+      details: "لم يتم إعداد مزود بريد موثوق للإنتاج.",
+      error: "No production email provider configured",
+    };
+  }
+
   try {
     const testAccount = await nodemailer.createTestAccount();
     const etherealTransporter = nodemailer.createTransport({
@@ -363,10 +383,10 @@ export async function sendOtpEmail(options: SendOtpOptions): Promise<EmailSendRe
   } catch (etherealError: any) {
     console.warn("[ETHEREAL NOTE] Fallback to direct sandbox dispatch:", etherealError?.message);
     return {
-      success: true,
+      success: false,
       provider: "none",
-      details: "صندوق الاستقبال الافتراضي المباشر (Sandbox Mode)",
-      messageId: `sim-${Date.now()}`,
+      details: "تعذر إرسال البريد حتى في بيئة التطوير.",
+      error: etherealError?.message || "Ethereal unavailable",
     };
   }
 }

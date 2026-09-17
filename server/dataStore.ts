@@ -28,7 +28,6 @@ export interface SchoolDataPayload {
   certificates?: any[];
   calendarEvents?: any[];
   challenges?: any[];
-  userPasscodes?: any;
   schoolAdminData?: any;
   decisionSettings?: any;
   auditLogs?: any[];
@@ -67,7 +66,11 @@ class CentralDataStore {
   private subscribers: Set<StoreSubscriber> = new Set();
 
   constructor() {
-    this.dbDir = path.join(process.cwd(), "data");
+    // Security Hardening V1: runtime school data must not live inside the source/deploy tree.
+    // Use SCHOOL_DATA_DIR on a persistent private volume when this legacy server store is enabled.
+    this.dbDir = process.env.SCHOOL_DATA_DIR
+      ? path.resolve(process.env.SCHOOL_DATA_DIR)
+      : path.join(process.cwd(), ".runtime-data");
     this.dbFilePath = path.join(this.dbDir, "maysan_school_database.json");
     this.state = {
       version: 1,
@@ -208,8 +211,7 @@ class CentralDataStore {
     const isAdmin =
       sourceUser?.role === "admin" ||
       sourceUser?.id === "admin-main" ||
-      sourceUser?.role === "director" ||
-      (sourceUser?.name && (sourceUser.name.includes("المديرة") || sourceUser.name.includes("إدارة")));
+      sourceUser?.role === "director";
 
     // Admin-exclusive entities that cannot be overwritten by students or teachers
     const ADMIN_EXCLUSIVE_KEYS = [

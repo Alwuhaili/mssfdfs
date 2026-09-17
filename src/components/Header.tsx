@@ -4,6 +4,7 @@
 
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { FirebaseAuthService } from '../services/firebaseAuthService';
 import { UserRole, DirectMessage } from '../types';
 import {
   isMessageDeletedForUser,
@@ -41,7 +42,7 @@ export const Header: React.FC<{
   onOpenNotifications: () => void;
   onOpenMessages: () => void;
 }> = ({ onOpenNotifications, onOpenMessages }) => {
-  const { role, setRole, currentUser, lang, setLang, colorTheme, isDarkMode, toggleDarkMode, t, notifications, getUserNotifications, messages, teachers, students, parents, schoolAdminData, syncStatus, syncVersion } = useApp();
+  const { role, setRole, currentUser, setCurrentUser, lang, setLang, colorTheme, isDarkMode, toggleDarkMode, t, notifications, getUserNotifications, messages, teachers, students, parents, schoolAdminData, syncStatus, syncVersion } = useApp();
   const [showRoleMenu, setShowRoleMenu] = useState(false);
   const [targetAuthRole, setTargetAuthRole] = useState<UserRole | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
@@ -383,8 +384,10 @@ export const Header: React.FC<{
                   <div className="pt-2 mt-2 border-t border-slate-100 dark:border-slate-800 space-y-1">
 
                     <button
-                      onClick={() => {
+                      onClick={async () => {
                         setShowRoleMenu(false);
+                        try { await FirebaseAuthService.logout(); } catch { /* already signed out */ }
+                        setCurrentUser(null);
                         localStorage.removeItem('maysan_current_user_v1');
                         localStorage.removeItem('maysan_current_role');
                         window.location.reload();
