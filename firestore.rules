@@ -104,10 +104,35 @@ service cloud.firestore {
       allow list: if signedIn() && resource.data.receiverAuthUid == request.auth.uid;
       allow list: if signedIn() && request.auth.uid in resource.data.recipientAuthUids;
 
-      allow create: if signedIn() && (
-        isAdmin() || request.resource.data.senderAuthUid == request.auth.uid
-      );
-      allow update, delete: if isAdmin() || (signedIn() && resource.data.senderAuthUid == request.auth.uid);
+      // SECURITY_MESSAGING_MESSAGE_WRITE_HARDENING_V1_3D6E2
+      allow create: if signedIn() &&
+        !('userStates' in request.resource.data) &&
+        (!('recipientAuthUids' in request.resource.data) || request.resource.data.recipientAuthUids is list) &&
+        (!('receiverAuthUid' in request.resource.data) || request.resource.data.receiverAuthUid is string) &&
+        ('senderAuthUid' in request.resource.data) &&
+        request.resource.data.senderAuthUid is string &&
+        request.resource.data.senderAuthUid == request.auth.uid;
+
+      // SECURITY_MESSAGING_LEGACY_USERSTATES_COMPAT_V1_3D6E2_2
+      allow update: if signedIn() &&
+        (!('userStates' in request.resource.data) ||
+         (('userStates' in resource.data) && request.resource.data.userStates == resource.data.userStates)) &&
+        (!('recipientAuthUids' in request.resource.data) || request.resource.data.recipientAuthUids is list) &&
+        (!('receiverAuthUid' in request.resource.data) || request.resource.data.receiverAuthUid is string) &&
+        (isAdmin() || (
+          resource.data.senderAuthUid == request.auth.uid &&
+          request.resource.data.senderAuthUid == resource.data.senderAuthUid
+        ));
+
+      allow delete: if isAdmin() || (signedIn() && resource.data.senderAuthUid == request.auth.uid);
+    }
+
+    // SECURITY_MESSAGING_USER_STATE_V1_3D6A
+    match /messageUserStates/{uid}/items/{messageId} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn() && request.auth.uid == uid && request.resource.data.keys().hasOnly(['messageId', 'ownerAuthUid', 'folder', 'isRead', 'isStarred', 'isTrash', 'isSpam', 'isArchived', 'isDeleted', 'customFolderId', 'updatedAt']) && request.resource.data.messageId == messageId && request.resource.data.ownerAuthUid == uid;
+      allow update: if signedIn() && request.auth.uid == uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['folder', 'isRead', 'isStarred', 'isTrash', 'isSpam', 'isArchived', 'isDeleted', 'customFolderId', 'updatedAt']) && request.resource.data.messageId == messageId && request.resource.data.ownerAuthUid == uid;
+      allow delete: if signedIn() && request.auth.uid == uid;
     }
 
     match /notifications/{id} {

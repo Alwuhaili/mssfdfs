@@ -2313,6 +2313,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const isApplyingRemoteUpdate = useRef<boolean>(false);
   const isInitialHydrationDone = useRef<boolean>(false);
+  // SECURITY_MESSAGING_USER_STATE_OVERLAY_V1_3D6C1
+  const messageUserStateCacheRef = useRef<Record<string, any>>({});
+  const messageUserStateOperationRef = useRef<Record<string, number>>({});
   const pushDebounceTimer = useRef<any>(null);
 
 
@@ -2330,6 +2333,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [syncStatus]);
 
   // Apply remote data securely to React state
+  const overlayCurrentUserMessageStates = (remoteMessages: any[]) => {
+    const targetUserId = getCurrentUserIdInContext();
+    if (!targetUserId || !Array.isArray(remoteMessages)) return remoteMessages;
+    const stateMap = messageUserStateCacheRef.current;
+    return remoteMessages.map((message) => {
+      if (!message || typeof message !== 'object' || !message.id) return message;
+      const independentState = stateMap[message.id];
+      if (!independentState) return message;
+      const { messageId, ownerAuthUid, updatedAt, ...mailboxState } = independentState;
+      return { ...message, userStates: { ...(message.userStates || {}), [targetUserId]: { ...(message.userStates?.[targetUserId] || {}), ...mailboxState } } };
+    });
+  };
+
   const applyRemoteData = (remoteData: any, remoteVersion: number, remoteLastSyncedBy?: any) => {
     if (!remoteData || typeof remoteData !== 'object') return;
     isApplyingRemoteUpdate.current = true;
@@ -2343,7 +2359,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (Array.isArray(remoteData.submissions)) setSubmissions(remoteData.submissions);
     if (Array.isArray(remoteData.attendance)) setAttendance(remoteData.attendance);
     if (Array.isArray(remoteData.announcements)) setAnnouncements(remoteData.announcements);
-    if (Array.isArray(remoteData.messages)) setMessages(remoteData.messages);
+    if (Array.isArray(remoteData.messages)) setMessages(overlayCurrentUserMessageStates(remoteData.messages));
     if (Array.isArray(remoteData.lectures)) setLectures(remoteData.lectures);
     if (Array.isArray(remoteData.deletedLectureIds)) setDeletedLectureIds(remoteData.deletedLectureIds);
     if (Array.isArray(remoteData.deletedChallengeIds)) setDeletedChallengeIds(remoteData.deletedChallengeIds);
@@ -2415,6 +2431,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Security Hardening V1: anonymous visitors must never hydrate private school data.
     // Public website data must live in the dedicated publicContent collection.
     if (!currentUser) {
+      messageUserStateCacheRef.current = {};
+      messageUserStateOperationRef.current = {};
       isInitialHydrationDone.current = false;
       setSyncStatus('synced');
       centralSyncService.stopRealtimeStream();
@@ -2424,6 +2442,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const initializeCentralSync = async () => {
       try {
         setSyncStatus('syncing');
+        messageUserStateCacheRef.current = {};
+        messageUserStateOperationRef.current = {};
+        try {
+          messageUserStateCacheRef.current = await centralSyncService.readCurrentUserMessageStates();
+        } catch (stateErr) {
+          console.warn('[Messaging] Failed to load mailbox state:', stateErr);
+        }
+        if (!isMounted) return;
         const res = await centralSyncService.fetchServerData(undefined, true);
         if (!isMounted) return;
 
@@ -2522,7 +2548,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       window.removeEventListener('focus', onWindowFocus);
       centralSyncService.stopRealtimeStream();
     };
-  }, [syncVersion, currentUser?.id]);
+  }, [syncVersion, currentUser?.authUid]);
 
   // Debounced auto-push to central server on local changes
   useEffect(() => {
@@ -5361,7 +5387,7 @@ ${defaultReason}
       // If it was a draft being sent
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === data.id && m.isDraft && m.senderId === canonicalSender.senderId
+          m.id === data.id && m.isDraft && (m.senderAuthUid ? m.senderAuthUid === canonicalSender.senderAuthUid : m.senderId === canonicalSender.senderId)
             ? {
                 ...m,
                 ...data,
@@ -5409,7 +5435,7 @@ ${defaultReason}
     if (draftData.id) {
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === draftData.id && m.isDraft && m.senderId === canonicalSender.senderId
+          m.id === draftData.id && m.isDraft && (m.senderAuthUid ? m.senderAuthUid === canonicalSender.senderAuthUid : m.senderId === canonicalSender.senderId)
             ? {
                 ...m,
                 ...draftData,
@@ -5425,9 +5451,8 @@ ${defaultReason}
       const randSuffix = Math.random().toString(36).substring(2, 7);
       const newDraft: DirectMessage = {
         id: draftData.id || `msg-draft-${Date.now()}-${randSuffix}`,
-        senderId: canonicalSender.senderId,
-        senderName: canonicalSender.senderName,
-        senderRole: canonicalSender.senderRole,
+        // SECURITY_MESSAGING_DRAFT_OWNERSHIP_V1_3D6D1
+        ...canonicalSender,
         receiverId: draftData.receiverId || '',
         receiverName: draftData.receiverName || 'مستلم محدد',
         subject: draftData.subject || 'مسودة جديدة بدون عنوان',
@@ -5468,9 +5493,23 @@ ${defaultReason}
     };
   };
 
-  const moveToSpam = (id: string, explicitUserId?: string) => {
-    const targetUserId = getCurrentUserIdInContext(explicitUserId);
-    if (!targetUserId) return;
+  // SECURITY_MESSAGING_USER_STATE_APPCONTEXT_V1_3D6B2
+  // SECURITY_MESSAGING_USER_STATE_CACHE_COHERENCE_V1_3D6C2
+  const applyCurrentUserMessageState = (id: string, targetUserId: string, patch: Record<string, any>) => {
+    if (!id || !targetUserId || !currentUser?.authUid) return;
+
+    // SECURITY_MESSAGING_ROLLBACK_V1_3D6E1
+    const previousCacheState = messageUserStateCacheRef.current[id];
+    const previousMessageUserState = messages.find((m) => m.id === id)?.userStates?.[targetUserId];
+    const operationVersion = (messageUserStateOperationRef.current[id] || 0) + 1;
+    messageUserStateOperationRef.current[id] = operationVersion;
+    messageUserStateCacheRef.current[id] = {
+      ...(previousCacheState || {}),
+      messageId: id,
+      ownerAuthUid: currentUser.authUid,
+      ...patch,
+    };
+
     setMessages((prev) =>
       prev.map((m) => {
         if (m.id !== id) return m;
@@ -5480,177 +5519,80 @@ ${defaultReason}
           ...m,
           userStates: {
             ...prevStates,
-            [targetUserId]: {
-              ...prevUState,
-              folder: 'spam',
-              isSpam: true,
-              isTrash: false,
-              isDeleted: false,
-            },
+            [targetUserId]: { ...prevUState, ...patch },
           },
         };
       })
     );
+
+    void centralSyncService.upsertCurrentUserMessageState(id, patch).then((ok) => {
+      if (ok) return;
+      if (messageUserStateOperationRef.current[id] !== operationVersion) {
+        console.error('[Messaging] Stale mailbox state write failed:', id);
+        return;
+      }
+      if (previousCacheState === undefined) delete messageUserStateCacheRef.current[id];
+      else messageUserStateCacheRef.current[id] = previousCacheState;
+      console.error('[Messaging] Failed to persist mailbox state; restoring server-backed state:', id);
+      setMessages((prev) => prev.map((m) => {
+        if (m.id !== id) return m;
+        const states = { ...(m.userStates || {}) };
+        if (previousMessageUserState === undefined) delete states[targetUserId];
+        else states[targetUserId] = previousMessageUserState;
+        return { ...m, userStates: states };
+      }));
+    });
+  };
+
+  const moveToSpam = (id: string, explicitUserId?: string) => {
+    const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
+    applyCurrentUserMessageState(id, targetUserId, { folder: 'spam', isSpam: true, isTrash: false, isDeleted: false });
   };
 
   const restoreFromSpam = (id: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
     if (!targetUserId) return;
-    setMessages((prev) =>
-      prev.map((m) => {
-        if (m.id !== id) return m;
-        const prevStates = m.userStates || {};
-        const prevUState = prevStates[targetUserId] || {};
-        const defaultFolder = m.senderId === targetUserId ? 'sent' : 'inbox';
-        return {
-          ...m,
-          userStates: {
-            ...prevStates,
-            [targetUserId]: {
-              ...prevUState,
-              folder: defaultFolder,
-              isSpam: false,
-              isTrash: false,
-            },
-          },
-        };
-      })
-    );
+    const message = messages.find((m) => m.id === id);
+    if (!message) return;
+    const defaultFolder = message.senderId === targetUserId ? 'sent' : 'inbox';
+    applyCurrentUserMessageState(id, targetUserId, { folder: defaultFolder, isSpam: false, isTrash: false });
   };
 
   const moveToTrash = (id: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
     if (!targetUserId) return;
-    setMessages((prev) =>
-      prev.map((m) => {
-        if (m.id !== id) return m;
-        const prevStates = m.userStates || {};
-        const prevUState = prevStates[targetUserId] || {};
-        return {
-          ...m,
-          userStates: {
-            ...prevStates,
-            [targetUserId]: {
-              ...prevUState,
-              folder: 'trash',
-              isTrash: true,
-              isSpam: false,
-              isDeleted: false,
-            },
-          },
-        };
-      })
-    );
+    applyCurrentUserMessageState(id, targetUserId, { folder: 'trash', isTrash: true, isSpam: false, isDeleted: false });
   };
 
   const restoreFromTrash = (id: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
     if (!targetUserId) return;
-    setMessages((prev) =>
-      prev.map((m) => {
-        if (m.id !== id) return m;
-        const prevStates = m.userStates || {};
-        const prevUState = prevStates[targetUserId] || {};
-        const defaultFolder = m.isDraft
-          ? 'drafts'
-          : m.senderId === targetUserId
-          ? 'sent'
-          : 'inbox';
-        return {
-          ...m,
-          userStates: {
-            ...prevStates,
-            [targetUserId]: {
-              ...prevUState,
-              folder: defaultFolder,
-              isTrash: false,
-              isSpam: false,
-            },
-          },
-        };
-      })
-    );
+    const message = messages.find((m) => m.id === id);
+    if (!message) return;
+    const defaultFolder = message.isDraft ? 'drafts' : message.senderId === targetUserId ? 'sent' : 'inbox';
+    applyCurrentUserMessageState(id, targetUserId, { folder: defaultFolder, isTrash: false, isSpam: false });
   };
 
   const archiveMessage = (id: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
     if (!targetUserId) return;
-    setMessages((prev) =>
-      prev.map((m) => {
-        if (m.id !== id) return m;
-        const prevStates = m.userStates || {};
-        const prevUState = prevStates[targetUserId] || {};
-        return {
-          ...m,
-          userStates: {
-            ...prevStates,
-            [targetUserId]: {
-              ...prevUState,
-              folder: 'archive',
-              isArchived: true,
-              isTrash: false,
-              isSpam: false,
-              isDeleted: false,
-            },
-          },
-        };
-      })
-    );
+    applyCurrentUserMessageState(id, targetUserId, { folder: 'archive', isArchived: true, isTrash: false, isSpam: false, isDeleted: false });
   };
 
   const restoreFromArchive = (id: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
     if (!targetUserId) return;
-    setMessages((prev) =>
-      prev.map((m) => {
-        if (m.id !== id) return m;
-        const prevStates = m.userStates || {};
-        const prevUState = prevStates[targetUserId] || {};
-        const defaultFolder = m.isDraft
-          ? 'drafts'
-          : m.senderId === targetUserId
-          ? 'sent'
-          : 'inbox';
-        return {
-          ...m,
-          userStates: {
-            ...prevStates,
-            [targetUserId]: {
-              ...prevUState,
-              folder: defaultFolder,
-              isArchived: false,
-            },
-          },
-        };
-      })
-    );
+    const message = messages.find((m) => m.id === id);
+    if (!message) return;
+    const defaultFolder = message.isDraft ? 'drafts' : message.senderId === targetUserId ? 'sent' : 'inbox';
+    applyCurrentUserMessageState(id, targetUserId, { folder: defaultFolder, isArchived: false });
   };
 
   const moveToCustomFolder = (id: string, folderId: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
-    if (!targetUserId) return;
-    setMessages((prev) =>
-      prev.map((m) => {
-        if (m.id !== id) return m;
-        const prevStates = m.userStates || {};
-        const prevUState = prevStates[targetUserId] || {};
-        return {
-          ...m,
-          userStates: {
-            ...prevStates,
-            [targetUserId]: {
-              ...prevUState,
-              folder: folderId,
-              customFolderId: folderId,
-              isArchived: false,
-              isTrash: false,
-              isSpam: false,
-              isDeleted: false,
-            },
-          },
-        };
-      })
-    );
+    if (!targetUserId || !folderId) return;
+    applyCurrentUserMessageState(id, targetUserId, { folder: folderId, customFolderId: folderId, isArchived: false, isTrash: false, isSpam: false, isDeleted: false });
   };
 
   const addCustomFolder = (folderData: Omit<UserCustomFolder, 'id'>) => {
@@ -5666,43 +5608,23 @@ ${defaultReason}
   };
 
   const deleteMessage = (id: string, explicitUserId?: string) => {
-    // Admin override: Actually delete the message from the system completely
     if (role === 'admin' && currentUser?.role === 'admin' && currentUser?.authUid) {
-      setMessages(prev => {
-        const updated = prev.filter(m => m.id !== id);
-        centralSyncService.directArrayMutation('messages', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      setMessages((prev) => {
+        const updated = prev.filter((m) => m.id !== id);
+        void centralSyncService.directArrayMutation('messages', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
         return updated;
       });
       return;
     }
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
     if (!targetUserId) return;
-    setMessages((prev) => {
-      const msg = prev.find((m) => m.id === id);
-      if (!msg) return prev;
-
-      // If it's a draft deleted by the sender, remove object from array
-      if (msg.isDraft && msg.senderId === targetUserId) {
-        return prev.filter((m) => m.id !== id);
-      }
-
-      // Mark as permanently deleted for targetUserId
-      return prev.map((m) => {
-        if (m.id !== id) return m;
-        const prevStates = m.userStates || {};
-        const prevUState = prevStates[targetUserId] || {};
-        return {
-          ...m,
-          userStates: {
-            ...prevStates,
-            [targetUserId]: {
-              ...prevUState,
-              isDeleted: true,
-            },
-          },
-        };
-      });
-    });
+    const msg = messages.find((m) => m.id === id);
+    if (!msg) return;
+    if (msg.isDraft && (msg.senderAuthUid ? msg.senderAuthUid === currentUser?.authUid : msg.senderId === targetUserId)) {
+      setMessages((prev) => prev.filter((m) => m.id !== id));
+      return;
+    }
+    applyCurrentUserMessageState(id, targetUserId, { isDeleted: true });
   };
 
   const updateMessage = (updatedMsg: DirectMessage) => {
@@ -5712,7 +5634,7 @@ ${defaultReason}
       prev.map((m) => {
         if (m.id !== updatedMsg.id) return m;
         const isAdmin = currentUser?.role === 'admin' && role === 'admin';
-        const ownsMessage = m.senderId === canonicalSender.senderId;
+        const ownsMessage = m.senderAuthUid ? m.senderAuthUid === canonicalSender.senderAuthUid : m.senderId === canonicalSender.senderId;
         if (!isAdmin && !ownsMessage) return m;
         return {
           ...m,
@@ -5732,96 +5654,37 @@ ${defaultReason}
   const emptyTrashFolder = (explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
     if (!targetUserId) return;
-    setMessages((prev) =>
-      prev.map((m) => {
-        const uState = m.userStates?.[targetUserId];
-        const inTrash = uState ? (uState.isTrash || uState.folder === 'trash') : (m.isTrash || m.folder === 'trash');
-        if (!inTrash) return m;
-
-        const prevStates = m.userStates || {};
-        const prevUState = prevStates[targetUserId] || {};
-        return {
-          ...m,
-          userStates: {
-            ...prevStates,
-            [targetUserId]: {
-              ...prevUState,
-              isDeleted: true,
-            },
-          },
-        };
-      })
-    );
+    const trashIds = messages.filter((m) => {
+      const uState = m.userStates?.[targetUserId];
+      return uState ? (uState.isTrash || uState.folder === 'trash') : (m.isTrash || m.folder === 'trash');
+    }).map((m) => m.id);
+    trashIds.forEach((id) => applyCurrentUserMessageState(id, targetUserId, { isDeleted: true }));
   };
 
   const markMessageRead = (id: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
     if (!targetUserId) return;
-    setMessages((prev) =>
-      prev.map((m) => {
-        if (m.id !== id) return m;
-        const prevStates = m.userStates || {};
-        const prevUState = prevStates[targetUserId] || {};
-        return {
-          ...m,
-          userStates: {
-            ...prevStates,
-            [targetUserId]: {
-              ...prevUState,
-              isRead: true,
-            },
-          },
-        };
-      })
-    );
+    applyCurrentUserMessageState(id, targetUserId, { isRead: true });
   };
 
   const toggleStarMessage = (id: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
     if (!targetUserId) return;
-    setMessages((prev) =>
-      prev.map((m) => {
-        if (m.id !== id) return m;
-        const prevStates = m.userStates || {};
-        const prevUState = prevStates[targetUserId] || {};
-        const currentStarred = prevUState.isStarred !== undefined ? prevUState.isStarred : (m.isStarred ?? false);
-        return {
-          ...m,
-          userStates: {
-            ...prevStates,
-            [targetUserId]: {
-              ...prevUState,
-              isStarred: !currentStarred,
-            },
-          },
-        };
-      })
-    );
+    const message = messages.find((m) => m.id === id);
+    if (!message) return;
+    const userState = message.userStates?.[targetUserId];
+    const currentStarred = userState?.isStarred !== undefined ? userState.isStarred : (message.isStarred ?? false);
+    applyCurrentUserMessageState(id, targetUserId, { isStarred: !currentStarred });
   };
 
   const emptySpamFolder = (explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
     if (!targetUserId) return;
-    setMessages((prev) =>
-      prev.map((m) => {
-        const uState = m.userStates?.[targetUserId];
-        const inSpam = uState ? (uState.isSpam || uState.folder === 'spam') : (m.isSpam || m.folder === 'spam');
-        if (!inSpam) return m;
-
-        const prevStates = m.userStates || {};
-        const prevUState = prevStates[targetUserId] || {};
-        return {
-          ...m,
-          userStates: {
-            ...prevStates,
-            [targetUserId]: {
-              ...prevUState,
-              isDeleted: true,
-            },
-          },
-        };
-      })
-    );
+    const spamIds = messages.filter((m) => {
+      const uState = m.userStates?.[targetUserId];
+      return uState ? (uState.isSpam || uState.folder === 'spam') : (m.isSpam || m.folder === 'spam');
+    }).map((m) => m.id);
+    spamIds.forEach((id) => applyCurrentUserMessageState(id, targetUserId, { isDeleted: true }));
   };
 
   const addLecture = (

@@ -394,16 +394,20 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
   };
 
   // Strict Privacy & Ownership Checker: Sent by me
+  // SECURITY_MESSAGING_UI_SENDER_OWNERSHIP_V1_3D6D3
   const checkSentByMe = (m: DirectMessage) => {
-    if (!m) return false;
-    if (m.senderId === currentUserId) return true;
-    if (currentUserName && m.senderName === currentUserName) return true;
-    return false;
+    if (!m || !currentUser?.authUid || !currentUserId) return false;
+    if (m.senderAuthUid) return m.senderAuthUid === currentUser.authUid;
+    return m.senderId === currentUserId;
   };
 
   // Strict Privacy & Ownership Checker: Received by me
+  // SECURITY_MESSAGING_UI_RECEIVER_OWNERSHIP_V1_3D6D4
   const checkReceivedByMe = (m: DirectMessage) => {
-    if (!m) return false;
+    if (!m || !currentUser?.authUid || !currentUserId) return false;
+
+    if (m.receiverAuthUid && m.receiverAuthUid === currentUser.authUid) return true;
+    if (Array.isArray(m.recipientAuthUids) && m.recipientAuthUids.includes(currentUser.authUid)) return true;
 
     // 1. Broadcast messages for user role
     if (m.receiverId === 'broadcast-all-teachers' && role === 'teacher') return true;
@@ -424,26 +428,23 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
     // 5. Direct Receiver ID match
     if (m.receiverId && m.receiverId === currentUserId) return true;
 
-    // 6. Direct Receiver Name match or recipient contains name
-    if (currentUserName && m.receiverName && m.receiverName.toLowerCase().includes(currentUserName.toLowerCase())) return true;
-
     // 7. Role-specific active entity matches
     if (role === 'teacher' && activeTeacherObj) {
       if (m.receiverIds?.includes(activeTeacherObj.id)) return true;
       if (m.recipients?.some((r) => r.id === activeTeacherObj.id)) return true;
-      if (m.receiverId === activeTeacherObj.id || (m.receiverName && m.receiverName.includes(activeTeacherObj.name))) return true;
+      if (m.receiverId === activeTeacherObj.id) return true;
     }
 
     if (role === 'student' && activeStudentObj) {
       if (m.receiverIds?.includes(activeStudentObj.id)) return true;
       if (m.recipients?.some((r) => r.id === activeStudentObj.id)) return true;
-      if (m.receiverId === activeStudentObj.id || (m.receiverName && m.receiverName.includes(activeStudentObj.name))) return true;
+      if (m.receiverId === activeStudentObj.id) return true;
     }
 
     if (role === 'parent' && activeParentObj) {
       if (m.receiverIds?.includes(activeParentObj.id)) return true;
       if (m.recipients?.some((r) => r.id === activeParentObj.id)) return true;
-      if (m.receiverId === activeParentObj.id || (m.receiverName && m.receiverName.includes(activeParentObj.name))) return true;
+      if (m.receiverId === activeParentObj.id) return true;
       if (activeParentObj.phone && m.receiverId?.includes(`parent-${activeParentObj.phone}`)) return true;
       if (daughter && (m.receiverId?.includes(daughter.id) || m.receiverId?.includes(`parent-${daughter.id}`))) return true;
     }
@@ -1195,11 +1196,15 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
         targetName = 'جميع أولياء الأمور (إرسال جماعي)';
       }
 
+      // SECURITY_MESSAGING_BROADCAST_UID_EXPANSION_V1_3D6D5
+      const broadcastRecipientAuthUids = [...new Set((broadcastTarget === 'all_students' ? students : broadcastTarget === 'all_parents' ? parents : teachers).map((item) => item.authUid).filter((uid): uid is string => Boolean(uid)))];
+
       if (existingMsg && !existingMsg.isDraft) {
         const updated: DirectMessage = {
           ...existingMsg,
           receiverId: targetId,
           receiverName: targetName,
+          recipientAuthUids: broadcastRecipientAuthUids,
           subject,
           content,
           category: msgCategory,
@@ -1223,6 +1228,7 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
           senderRole: role,
           receiverId: targetId,
           receiverName: targetName,
+          recipientAuthUids: broadcastRecipientAuthUids,
           subject,
           content,
           category: msgCategory,

@@ -114,6 +114,13 @@ const stableStringify = (value: any): string => {
 
 const deepEqual = (a: any, b: any) => stableStringify(a) === stableStringify(b);
 
+// SECURITY_MESSAGING_IGNORE_MAILBOX_OVERLAY_V1_3D6B2
+const stripMessageMailboxOverlay = (value: any) => {
+  if (!isPlainObject(value)) return value;
+  const { userStates, ...rest } = value;
+  return rest;
+};
+
 const stripInternalFields = (value: any) => {
   if (!isPlainObject(value)) return value;
   const { __sync, ...rest } = value;
@@ -732,7 +739,7 @@ class CentralSyncService {
 
     for (const [id, localItem] of localMap.entries()) {
       const baseItem = baseMap.get(id);
-      if (baseItem === undefined || !deepEqual(localItem, baseItem)) changedIds.add(id);
+      if (baseItem === undefined || !deepEqual(key === 'messages' ? stripMessageMailboxOverlay(localItem) : localItem, key === 'messages' ? stripMessageMailboxOverlay(baseItem) : baseItem)) changedIds.add(id);
     }
     for (const id of baseMap.keys()) {
       if (!localMap.has(id)) changedIds.add(id);
@@ -747,7 +754,7 @@ class CentralSyncService {
         const localItem = localMap.get(id);
         if (!localItem?.senderAuthUid) throw new Error('SECURITY: new message missing senderAuthUid');
         await setDoc(doc(db, key, safeDocId(id)), {
-          ...clone(localItem),
+          ...clone(stripMessageMailboxOverlay(localItem)),
           __sync: { updatedAt: new Date().toISOString(), updatedBy: clone(sourceUser || {}) },
         });
       }
@@ -790,7 +797,7 @@ class CentralSyncService {
           if (baseItem !== undefined && localItem !== undefined) {
             // Another client deleted the item after our base: deletion wins.
             if (serverItem === undefined) return;
-            const merged = mergeValueThreeWay(baseItem, localItem, serverItem);
+            const merged = key === 'messages' ? mergeValueThreeWay(stripMessageMailboxOverlay(baseItem), stripMessageMailboxOverlay(localItem), serverItem) : mergeValueThreeWay(baseItem, localItem, serverItem);
             tx.set(ref, {
               ...clone(merged),
               __sync: { updatedAt: new Date().toISOString(), updatedBy: clone(sourceUser || {}) },
@@ -963,6 +970,48 @@ class CentralSyncService {
         success: false,
         message: `${err?.code ? `[${err.code}] ` : ''}${err?.message || 'فشل حفظ السجل في Firestore'}`,
       };
+    }
+  }
+
+  // SECURITY_MESSAGING_USER_STATE_SERVICE_V1_3D6B
+  public async readCurrentUserMessageStates(): Promise<Record<string, any>> {
+    await authIsolationReady;
+    const user = auth.currentUser;
+    if (!user) return {};
+
+    const snap = await getDocs(collection(db, 'messageUserStates', user.uid, 'items'));
+    const states: Record<string, any> = {};
+    snap.docs.forEach((stateDoc) => {
+      const data = stripInternalFields(stateDoc.data());
+      const messageId = typeof data?.messageId === 'string' && data.messageId ? data.messageId : stateDoc.id;
+      states[messageId] = data;
+    });
+    return states;
+  }
+
+  public async upsertCurrentUserMessageState(messageId: string, patch: Record<string, any>): Promise<boolean> {
+    await authIsolationReady;
+    const user = auth.currentUser;
+    if (!user || !messageId) return false;
+
+    const allowedKeys = new Set(['folder', 'isRead', 'isStarred', 'isTrash', 'isSpam', 'isArchived', 'isDeleted', 'customFolderId']);
+    const safePatch: Record<string, any> = {};
+    for (const [key, value] of Object.entries(patch || {})) {
+      if (allowedKeys.has(key) && value !== undefined) safePatch[key] = clone(value);
+    }
+    if (Object.keys(safePatch).length === 0) return false;
+
+    try {
+      await setDoc(doc(db, 'messageUserStates', user.uid, 'items', safeDocId(messageId)), {
+        messageId,
+        ownerAuthUid: user.uid,
+        ...safePatch,
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
+      return true;
+    } catch (err) {
+      console.error('[SyncService] message user state update failed:', err);
+      return false;
     }
   }
 
