@@ -197,6 +197,7 @@ export interface CurrentUser {
 
 export interface Teacher {
   id: string;
+  authUid?: string;
   username?: string;
   name: string;
   subject: string;
@@ -253,6 +254,7 @@ export interface StudentShieldBadge {
 
 export interface Student {
   id: string;
+  authUid?: string;
   username?: string;
   studentCode?: string;
   name: string;
@@ -282,6 +284,7 @@ export interface Student {
 
 export interface Parent {
   id: string;
+  authUid?: string;
   username?: string;
   nationalId?: string;
   name: string;
@@ -405,6 +408,7 @@ export interface MessageAttachment {
 export interface MessageRecipient {
   id: string;
   name: string;
+  authUid?: string;
   rawName?: string;
   role?: UserRole;
   details?: string;
@@ -426,7 +430,10 @@ export interface DirectMessage {
   senderId: string;
   senderName: string;
   senderRole: UserRole;
+  senderAuthUid?: string;
   receiverId: string;
+  receiverAuthUid?: string;
+  recipientAuthUids?: string[];
   receiverName: string;
   receiverIds?: string[];
   recipients?: MessageRecipient[];

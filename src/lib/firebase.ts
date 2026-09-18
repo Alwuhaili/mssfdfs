@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { initializeFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
-import { getAuth, inMemoryPersistence, setPersistence, signOut } from "firebase/auth";
+import { getAuth, browserLocalPersistence, setPersistence, signOut } from "firebase/auth";
 import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "firebase/app-check";
 import firebaseConfig from "../../firebase-applet-config.json";
 
@@ -38,11 +38,13 @@ export const auth = getAuth(app);
  */
 export const authIsolationReady = (async () => {
   try {
-    await setPersistence(auth, inMemoryPersistence);
+    // TEMP_AUTH_PERSISTENCE_LOCAL_V1 - REMOVE AFTER TESTING
+    await setPersistence(auth, browserLocalPersistence);
     // Wait for Firebase Auth to finish restoring any previously persisted session
     // before clearing it. This closes the refresh/typed-URL/QR auto-login race.
     await auth.authStateReady();
-    if (auth.currentUser) await signOut(auth);
+    // TEMP_AUTH_KEEP_SESSION_ON_REFRESH_V1 - REMOVE AFTER TESTING
+    // Startup sign-out temporarily disabled so Firebase can restore the authenticated user.
   } catch (error) {
     console.warn('[FirebaseAuth] Could not enforce in-memory session isolation:', error);
   }

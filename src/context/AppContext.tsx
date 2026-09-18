@@ -5,6 +5,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { assertUniqueIdentity, stableUsername, type IdentityRecord } from '../utils/identityPolicy';
 import { centralSyncService } from '../services/syncService';
+import { FirebaseAuthService } from '../services/firebaseAuthService';
 import {
   UserRole,
   Language,
@@ -735,6 +736,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // localStorage may be unavailable in privacy-restricted browsers.
     }
   };
+
+  // TEMP_AUTH_RESTORE_SESSION_V1
+  // Temporary test mode: restore only a Firebase-authenticated, claim-verified session.
+  useEffect(() => {
+    let cancelled = false;
+
+    void FirebaseAuthService.restoreSession().then((restoredUser) => {
+      if (!cancelled && restoredUser) {
+        setCurrentUser(restoredUser);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // One-time cleanup for browsers that still contain the old automatic-login keys.
   useEffect(() => {
@@ -2439,6 +2456,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     initializeCentralSync();
 
+    // MESSAGING_REALTIME_LIFECYCLE_V1_3D4C
+    // Start the Firebase realtime listeners only for an authenticated session.
+    void centralSyncService.connectRealtimeStream();
+
     // Real-time SSE and cross-tab sync channel
     const unsubscribeBroadcast = centralSyncService.subscribe(async (evt) => {
       if (evt.type === 'REALTIME_SERVER_UPDATE' && evt.payload) {
@@ -2499,6 +2520,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       clearInterval(pollInterval);
       unsubscribeBroadcast();
       window.removeEventListener('focus', onWindowFocus);
+      centralSyncService.stopRealtimeStream();
     };
   }, [syncVersion, currentUser?.id]);
 
@@ -5332,15 +5354,18 @@ ${defaultReason}
   };
 
   const sendMessage = (data: Omit<DirectMessage, 'id' | 'timestamp' | 'isRead'> & { id?: string }) => {
+    const canonicalSender = getCanonicalMessageSender();
+    if (!canonicalSender) return;
     const timeStr = new Date().toLocaleString(lang === 'ar' ? 'ar-IQ' : 'en-US');
     if (data.id) {
       // If it was a draft being sent
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === data.id
+          m.id === data.id && m.isDraft && m.senderId === canonicalSender.senderId
             ? {
                 ...m,
                 ...data,
+                ...canonicalSender,
                 timestamp: timeStr,
                 folder: 'sent',
                 isDraft: false,
@@ -5355,6 +5380,7 @@ ${defaultReason}
       const randSuffix = Math.random().toString(36).substring(2, 7);
       const newMsg: DirectMessage = {
         ...data,
+        ...canonicalSender,
         id: `msg-${Date.now()}-${randSuffix}`,
         timestamp: timeStr,
         isRead: false,
@@ -5377,14 +5403,17 @@ ${defaultReason}
   };
 
   const saveDraft = (draftData: Partial<DirectMessage> & { subject: string; content: string }) => {
+    const canonicalSender = getCanonicalMessageSender();
+    if (!canonicalSender) return;
     const timeStr = new Date().toLocaleString(lang === 'ar' ? 'ar-IQ' : 'en-US');
     if (draftData.id) {
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === draftData.id
+          m.id === draftData.id && m.isDraft && m.senderId === canonicalSender.senderId
             ? {
                 ...m,
                 ...draftData,
+                ...canonicalSender,
                 timestamp: timeStr,
                 folder: 'drafts',
                 isDraft: true,
@@ -5396,9 +5425,9 @@ ${defaultReason}
       const randSuffix = Math.random().toString(36).substring(2, 7);
       const newDraft: DirectMessage = {
         id: draftData.id || `msg-draft-${Date.now()}-${randSuffix}`,
-        senderId: draftData.senderId || `user-${role}`,
-        senderName: draftData.senderName || 'مستخدم المدرسة',
-        senderRole: draftData.senderRole || role,
+        senderId: canonicalSender.senderId,
+        senderName: canonicalSender.senderName,
+        senderRole: canonicalSender.senderRole,
         receiverId: draftData.receiverId || '',
         receiverName: draftData.receiverName || 'مستلم محدد',
         subject: draftData.subject || 'مسودة جديدة بدون عنوان',
@@ -5412,18 +5441,36 @@ ${defaultReason}
     }
   };
 
+  // SECURITY_MESSAGING_APPCONTEXT_IDENTITY_V1_2
+  // Resolve mailbox identity only from the verified Firebase-backed CurrentUser.
+  // providedUserId is retained for API compatibility but can never select another mailbox.
   const getCurrentUserIdInContext = (providedUserId?: string): string => {
-    if (providedUserId) return providedUserId;
-    if (currentUser?.id) return currentUser.id;
-    if (role === 'admin') return 'admin-main';
-    if (role === 'teacher') return 'tech-1';
-    if (role === 'student') return 'std-1';
-    if (role === 'parent') return 'prt-1';
-    return 'sup-1';
+    if (!currentUser?.authUid || currentUser.role !== role) return '';
+
+    const canonicalUserId =
+      currentUser.role === 'admin'
+        ? currentUser.profileId || currentUser.id || 'admin-main'
+        : currentUser.profileId || '';
+
+    if (!canonicalUserId) return '';
+    if (providedUserId && providedUserId !== canonicalUserId) return '';
+    return canonicalUserId;
+  };
+
+  const getCanonicalMessageSender = () => {
+    const senderId = getCurrentUserIdInContext();
+    if (!senderId || !currentUser?.authUid || !currentUser?.name) return null;
+    return {
+      senderId,
+      senderName: currentUser.name,
+      senderRole: currentUser.role,
+      senderAuthUid: currentUser.authUid,
+    };
   };
 
   const moveToSpam = (id: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     setMessages((prev) =>
       prev.map((m) => {
         if (m.id !== id) return m;
@@ -5448,6 +5495,7 @@ ${defaultReason}
 
   const restoreFromSpam = (id: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     setMessages((prev) =>
       prev.map((m) => {
         if (m.id !== id) return m;
@@ -5472,6 +5520,7 @@ ${defaultReason}
 
   const moveToTrash = (id: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     setMessages((prev) =>
       prev.map((m) => {
         if (m.id !== id) return m;
@@ -5496,6 +5545,7 @@ ${defaultReason}
 
   const restoreFromTrash = (id: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     setMessages((prev) =>
       prev.map((m) => {
         if (m.id !== id) return m;
@@ -5524,6 +5574,7 @@ ${defaultReason}
 
   const archiveMessage = (id: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     setMessages((prev) =>
       prev.map((m) => {
         if (m.id !== id) return m;
@@ -5549,6 +5600,7 @@ ${defaultReason}
 
   const restoreFromArchive = (id: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     setMessages((prev) =>
       prev.map((m) => {
         if (m.id !== id) return m;
@@ -5576,6 +5628,7 @@ ${defaultReason}
 
   const moveToCustomFolder = (id: string, folderId: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     setMessages((prev) =>
       prev.map((m) => {
         if (m.id !== id) return m;
@@ -5614,7 +5667,7 @@ ${defaultReason}
 
   const deleteMessage = (id: string, explicitUserId?: string) => {
     // Admin override: Actually delete the message from the system completely
-    if (role === 'admin' || currentUser?.role === 'admin') {
+    if (role === 'admin' && currentUser?.role === 'admin' && currentUser?.authUid) {
       setMessages(prev => {
         const updated = prev.filter(m => m.id !== id);
         centralSyncService.directArrayMutation('messages', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
@@ -5623,6 +5676,7 @@ ${defaultReason}
       return;
     }
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     setMessages((prev) => {
       const msg = prev.find((m) => m.id === id);
       if (!msg) return prev;
@@ -5652,13 +5706,32 @@ ${defaultReason}
   };
 
   const updateMessage = (updatedMsg: DirectMessage) => {
+    const canonicalSender = getCanonicalMessageSender();
+    if (!canonicalSender) return;
     setMessages((prev) =>
-      prev.map((m) => (m.id === updatedMsg.id ? { ...m, ...updatedMsg } : m))
+      prev.map((m) => {
+        if (m.id !== updatedMsg.id) return m;
+        const isAdmin = currentUser?.role === 'admin' && role === 'admin';
+        const ownsMessage = m.senderId === canonicalSender.senderId;
+        if (!isAdmin && !ownsMessage) return m;
+        return {
+          ...m,
+          subject: updatedMsg.subject,
+          content: updatedMsg.content,
+          receiverId: updatedMsg.receiverId,
+          receiverName: updatedMsg.receiverName,
+          receiverIds: updatedMsg.receiverIds,
+          recipients: updatedMsg.recipients,
+          attachments: updatedMsg.attachments,
+          priority: updatedMsg.priority,
+        };
+      })
     );
   };
 
   const emptyTrashFolder = (explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     setMessages((prev) =>
       prev.map((m) => {
         const uState = m.userStates?.[targetUserId];
@@ -5683,6 +5756,7 @@ ${defaultReason}
 
   const markMessageRead = (id: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     setMessages((prev) =>
       prev.map((m) => {
         if (m.id !== id) return m;
@@ -5704,6 +5778,7 @@ ${defaultReason}
 
   const toggleStarMessage = (id: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     setMessages((prev) =>
       prev.map((m) => {
         if (m.id !== id) return m;
@@ -5726,6 +5801,7 @@ ${defaultReason}
 
   const emptySpamFolder = (explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     setMessages((prev) =>
       prev.map((m) => {
         const uState = m.userStates?.[targetUserId];
@@ -5902,6 +5978,7 @@ ${defaultReason}
       return;
     }
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     setNotifications((prev) =>
       prev.map((n) => {
         if (n.id !== id) return n;
@@ -5934,6 +6011,7 @@ ${defaultReason}
     explicitUserId?: string
   ) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     setNotifications((prev) =>
       prev.map((n) => {
         if (n.id !== id) return n;
@@ -6259,6 +6337,7 @@ ${defaultReason}
 
   const markNotificationRead = (id: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     setNotifications((prev) =>
       prev.map((n) => {
         if (n.id !== id) return n;
@@ -6286,6 +6365,7 @@ ${defaultReason}
 
   const toggleNotificationRead = (id: string, explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     setNotifications((prev) =>
       prev.map((n) => {
         if (n.id !== id) return n;
@@ -6323,6 +6403,7 @@ ${defaultReason}
 
   const markAllNotificationsRead = (explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     const userNotifs = getUserNotifications(role, currentUser);
     const userNotifIds = new Set(userNotifs.map((n) => n.id));
 
@@ -6353,6 +6434,7 @@ ${defaultReason}
 
   const clearAllUserNotifications = (explicitUserId?: string) => {
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
+    if (!targetUserId) return;
     const userNotifs = getUserNotifications(role, currentUser);
     const userNotifIds = new Set(userNotifs.map((n) => n.id));
 

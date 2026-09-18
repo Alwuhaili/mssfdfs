@@ -22,6 +22,77 @@ const profileCollectionForRole = (role: UserRole): string | null => {
 };
 
 export class FirebaseAuthService {
+  // TEMP_AUTH_RESTORE_SESSION_V1
+  static async restoreSession(): Promise<CurrentUser | null> {
+    await authIsolationReady;
+    const firebaseUser = auth.currentUser;
+    if (!firebaseUser) return null;
+
+    try {
+      const tokenResult = await firebaseUser.getIdTokenResult(true);
+      const claimedRole = String(tokenResult.claims.role || '') as UserRole;
+      const profileId = String(tokenResult.claims.profileId || '');
+      const profileCollection = String(
+        tokenResult.claims.profileCollection || profileCollectionForRole(claimedRole) || ''
+      );
+
+      if (!ALLOWED_ROLES.has(claimedRole)) {
+        await firebaseSignOut(auth);
+        return null;
+      }
+
+      let profile: any = {};
+      if (claimedRole !== 'admin') {
+        const expectedCollection = profileCollectionForRole(claimedRole);
+        if (!profileId || !profileCollection || profileCollection !== expectedCollection) {
+          await firebaseSignOut(auth);
+          return null;
+        }
+
+        const profileSnap = await getDoc(doc(db, profileCollection, profileId));
+        if (!profileSnap.exists()) {
+          await firebaseSignOut(auth);
+          return null;
+        }
+
+        profile = profileSnap.data();
+        if (profile.authUid !== firebaseUser.uid) {
+          await firebaseSignOut(auth);
+          return null;
+        }
+      }
+
+      const base: CurrentUser = {
+        authUid: firebaseUser.uid,
+        profileId: profileId || undefined,
+        profileCollection: profileCollection || undefined,
+        id: profileId || firebaseUser.uid,
+        name: profile.name || firebaseUser.displayName || (claimedRole === 'admin' ? 'إدارة ثانوية ميسان للمتميزات' : 'مستخدم النظام'),
+        role: claimedRole,
+        email: profile.email || firebaseUser.email || undefined,
+        phone: profile.phone || undefined,
+        avatar: profile.avatar || undefined,
+      };
+
+      if (claimedRole === 'teacher') {
+        return {
+          ...base,
+          subject: profile.subject,
+          assignedGrades: profile.assignedGrades,
+          teacherObj: { ...profile, id: profileId || profile.id, authUid: firebaseUser.uid },
+        };
+      }
+      if (claimedRole === 'student') return { ...base, gradeLevel: profile.gradeLevel, studentObj: profile };
+      if (claimedRole === 'parent') return { ...base, parentObj: profile };
+      if (claimedRole === 'supervisor') return { ...base, supervisorObj: profile };
+      return { ...base, isDirectress: true };
+    } catch (error) {
+      console.warn('[FirebaseAuth] Persisted session validation failed:', error);
+      try { await firebaseSignOut(auth); } catch {}
+      return null;
+    }
+  }
+
   static async login(identifier: string, password: string, expectedRole?: UserRole | null): Promise<CurrentUser> {
     await authIsolationReady;
     const normalized = normalizeIdentifier(identifier);

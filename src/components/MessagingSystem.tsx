@@ -148,67 +148,64 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
   const [replyContent, setReplyContent] = useState('');
   const [replySuccess, setReplySuccess] = useState(false);
 
-  // Helper parent, student, and teacher resolution for active user context
+  // SECURITY_MESSAGING_CANONICAL_IDENTITY_V1
+  // Mailbox identity comes only from the verified Firebase-backed CurrentUser.
+  const expectedProfileCollection: Partial<Record<UserRole, string>> = {
+    teacher: 'teachers',
+    student: 'students',
+    parent: 'parents',
+    supervisor: 'supervisors',
+  };
+
+  const hasCanonicalMessagingIdentity =
+    Boolean(currentUser?.authUid) &&
+    Boolean(currentUser?.profileId) &&
+    currentUser?.role === role &&
+    (role === 'admin' || currentUser?.profileCollection === expectedProfileCollection[role]);
+
   const activeTeacherObj =
-    currentUser?.teacherObj ||
-    teachers.find(
-      (t) =>
-        (currentUser?.id && t.id === currentUser.id) ||
-        (currentUser?.email && t.email?.toLowerCase() === currentUser.email.toLowerCase()) ||
-        (currentUser?.name && t.name.toLowerCase() === currentUser.name.toLowerCase())
-    );
+    role === 'teacher' && hasCanonicalMessagingIdentity
+      ? currentUser?.teacherObj && currentUser.teacherObj.id === currentUser.profileId
+        ? currentUser.teacherObj
+        : teachers.find((t) => t.id === currentUser?.profileId)
+      : undefined;
 
   const activeStudentObj =
-    currentUser?.studentObj ||
-    students.find(
-      (s) =>
-        (currentUser?.id && s.id === currentUser.id) ||
-        (currentUser?.email && s.email?.toLowerCase() === currentUser.email.toLowerCase()) ||
-        (currentUser?.phone && (s.phone === currentUser.phone || s.parentPhone === currentUser.phone)) ||
-        (currentUser?.name && (s.name.toLowerCase() === currentUser.name.toLowerCase() || currentUser.name.toLowerCase().includes(s.name.toLowerCase()) || s.name.toLowerCase().includes(currentUser.name.toLowerCase())))
-    );
+    role === 'student' && hasCanonicalMessagingIdentity
+      ? currentUser?.studentObj && currentUser.studentObj.id === currentUser.profileId
+        ? currentUser.studentObj
+        : students.find((s) => s.id === currentUser?.profileId)
+      : undefined;
 
   const activeParentObj =
-    parents.find(
-      (p) =>
-        (currentUser?.id && p.id === currentUser.id) ||
-        (currentUser?.email && p.email?.toLowerCase() === currentUser.email.toLowerCase()) ||
-        (currentUser?.phone && p.phone === currentUser.phone)
-    ) || currentUser?.parentObj;
+    role === 'parent' && hasCanonicalMessagingIdentity
+      ? currentUser?.parentObj && currentUser.parentObj.id === currentUser.profileId
+        ? currentUser.parentObj
+        : parents.find((p) => p.id === currentUser?.profileId)
+      : undefined;
 
+  // Never infer a daughter by parent name/email/phone and never select a first-record fallback.
   const daughter =
-    students.find(
-      (s) =>
-        (activeParentObj && s.parentEmail?.toLowerCase() === activeParentObj.email?.toLowerCase()) ||
-        (activeParentObj && s.parentPhone === activeParentObj.phone) ||
-        (activeParentObj && s.parentName === activeParentObj.name) ||
-        (currentUser?.studentObj && s.id === currentUser.studentObj.id)
-    ) || students[0];
-
-  // Precise current user ID and Name for active session/account
-  const currentUserId =
-    currentUser?.id ||
-    (role === 'admin'
-      ? 'admin-main'
-      : role === 'teacher'
-      ? activeTeacherObj?.id || 'teacher-default'
+    role === 'parent' && activeParentObj
+      ? students.find((s) => s.parentId === activeParentObj.id)
       : role === 'student'
-      ? activeStudentObj?.id || students[0]?.id || 'std-default'
-      : role === 'parent'
-      ? activeParentObj?.id || parents[0]?.id || 'prt-default'
-      : 'sup-1');
+      ? activeStudentObj
+      : undefined;
+
+  // Fail closed: never synthesize a teacher/student/parent/supervisor mailbox identity.
+  const currentUserId =
+    role === 'admin' && currentUser?.role === 'admin' && currentUser?.authUid
+      ? currentUser.profileId || currentUser.id || 'admin-main'
+      : hasCanonicalMessagingIdentity
+      ? currentUser?.profileId || ''
+      : '';
 
   const currentUserName =
-    currentUser?.name ||
-    (role === 'admin'
-      ? 'إدارة ثانوية ميسان للمتميزات'
-      : role === 'teacher'
-      ? activeTeacherObj?.name || 'أستاذ المادة / الهيئة التدريسية'
-      : role === 'student'
-      ? activeStudentObj?.name || students[0]?.name || 'طالبة متميزة'
-      : role === 'parent'
-      ? activeParentObj?.name || parents[0]?.name || 'ولي أمر الطالبة'
-      : 'المشرف التربوي');
+    role === 'admin' && currentUser?.role === 'admin' && currentUser?.authUid
+      ? currentUser.name || 'إدارة ثانوية ميسان للمتميزات'
+      : hasCanonicalMessagingIdentity
+      ? currentUser?.name || ''
+      : '';
 
   // Rich Recipient directory with complete metadata
   const possibleRecipients = [
@@ -223,6 +220,7 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
     },
     ...teachers.map((t) => ({
       id: t.id,
+      authUid: t.authUid,
       name: `${t.name} (أستاذة ${t.subject})`,
       rawName: t.name,
       roleStr: 'مدرسة',
@@ -233,6 +231,7 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
     })),
     ...students.map((s) => ({
       id: s.id,
+      authUid: s.authUid,
       name: `${s.name} (${s.gradeLevel})`,
       rawName: s.name,
       roleStr: 'طالبة متميزة',
@@ -245,6 +244,7 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
     })),
     ...parents.map((p) => ({
       id: p.id,
+      authUid: p.authUid,
       name: `${p.name} (ولي أمر ${p.studentName})`,
       rawName: p.name,
       roleStr: 'ولي أمر',
@@ -532,6 +532,17 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
   });
 
   // Filter by priority, category, and search query
+  // MESSAGING_NEWEST_FIRST_V1_3D4C
+  // Message ids generated by sendMessage contain Date.now(), which is locale-independent.
+  // Prefer that stable epoch for ordering; keep original relative order for legacy ids.
+  const getMessageEpoch = (m: DirectMessage): number => {
+    const match = String(m.id || '').match(/(?:^|-)\d{13}(?:-|$)/);
+    if (!match) return 0;
+    const digits = match[0].replace(/-/g, '');
+    const value = Number(digits);
+    return Number.isFinite(value) ? value : 0;
+  };
+
   const filteredMessages = folderMessages.filter((m) => {
     // Priority filter
     if (selectedPriorityFilter !== 'all' && m.priority !== selectedPriorityFilter) return false;
@@ -550,7 +561,7 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
       m.receiverName.toLowerCase().includes(q) ||
       (m.serialNumber && m.serialNumber.toLowerCase().includes(q))
     );
-  });
+  }).sort((a, b) => getMessageEpoch(b) - getMessageEpoch(a));
 
   // Folder Counts
   const inboxCount = messages.filter(isInboxMessage).length;
@@ -1237,7 +1248,10 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
         id: r.id,
         name: r.rawName || r.name,
         role: r.roleBadge,
+        authUid: r.authUid,
       }));
+      const recipientAuthUids = [...new Set(selectedRecs.map((r) => r.authUid).filter((uid): uid is string => Boolean(uid)))];
+      const receiverAuthUid = selectedRecs.length === 1 ? selectedRecs[0].authUid : undefined;
 
       if (existingMsg && !existingMsg.isDraft) {
         const updated: DirectMessage = {
@@ -1246,6 +1260,8 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
           receiverName: combinedNames,
           receiverIds: selectedReceiverIds,
           recipients: recipientObjects,
+          receiverAuthUid,
+          recipientAuthUids,
           subject,
           content,
           category: msgCategory,
@@ -1272,6 +1288,8 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
           receiverName: combinedNames,
           receiverIds: selectedReceiverIds,
           recipients: recipientObjects,
+          receiverAuthUid,
+          recipientAuthUids,
           subject,
           content,
           category: msgCategory,
@@ -1317,7 +1335,10 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
       id: r.id,
       name: r.rawName || r.name,
       role: r.roleBadge,
+      authUid: r.authUid,
     }));
+    const recipientAuthUids = [...new Set(selectedRecs.map((r) => r.authUid).filter((uid): uid is string => Boolean(uid)))];
+    const receiverAuthUid = selectedRecs.length === 1 ? selectedRecs[0].authUid : undefined;
 
     saveDraft({
       id: editingDraftId || undefined,
@@ -1328,6 +1349,8 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
       receiverName: combinedNames,
       receiverIds: selectedReceiverIds,
       recipients: recipientObjects,
+      receiverAuthUid,
+      recipientAuthUids,
       subject: subject || 'مسودة مراسلة بدون عنوان',
       content,
       category: msgCategory,

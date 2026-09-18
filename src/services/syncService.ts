@@ -1,10 +1,12 @@
-import { db } from '../lib/firebase';
+import { db, auth, authIsolationReady } from '../lib/firebase';
 import {
   collection,
   doc,
   getDoc,
   getDocs,
   onSnapshot,
+  query,
+  where,
   runTransaction,
   setDoc,
   writeBatch,
@@ -88,6 +90,10 @@ const ADMIN_EXCLUSIVE_KEYS = new Set([
   'decisionSettings',
   'disciplinarySettings',
   'examSchedules',
+  'deletedLectureIds', // SECURITY_SYNC_ADMIN_SETTINGS_V1_3C3
+  'deletedChallengeIds', // SECURITY_SYNC_ADMIN_SETTINGS_V1_3C4
+  'notifications', // SECURITY_SYNC_ADMIN_NOTIFICATIONS_V1_3C5
+  'auditLogs', // SECURITY_SYNC_ADMIN_AUDIT_LOGS_V1_3C6
 ]);
 
 const clone = <T,>(value: T): T => {
@@ -154,6 +160,8 @@ class CentralSyncService {
   private currentVersion = 0;
   private storageMap: StorageMap = {};
   private realtimeDataCache: Record<string, any> = {};
+  // SECURITY_MESSAGING_SCOPED_REALTIME_V1_3D4B
+  private realtimeMessageBuckets: Record<string, any[]> = {};
   private realtimeEmitTimer: ReturnType<typeof setTimeout> | null = null;
   private lastSyncedBy?: SyncUser;
   private lastModified?: string;
@@ -495,7 +503,33 @@ class CentralSyncService {
     return this.storageMap;
   }
 
+  // SECURITY_MESSAGING_SCOPED_FETCH_V1_3D4A
+  private async readMessagesForCurrentUser(): Promise<any[]> {
+    await authIsolationReady;
+    const user = auth.currentUser;
+    if (!user) return [];
+    const token = await user.getIdTokenResult();
+    const role = String(token.claims.role || '');
+    if (['admin', 'director', 'school_manager'].includes(role)) {
+      const snap = await getDocs(collection(db, 'messages'));
+      return snap.docs.map((d) => stripInternalFields(d.data()));
+    }
+    const uid = user.uid;
+    const senderQuery = query(collection(db, 'messages'), where('senderAuthUid', '==', uid));
+    const receiverQuery = query(collection(db, 'messages'), where('receiverAuthUid', '==', uid));
+    const [senderSnap, receiverSnap] = await Promise.all([getDocs(senderQuery), getDocs(receiverQuery)]);
+    const merged = new Map<string, any>();
+    for (const snap of [senderSnap, receiverSnap]) {
+      for (const d of snap.docs) {
+        const item = stripInternalFields(d.data());
+        const id = typeof item?.id === 'string' && item.id ? item.id : d.id;
+        merged.set(id, item);
+      }
+    }
+    return [...merged.values()];
+  }
   private async readKey(key: string, mode: StorageMode): Promise<any> {
+    if (key === 'messages' && mode === 'collection') return this.readMessagesForCurrentUser();
     if (mode === 'collection') {
       const snap = await getDocs(collection(db, key));
       return snap.docs.map((d) => stripInternalFields(d.data()));
@@ -569,14 +603,71 @@ class CentralSyncService {
     }, 80);
   }
 
+  private mergeRealtimeMessageBuckets() {
+    const merged = new Map<string, any>();
+    for (const bucket of Object.values(this.realtimeMessageBuckets)) {
+      for (const item of bucket) {
+        const id = typeof item?.id === 'string' && item.id ? item.id : '';
+        if (id) merged.set(id, item);
+      }
+    }
+    this.realtimeDataCache.messages = [...merged.values()];
+  }
   public async connectRealtimeStream() {
     if (typeof window === 'undefined' || !this.isOnline || this.realtimeStarted) return;
 
     try {
       const map = await this.ensureStorageMapLoaded();
+      await authIsolationReady;
+      const user = auth.currentUser;
+      const token = user ? await user.getIdTokenResult() : null;
+      const role = String(token?.claims?.role || '');
+      const isAdminUser = Boolean(user) && ['admin', 'director', 'school_manager'].includes(role);
       this.realtimeStarted = true;
 
       for (const [key, mode] of Object.entries(map)) {
+        if (key === 'messages' && mode === 'collection') {
+          this.realtimeMessageBuckets = {};
+          if (!user) {
+            this.realtimeDataCache.messages = [];
+            continue;
+          }
+
+          if (isAdminUser) {
+            const unsub = onSnapshot(
+              collection(db, 'messages'),
+              (snapshot) => {
+                this.realtimeMessageBuckets.all = snapshot.docs.map((d) => stripInternalFields(d.data()));
+                this.mergeRealtimeMessageBuckets();
+                this.scheduleRealtimeEmit();
+              },
+              (err) => console.warn('[SyncService] realtime messages admin:', err)
+            );
+            this.unsubscribeRealtime.push(unsub);
+            continue;
+          }
+
+          const uid = user.uid;
+          const messageQueries = [
+            ['sender', query(collection(db, 'messages'), where('senderAuthUid', '==', uid))],
+            ['receiver', query(collection(db, 'messages'), where('receiverAuthUid', '==', uid))],
+          ] as const;
+
+          for (const [bucketName, messageQuery] of messageQueries) {
+            const unsub = onSnapshot(
+              messageQuery,
+              (snapshot) => {
+                this.realtimeMessageBuckets[bucketName] = snapshot.docs.map((d) => stripInternalFields(d.data()));
+                this.mergeRealtimeMessageBuckets();
+                this.scheduleRealtimeEmit();
+              },
+              (err) => console.warn('[SyncService] realtime messages user query:', err)
+            );
+            this.unsubscribeRealtime.push(unsub);
+          }
+          continue;
+        }
+
         if (mode === 'collection') {
           const unsub = onSnapshot(
             collection(db, key),
@@ -584,7 +675,7 @@ class CentralSyncService {
               this.realtimeDataCache[key] = snapshot.docs.map((d) => stripInternalFields(d.data()));
               this.scheduleRealtimeEmit();
             },
-            (err) => console.warn(`[SyncService] realtime ${key}:`, err)
+            (err) => console.warn('[SyncService] realtime collection:', err)
           );
           this.unsubscribeRealtime.push(unsub);
         } else {
@@ -594,7 +685,7 @@ class CentralSyncService {
               this.realtimeDataCache[key] = snapshot.exists() ? clone(snapshot.data()?.value) : undefined;
               this.scheduleRealtimeEmit();
             },
-            (err) => console.warn(`[SyncService] realtime setting ${key}:`, err)
+            (err) => console.warn('[SyncService] realtime setting:', err)
           );
           this.unsubscribeRealtime.push(unsub);
         }
@@ -611,6 +702,7 @@ class CentralSyncService {
       try { unsub(); } catch { /* ignore */ }
     });
     this.unsubscribeRealtime = [];
+    this.realtimeMessageBuckets = {};
     this.realtimeStarted = false;
   }
 
@@ -639,7 +731,22 @@ class CentralSyncService {
       if (!localMap.has(id)) changedIds.add(id);
     }
 
-    const ids = Array.from(changedIds);
+    // SECURITY_MESSAGING_NEW_MESSAGE_CREATE_V1_3C
+    let ids = Array.from(changedIds);
+
+    if (key === 'messages') {
+      const newMessageIds = ids.filter((id) => !baseMap.has(id) && localMap.has(id));
+      for (const id of newMessageIds) {
+        const localItem = localMap.get(id);
+        if (!localItem?.senderAuthUid) throw new Error('SECURITY: new message missing senderAuthUid');
+        await setDoc(doc(db, key, safeDocId(id)), {
+          ...clone(localItem),
+          __sync: { updatedAt: new Date().toISOString(), updatedBy: clone(sourceUser || {}) },
+        });
+      }
+      ids = ids.filter((id) => !newMessageIds.includes(id));
+    }
+
     const CHUNK = 60;
 
     for (let start = 0; start < ids.length; start += CHUNK) {
