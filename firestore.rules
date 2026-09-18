@@ -85,11 +85,25 @@ service cloud.firestore {
     }
 
     match /messages/{id} {
-      allow read: if isAdmin() || (signedIn() && (
-        resource.data.senderAuthUid == request.auth.uid ||
-        resource.data.receiverAuthUid == request.auth.uid ||
-        resource.data.recipientAuthUid == request.auth.uid
+      // SECURITY_MESSAGING_GROUP_RECIPIENTS_V1_3D5A
+      // SECURITY_MESSAGING_QUERY_COMPATIBLE_READS_V1_3D5R4R2
+      allow get: if isAdmin() || (signedIn() && (
+        ('senderAuthUid' in resource.data &&
+         resource.data.senderAuthUid == request.auth.uid) ||
+        ('receiverAuthUid' in resource.data &&
+         resource.data.receiverAuthUid == request.auth.uid) ||
+        ('recipientAuthUid' in resource.data &&
+         resource.data.recipientAuthUid == request.auth.uid) ||
+        ('recipientAuthUids' in resource.data &&
+         resource.data.recipientAuthUids is list &&
+         request.auth.uid in resource.data.recipientAuthUids)
       ));
+
+      allow list: if isAdmin();
+      allow list: if signedIn() && resource.data.senderAuthUid == request.auth.uid;
+      allow list: if signedIn() && resource.data.receiverAuthUid == request.auth.uid;
+      allow list: if signedIn() && request.auth.uid in resource.data.recipientAuthUids;
+
       allow create: if signedIn() && (
         isAdmin() || request.resource.data.senderAuthUid == request.auth.uid
       );

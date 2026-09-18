@@ -515,11 +515,17 @@ class CentralSyncService {
       return snap.docs.map((d) => stripInternalFields(d.data()));
     }
     const uid = user.uid;
+    // SECURITY_MESSAGING_GROUP_QUERY_V1_3D5A
     const senderQuery = query(collection(db, 'messages'), where('senderAuthUid', '==', uid));
     const receiverQuery = query(collection(db, 'messages'), where('receiverAuthUid', '==', uid));
-    const [senderSnap, receiverSnap] = await Promise.all([getDocs(senderQuery), getDocs(receiverQuery)]);
+    const recipientQuery = query(collection(db, 'messages'), where('recipientAuthUids', 'array-contains', uid));
+    const [senderSnap, receiverSnap, recipientSnap] = await Promise.all([
+      getDocs(senderQuery),
+      getDocs(receiverQuery),
+      getDocs(recipientQuery),
+    ]);
     const merged = new Map<string, any>();
-    for (const snap of [senderSnap, receiverSnap]) {
+    for (const snap of [senderSnap, receiverSnap, recipientSnap]) {
       for (const d of snap.docs) {
         const item = stripInternalFields(d.data());
         const id = typeof item?.id === 'string' && item.id ? item.id : d.id;
@@ -651,6 +657,7 @@ class CentralSyncService {
           const messageQueries = [
             ['sender', query(collection(db, 'messages'), where('senderAuthUid', '==', uid))],
             ['receiver', query(collection(db, 'messages'), where('receiverAuthUid', '==', uid))],
+            ['recipient', query(collection(db, 'messages'), where('recipientAuthUids', 'array-contains', uid))],
           ] as const;
 
           for (const [bucketName, messageQuery] of messageQueries) {
