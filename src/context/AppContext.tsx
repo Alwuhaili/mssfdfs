@@ -2306,6 +2306,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // ─────────────────────────────────────────────────────────────
   const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error'>('syncing');
   const [syncVersion, setSyncVersion] = useState<number>(1);
+  // D6-F1_SYNC_LIFECYCLE_STABILIZATION
+  const syncVersionRef = useRef<number>(1);
+  syncVersionRef.current = syncVersion;
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
   const [lastSyncedBy, setLastSyncedBy] = useState<{ id?: string; name?: string; role?: string } | null>(null);
   const [syncLatencyMs, setSyncLatencyMs] = useState<number>(0);
@@ -2490,7 +2493,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const unsubscribeBroadcast = centralSyncService.subscribe(async (evt) => {
       if (evt.type === 'REALTIME_SERVER_UPDATE' && evt.payload) {
         // Instant Server-Sent Event push from server!
-        applyRemoteData(evt.payload, evt.sourceVersion || syncVersion + 1, evt.lastSyncedBy);
+        applyRemoteData(evt.payload, evt.sourceVersion || syncVersionRef.current + 1, evt.lastSyncedBy);
       } else if (evt.type === 'SERVER_DATA_UPDATED' || evt.type === 'DATABASE_RESET') {
         try {
           const res = await centralSyncService.fetchServerData(undefined, true);
@@ -2512,12 +2515,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const pollInterval = setInterval(async () => {
       if (!isInitialHydrationDone.current) return;
       try {
-        const res = await centralSyncService.fetchServerData(syncVersion, false);
+        const res = await centralSyncService.fetchServerData(syncVersionRef.current, false);
         if (!isMounted) return;
 
         if (res.success) {
           if (!res.notModified && res.data) {
-            applyRemoteData(res.data, res.version || syncVersion + 1, res.lastSyncedBy);
+            applyRemoteData(res.data, res.version || syncVersionRef.current + 1, res.lastSyncedBy);
           }
           setSyncStatus('synced');
           setSyncErrorMessage(undefined);
@@ -2531,9 +2534,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const onWindowFocus = async () => {
       if (!isInitialHydrationDone.current) return;
       try {
-        const res = await centralSyncService.fetchServerData(syncVersion, false);
+        const res = await centralSyncService.fetchServerData(syncVersionRef.current, false);
         if (res.success && !res.notModified && res.data) {
-          applyRemoteData(res.data, res.version || syncVersion + 1, res.lastSyncedBy);
+          applyRemoteData(res.data, res.version || syncVersionRef.current + 1, res.lastSyncedBy);
         }
       } catch {
         // ignore
@@ -2548,7 +2551,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       window.removeEventListener('focus', onWindowFocus);
       centralSyncService.stopRealtimeStream();
     };
-  }, [syncVersion, currentUser?.authUid]);
+  }, [currentUser?.authUid]);
 
   // Debounced auto-push to central server on local changes
   useEffect(() => {
@@ -2587,7 +2590,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           role: role,
         };
 
-        const res = await centralSyncService.pushUpdates(payload, sourceUser, syncVersion);
+        const res = await centralSyncService.pushUpdates(payload, sourceUser, syncVersionRef.current);
         if (res.success && res.version) {
           setSyncVersion(res.version);
           setLastSyncedAt(new Date());
@@ -2617,7 +2620,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     submissions,
     attendance,
     announcements,
-    messages,
     lectures,
     deletedLectureIds,
     deletedChallengeIds,
