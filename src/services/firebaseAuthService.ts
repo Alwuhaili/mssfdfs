@@ -20,6 +20,14 @@ const profileCollectionForRole = (role: UserRole): string | null => {
   if (role === 'supervisor') return 'supervisors';
   return null;
 };
+const assertProfileCanSignIn = (role: UserRole, profile: any): void => {
+  const status = String(profile?.status || '').trim();
+  const blocked = new Set(['محظور', 'محظورة', 'موقوف', 'موقوفة', 'blocked', 'disabled', 'suspended']);
+  if (blocked.has(status.toLowerCase()) || blocked.has(status)) {
+    throw new Error('هذا الحساب موقوف أو محظور. يرجى مراجعة إدارة المدرسة.');
+  }
+};
+
 
 export class FirebaseAuthService {
   // TEMP_AUTH_RESTORE_SESSION_V1
@@ -60,6 +68,7 @@ export class FirebaseAuthService {
           await firebaseSignOut(auth);
           return null;
         }
+        assertProfileCanSignIn(claimedRole, profile);
       }
 
       const base: CurrentUser = {
@@ -127,17 +136,23 @@ export class FirebaseAuthService {
       }
 
       let profile: any = {};
-      if (profileId && profileCollection) {
-        const profileSnap = await getDoc(doc(db, profileCollection, profileId));
+      if (claimedRole !== 'admin') {
+        const expectedCollection = profileCollectionForRole(claimedRole);
+        if (!profileId || !expectedCollection || profileCollection !== expectedCollection) {
+          await firebaseSignOut(auth);
+          throw new Error('ملف المستخدم غير مرتبط بحساب المصادقة بشكل صحيح.');
+        }
+        const profileSnap = await getDoc(doc(db, expectedCollection, profileId));
         if (!profileSnap.exists()) {
           await firebaseSignOut(auth);
           throw new Error('ملف المستخدم غير موجود أو غير مرتبط بحساب المصادقة.');
         }
         profile = profileSnap.data();
-        if (profile.authUid && profile.authUid !== credential.user.uid) {
+        if (profile.authUid !== credential.user.uid) {
           await firebaseSignOut(auth);
           throw new Error('فشل التحقق من ارتباط الحساب بملف المستخدم.');
         }
+        assertProfileCanSignIn(claimedRole, profile);
       }
 
       // SECURITY_FIREBASE_PROFILE_IDENTITY_V1_3
@@ -177,6 +192,8 @@ export class FirebaseAuthService {
         'هذا الحساب لا يملك الصلاحية المطلوبة لهذه الواجهة.',
         'صلاحية الحساب غير معرفة بشكل آمن.',
         'ملف المستخدم غير موجود أو غير مرتبط بحساب المصادقة.',
+        'ملف المستخدم غير مرتبط بحساب المصادقة بشكل صحيح.',
+        'هذا الحساب موقوف أو محظور. يرجى مراجعة إدارة المدرسة.',
         'فشل التحقق من ارتباط الحساب بملف المستخدم.',
       ]);
       if (safeMessages.has(String(error?.message || ''))) throw error;
