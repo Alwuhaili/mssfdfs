@@ -92,6 +92,18 @@ import {
   shouldStartMailboxReconciliation,
   type PendingMailboxOperation,
 } from '../utils/messageSyncIsolation';
+import {
+  getNotificationActorStateKey,
+  notificationHasAuthUidTargeting,
+  notificationVisibleToAuthUid,
+  prepareNotificationAuthIdentity,
+  type NotificationIdentityCatalog,
+} from '../utils/notificationIdentity';
+import {
+  applyIsolatedNotificationState,
+  mergeNotificationUserStateMaps,
+  type IsolatedNotificationUserState,
+} from '../utils/notificationUserState';
 
 interface AppContextType {
   role: UserRole;
@@ -283,7 +295,7 @@ interface AppContextType {
   deleteLecture: (id: string) => void;
   updateLecture: (id: string, data: Partial<LectureResource>) => void;
   recordLectureDownload: (id: string) => void;
-  addNotification: (notif: Omit<NotificationItem, 'id' | 'createdAt'> & { id?: string }) => void;
+  addNotification: (notif: Omit<NotificationItem, 'id' | 'createdAt'> & { id?: string }) => boolean;
   deleteNotification: (id: string, explicitUserId?: string) => void;
   updateNotification: (
     id: string,
@@ -1027,6 +1039,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [notifications, setNotifications] = useState<NotificationItem[]>(
     () => initialStored?.notifications || INITIAL_NOTIFICATIONS
   );
+  const [notificationUserStates, setNotificationUserStates] = useState<Record<string, IsolatedNotificationUserState>>({});
   const [decisionSettings, setDecisionSettings] = useState<MinistryDecisionSettings>(() => {
     return initialStored?.decisionSettings || DEFAULT_MINISTRY_DECISION_SETTINGS;
   });
@@ -2499,6 +2512,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!currentUser) {
       messageUserStateCacheRef.current = {};
       messageUserStateOperationRef.current = {};
+      setNotificationUserStates({});
       clearMailboxPendingRuntime();
       isInitialHydrationDone.current = false;
       setSyncStatus('synced');
@@ -2511,11 +2525,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSyncStatus('syncing');
         messageUserStateCacheRef.current = {};
         messageUserStateOperationRef.current = {};
+        setNotificationUserStates({});
         clearMailboxPendingRuntime();
         try {
           messageUserStateCacheRef.current = await centralSyncService.readCurrentUserMessageStates();
         } catch (stateErr) {
           console.warn('[Messaging] Failed to load mailbox state:', stateErr);
+        }
+        try {
+          const remoteNotifStates = await centralSyncService.readCurrentUserNotificationStates();
+          if (isMounted) {
+            setNotificationUserStates(mergeNotificationUserStateMaps(remoteNotifStates, {}));
+          }
+        } catch (stateErr) {
+          console.warn('[Notifications] Failed to load user state:', stateErr);
         }
         if (!isMounted) return;
         const res = await centralSyncService.fetchServerData(undefined, true);
@@ -2603,6 +2626,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           messageUserStatePendingRef.current = nextPending;
           messageUserStateCacheRef.current = merged;
           setMessages((prev) => overlayCurrentUserMessageStates(prev));
+        }
+      } else if (evt.type === 'NOTIFICATION_USER_STATES_UPDATE' && evt.payload && typeof evt.payload === 'object') {
+        const uid = typeof currentUser?.authUid === 'string' ? currentUser.authUid.trim() : '';
+        if (uid) {
+          setNotificationUserStates((prev) => mergeNotificationUserStateMaps(evt.payload as Record<string, any>, prev));
         }
       } else if (evt.type === 'NETWORK_ONLINE') {
         setSyncStatus('synced');
@@ -3306,7 +3334,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       isPrivateAccountSecurity: true, // STRICTLY isolated to this user account!
     };
 
-    setNotifications((prev) => [newNotif, ...prev]);
+    addNotification(newNotif);
 
     return {
       success: true,
@@ -3381,7 +3409,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       isPrivateAccountSecurity: true, // STRICTLY isolated to this user account!
     };
 
-    setNotifications((prev) => [newNotif, ...prev]);
+    addNotification(newNotif);
 
     return {
       success: true,
@@ -3488,7 +3516,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         targetParentId: targetRole === 'parent' ? userKey : undefined,
         isPrivateAccountSecurity: true,
       };
-      setNotifications((prev) => [newNotif, ...prev]);
+      addNotification(newNotif);
     }
 
     return {
@@ -3579,7 +3607,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       timestamp: lang === 'ar' ? 'الآن' : 'Just now',
       isRead: false,
     };
-    setNotifications((prev) => [notif, ...prev]);
+    addNotification(notif);
   };
 
   const identityRecords = (): IdentityRecord[] => [
@@ -3665,7 +3693,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       timestamp: lang === 'ar' ? 'الآن' : 'Just now',
       isRead: false,
     };
-    setNotifications((prev) => [notif, ...prev]);
+    addNotification(notif);
   };
 
   // User Management Implementations
@@ -3937,7 +3965,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       timestamp: lang === 'ar' ? 'الآن' : 'Just now',
       isRead: false,
     };
-    setNotifications((prev) => [notif, ...prev]);
+    addNotification(notif);
   };
 
   const updateSupervisor = (id: string, updated: Partial<EducationalSupervisor>) => {
@@ -4212,7 +4240,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       isRead: false,
       targetRole: 'student',
     };
-    setNotifications((prev) => [notif, ...prev]);
+    addNotification(notif);
   };
 
   const updateExam = (id: string, updated: Partial<Exam>) => {
@@ -4269,7 +4297,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       timestamp: lang === 'ar' ? 'الآن' : 'Just now',
       isRead: false,
     };
-    setNotifications((prev) => [notif, ...prev]);
+    addNotification(notif);
   };
 
   const updateSubmission = (id: string, updated: Partial<ExamSubmission>) => {
@@ -4535,7 +4563,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         };
       });
 
-      setNotifications((prev) => [adminNotif, teacherNotif, ...studentNotifs, ...parentNotifs, ...prev]);
+      addNotification(adminNotif);
+      addNotification(teacherNotif);
+      studentNotifs.forEach((item) => addNotification(item));
+      parentNotifs.forEach((item) => addNotification(item));
 
       // 4. Update Cumulative Student Absence & Warning Levels Automatically
       setStudents((prev) => {
@@ -5499,7 +5530,7 @@ ${defaultReason}
       timestamp: lang === 'ar' ? 'الآن' : 'Just now',
       isRead: false,
     };
-    setNotifications((prev) => [notif, ...prev]);
+    addNotification(notif);
   };
 
   const persistSentDirectMessage = (sentMsg: DirectMessage, previousDraft?: DirectMessage) => {
@@ -5574,7 +5605,7 @@ ${defaultReason}
         timestamp: lang === 'ar' ? 'الآن' : 'Just now',
         isRead: false,
       };
-      setNotifications((prev) => [notif, ...prev]);
+      addNotification(notif);
     }
   };
 
@@ -5936,7 +5967,7 @@ ${defaultReason}
       timestamp: lang === 'ar' ? 'الآن' : 'Just now',
       isRead: false,
     };
-    setNotifications((prev) => [notif, ...prev]);
+    addNotification(notif);
 
     // Return the exact resource that was inserted.
     // Storage integration must reuse this same immutable resource ID.
@@ -6024,13 +6055,49 @@ ${defaultReason}
     );
   };
 
+  const buildNotificationIdentityCatalog = (): NotificationIdentityCatalog => ({
+    teachers: teachers.map((item) => ({ id: item.id, authUid: item.authUid })),
+    students: students.map((item) => ({
+      id: item.id,
+      authUid: item.authUid,
+      gradeLevel: item.gradeLevel,
+      section: item.section,
+    })),
+    parents: parents.map((item) => ({ id: item.id, authUid: item.authUid })),
+    supervisors: supervisors.map((item) => ({
+      id: item.id,
+      authUid:
+        item.authUid ||
+        (currentUser?.role === 'supervisor' &&
+        (currentUser.profileId === item.id || currentUser.id === item.id)
+          ? currentUser.authUid
+          : undefined),
+    })),
+    adminAuthUid:
+      (typeof schoolAdminData.adminAuthUid === 'string' && schoolAdminData.adminAuthUid.trim()) ||
+      (currentUser?.role === 'admin' && typeof currentUser.authUid === 'string'
+        ? currentUser.authUid.trim()
+        : undefined) ||
+      undefined,
+  });
+
+  // SECURITY_NOTIFICATION_AUTH_UID_CREATE_V1_D6F2
   const addNotification = (
     notifData: Omit<NotificationItem, 'id' | 'createdAt'> & { id?: string }
-  ) => {
+  ): boolean => {
+    const prepared = prepareNotificationAuthIdentity(
+      notifData,
+      buildNotificationIdentityCatalog(),
+      currentUser?.authUid
+    );
+    if (!prepared.ok) {
+      console.error('[Notifications]', prepared.reason);
+      return false;
+    }
     const randSuffix = Math.random().toString(36).substring(2, 7);
-    const timeStr = new Date().toLocaleString(lang === 'ar' ? 'ar-IQ' : 'en-US');
     const newNotif: NotificationItem = {
       ...notifData,
+      ...prepared.patch,
       id: notifData.id || `notif-${Date.now()}-${randSuffix}`,
       createdAt: new Date().toISOString(),
       timestamp: notifData.timestamp || (lang === 'ar' ? 'الآن' : 'Just now'),
@@ -6038,6 +6105,25 @@ ${defaultReason}
       readBy: [],
     };
     setNotifications((prev) => [newNotif, ...prev]);
+    return true;
+  };
+
+  const persistIsolatedNotificationState = (
+    notificationId: string,
+    next: { isRead: boolean; isDeleted: boolean }
+  ) => {
+    const uid = typeof currentUser?.authUid === 'string' ? currentUser.authUid.trim() : '';
+    if (!uid || !notificationId) return;
+    setNotificationUserStates((prev) => ({
+      ...prev,
+      [notificationId]: {
+        notificationId,
+        isRead: next.isRead,
+        isDeleted: next.isDeleted,
+        updatedAt: new Date().toISOString(),
+      },
+    }));
+    void centralSyncService.upsertCurrentUserNotificationState(notificationId, next);
   };
 
   const deleteNotification = (id: string, explicitUserId?: string) => {
@@ -6050,11 +6136,18 @@ ${defaultReason}
       });
       return;
     }
-    const targetUserId = getCurrentUserIdInContext(explicitUserId);
-    if (!targetUserId) return;
+    const target = notifications.find((n) => n.id === id);
+    if (target && notificationHasAuthUidTargeting(target)) {
+      const prev = notificationUserStates[id];
+      persistIsolatedNotificationState(id, { isRead: prev?.isRead === true, isDeleted: true });
+      return;
+    }
+    const legacyProfileId = getCurrentUserIdInContext(explicitUserId);
     setNotifications((prev) =>
       prev.map((n) => {
         if (n.id !== id) return n;
+        const targetUserId = getNotificationActorStateKey(n, currentUser, legacyProfileId);
+        if (!targetUserId) return n;
         const currentDeletedBy = n.deletedBy || [];
         const updatedDeletedBy = currentDeletedBy.includes(targetUserId)
           ? currentDeletedBy
@@ -6083,8 +6176,7 @@ ${defaultReason}
     scope: 'user' | 'global' = 'user',
     explicitUserId?: string
   ) => {
-    const targetUserId = getCurrentUserIdInContext(explicitUserId);
-    if (!targetUserId) return;
+    const legacyProfileId = getCurrentUserIdInContext(explicitUserId);
     setNotifications((prev) =>
       prev.map((n) => {
         if (n.id !== id) return n;
@@ -6094,6 +6186,8 @@ ${defaultReason}
             ...updates,
           };
         } else {
+          const targetUserId = getNotificationActorStateKey(n, currentUser, legacyProfileId);
+          if (!targetUserId) return n;
           const prevStates = n.userStates || {};
           const prevUState = prevStates[targetUserId] || {};
           return {
@@ -6175,6 +6269,14 @@ ${defaultReason}
 
     return notifications
       .filter((n) => {
+        if (notificationHasAuthUidTargeting(n)) {
+          const uid = typeof activeUser?.authUid === 'string' ? activeUser.authUid.trim() : '';
+          if (!uid) return false;
+          const flags = applyIsolatedNotificationState(n, uid, notificationUserStates);
+          if (flags.isDeleted) return false;
+          return notificationVisibleToAuthUid(n, uid);
+        }
+
         // 0. Check per-user deletion isolation
         if (n.deletedBy && n.deletedBy.includes(currentUserId)) return false;
         if (n.userStates?.[currentUserId]?.isDeleted) return false;
@@ -6389,11 +6491,20 @@ ${defaultReason}
         return true;
       })
       .map((n) => {
-        const uState = n.userStates?.[currentUserId];
+        const stateKey = getNotificationActorStateKey(n, activeUser, currentUserId);
+        if (notificationHasAuthUidTargeting(n)) {
+          const uid = typeof activeUser?.authUid === 'string' ? activeUser.authUid.trim() : '';
+          const flags = applyIsolatedNotificationState(n, uid, notificationUserStates);
+          return {
+            ...n,
+            isRead: flags.isRead,
+          };
+        }
+        const uState = stateKey ? n.userStates?.[stateKey] : undefined;
         const isReadForThisUser =
           uState?.isRead !== undefined
             ? uState.isRead
-            : Boolean(n.readBy && n.readBy.includes(currentUserId));
+            : Boolean(stateKey && n.readBy && n.readBy.includes(stateKey));
         const userTitle = uState?.title || n.title;
         const userMessage = uState?.message || n.message;
         const userType = uState?.type || n.type;
@@ -6409,11 +6520,18 @@ ${defaultReason}
   };
 
   const markNotificationRead = (id: string, explicitUserId?: string) => {
-    const targetUserId = getCurrentUserIdInContext(explicitUserId);
-    if (!targetUserId) return;
+    const target = notifications.find((n) => n.id === id);
+    if (target && notificationHasAuthUidTargeting(target)) {
+      const prev = notificationUserStates[id];
+      persistIsolatedNotificationState(id, { isRead: true, isDeleted: prev?.isDeleted === true });
+      return;
+    }
+    const legacyProfileId = getCurrentUserIdInContext(explicitUserId);
     setNotifications((prev) =>
       prev.map((n) => {
         if (n.id !== id) return n;
+        const targetUserId = getNotificationActorStateKey(n, currentUser, legacyProfileId);
+        if (!targetUserId) return n;
         const currentReadBy = n.readBy || [];
         const updatedReadBy = currentReadBy.includes(targetUserId)
           ? currentReadBy
@@ -6437,11 +6555,19 @@ ${defaultReason}
   };
 
   const toggleNotificationRead = (id: string, explicitUserId?: string) => {
-    const targetUserId = getCurrentUserIdInContext(explicitUserId);
-    if (!targetUserId) return;
+    const target = notifications.find((n) => n.id === id);
+    if (target && notificationHasAuthUidTargeting(target)) {
+      const uid = typeof currentUser?.authUid === 'string' ? currentUser.authUid.trim() : '';
+      const flags = applyIsolatedNotificationState(target, uid, notificationUserStates);
+      persistIsolatedNotificationState(id, { isRead: !flags.isRead, isDeleted: flags.isDeleted });
+      return;
+    }
+    const legacyProfileId = getCurrentUserIdInContext(explicitUserId);
     setNotifications((prev) =>
       prev.map((n) => {
         if (n.id !== id) return n;
+        const targetUserId = getNotificationActorStateKey(n, currentUser, legacyProfileId);
+        if (!targetUserId) return n;
         const prevStates = n.userStates || {};
         const prevUState = prevStates[targetUserId] || {};
         const currentIsRead =
@@ -6475,14 +6601,21 @@ ${defaultReason}
   };
 
   const markAllNotificationsRead = (explicitUserId?: string) => {
-    const targetUserId = getCurrentUserIdInContext(explicitUserId);
-    if (!targetUserId) return;
+    const legacyProfileId = getCurrentUserIdInContext(explicitUserId);
     const userNotifs = getUserNotifications(role, currentUser);
-    const userNotifIds = new Set(userNotifs.map((n) => n.id));
-
+    userNotifs.forEach((n) => {
+      if (notificationHasAuthUidTargeting(n)) {
+        const prev = notificationUserStates[n.id];
+        persistIsolatedNotificationState(n.id, { isRead: true, isDeleted: prev?.isDeleted === true });
+      }
+    });
+    const legacyIds = new Set(userNotifs.filter((n) => !notificationHasAuthUidTargeting(n)).map((n) => n.id));
+    if (legacyIds.size === 0) return;
     setNotifications((prev) =>
       prev.map((n) => {
-        if (!userNotifIds.has(n.id)) return n;
+        if (!legacyIds.has(n.id)) return n;
+        const targetUserId = getNotificationActorStateKey(n, currentUser, legacyProfileId);
+        if (!targetUserId) return n;
         const currentReadBy = n.readBy || [];
         const updatedReadBy = currentReadBy.includes(targetUserId)
           ? currentReadBy
@@ -6506,14 +6639,21 @@ ${defaultReason}
   };
 
   const clearAllUserNotifications = (explicitUserId?: string) => {
-    const targetUserId = getCurrentUserIdInContext(explicitUserId);
-    if (!targetUserId) return;
+    const legacyProfileId = getCurrentUserIdInContext(explicitUserId);
     const userNotifs = getUserNotifications(role, currentUser);
-    const userNotifIds = new Set(userNotifs.map((n) => n.id));
-
+    userNotifs.forEach((n) => {
+      if (notificationHasAuthUidTargeting(n)) {
+        const prev = notificationUserStates[n.id];
+        persistIsolatedNotificationState(n.id, { isRead: prev?.isRead === true, isDeleted: true });
+      }
+    });
+    const legacyIds = new Set(userNotifs.filter((n) => !notificationHasAuthUidTargeting(n)).map((n) => n.id));
+    if (legacyIds.size === 0) return;
     setNotifications((prev) =>
       prev.map((n) => {
-        if (!userNotifIds.has(n.id)) return n;
+        if (!legacyIds.has(n.id)) return n;
+        const targetUserId = getNotificationActorStateKey(n, currentUser, legacyProfileId);
+        if (!targetUserId) return n;
         const currentDeletedBy = n.deletedBy || [];
         const updatedDeletedBy = currentDeletedBy.includes(targetUserId)
           ? currentDeletedBy

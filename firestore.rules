@@ -135,9 +135,41 @@ service cloud.firestore {
       allow delete: if signedIn() && request.auth.uid == uid;
     }
 
+    // SECURITY_NOTIFICATION_USER_STATE_V1_D6F2
+    match /notificationUserStates/{uid}/items/{notificationId} {
+      allow read: if isAdmin() || (signedIn() && request.auth.uid == uid);
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['notificationId', 'isRead', 'isDeleted', 'updatedAt'])
+        && request.resource.data.notificationId == notificationId
+        && request.resource.data.isRead is bool
+        && request.resource.data.isDeleted is bool
+        && request.resource.data.updatedAt is timestamp;
+      allow update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead', 'isDeleted', 'updatedAt'])
+        && request.resource.data.notificationId == notificationId
+        && request.resource.data.notificationId == resource.data.notificationId
+        && request.resource.data.isRead is bool
+        && request.resource.data.isDeleted is bool
+        && request.resource.data.updatedAt is timestamp;
+      allow delete: if signedIn() && request.auth.uid == uid;
+    }
+
     match /notifications/{id} {
-      allow read: if isAdmin() || (signedIn() && resource.data.targetAuthUid == request.auth.uid);
-      allow write: if isAdmin();
+      // SECURITY_NOTIFICATION_AUTH_UID_READS_V1_D6F2
+      // UID-targeted docs only. Historical UID-less docs are admin-only in Firestore.
+      allow get: if isAdmin() || (signedIn() && (
+        ('targetAuthUid' in resource.data &&
+         resource.data.targetAuthUid == request.auth.uid) ||
+        ('targetAuthUids' in resource.data &&
+         resource.data.targetAuthUids is list &&
+         request.auth.uid in resource.data.targetAuthUids)
+      ));
+
+      allow list: if isAdmin();
+      allow list: if signedIn() && resource.data.targetAuthUid == request.auth.uid;
+      allow list: if signedIn() && request.auth.uid in resource.data.targetAuthUids;
+
+      allow create, update, delete: if isAdmin();
     }
 
     match /financial/{id} {

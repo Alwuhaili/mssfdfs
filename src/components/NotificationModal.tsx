@@ -349,7 +349,7 @@ export const NotificationModal: React.FC<{ isOpen: boolean; onClose: () => void 
         ? activeTeacherObj?.name || 'أستاذة المادة الدراسية'
         : 'المشرف التربوي');
 
-    addNotification({
+    const created = addNotification({
       title,
       message,
       type,
@@ -366,6 +366,14 @@ export const NotificationModal: React.FC<{ isOpen: boolean; onClose: () => void 
       isPinned,
       isRead: false,
     });
+    if (!created) {
+      alert(
+        lang === 'ar'
+          ? 'تعذر إرسال التنبيه: لم يتم حل هوية مستلم واحد أو أكثر إلى حساب Firebase.'
+          : 'Notification was not sent: one or more recipients could not be resolved to a Firebase Auth UID.'
+      );
+      return;
+    }
 
     setTitle('');
     setMessage('');

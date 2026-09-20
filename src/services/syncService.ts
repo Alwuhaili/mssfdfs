@@ -17,6 +17,7 @@ import {
   restoreRealtimeMessagesAfterGenericFetch,
 } from '../utils/messageSyncIsolation';
 import { persistDirectMessageDocument } from './persistDirectMessage';
+import { persistNotificationUserStateDocument } from './persistNotificationUserState';
 
 export interface SyncUser {
   id?: string;
@@ -133,6 +134,26 @@ const stripInternalFields = (value: any) => {
   return rest;
 };
 
+const notificationItemId = (item: any, fallbackId?: string): string => {
+  if (typeof item?.id === 'string' && item.id.trim()) return item.id;
+  return fallbackId || '';
+};
+
+// SECURITY_NOTIFICATION_SCOPED_MERGE_V1_D6F2
+export const mergeNotificationRealtimeBuckets = (
+  buckets: Record<string, any[]>
+): any[] => {
+  const merged = new Map<string, any>();
+  for (const items of Object.values(buckets)) {
+    for (const item of items || []) {
+      const id = notificationItemId(item);
+      if (!id) continue;
+      merged.set(id, item);
+    }
+  }
+  return [...merged.values()];
+};
+
 const safeDocId = (id: string): string => encodeURIComponent(id).replace(/%/g, '_');
 
 const hasStableIds = (value: any): value is Array<Record<string, any> & { id: string }> =>
@@ -175,6 +196,8 @@ class CentralSyncService {
   private realtimeDataCache: Record<string, any> = {};
   // SECURITY_MESSAGING_SCOPED_REALTIME_V1_3D4B
   private realtimeMessageBuckets: Record<string, any[]> = {};
+  // SECURITY_NOTIFICATION_SCOPED_REALTIME_V1_D6F2
+  private realtimeNotificationBuckets: Record<string, any[]> = {};
   private realtimeEmitTimer: ReturnType<typeof setTimeout> | null = null;
   // SECURITY_MESSAGING_SYNC_ISOLATION_V1_3D6F2C_STAGE0
   private pendingRealtimeEmitIncludesMessages = false;
@@ -549,8 +572,43 @@ class CentralSyncService {
     }
     return [...merged.values()];
   }
+
+  // SECURITY_NOTIFICATION_SCOPED_FETCH_V1_D6F2
+  private async readNotificationsForCurrentUser(): Promise<any[]> {
+    await authIsolationReady;
+    const user = auth.currentUser;
+    if (!user) return [];
+    const token = await user.getIdTokenResult();
+    const role = String(token.claims.role || '');
+    if (['admin', 'director', 'school_manager'].includes(role)) {
+      const snap = await getDocs(collection(db, 'notifications'));
+      return snap.docs.map((d) => {
+        const item = stripInternalFields(d.data());
+        const id = notificationItemId(item, d.id);
+        return id ? { ...item, id } : item;
+      });
+    }
+    const uid = user.uid;
+    const singleQuery = query(collection(db, 'notifications'), where('targetAuthUid', '==', uid));
+    const multiQuery = query(collection(db, 'notifications'), where('targetAuthUids', 'array-contains', uid));
+    const [singleSnap, multiSnap] = await Promise.all([getDocs(singleQuery), getDocs(multiQuery)]);
+    const buckets: Record<string, any[]> = { targetAuthUid: [], targetAuthUids: [] };
+    buckets.targetAuthUid = singleSnap.docs.map((d) => {
+      const item = stripInternalFields(d.data());
+      const id = notificationItemId(item, d.id);
+      return id ? { ...item, id } : item;
+    });
+    buckets.targetAuthUids = multiSnap.docs.map((d) => {
+      const item = stripInternalFields(d.data());
+      const id = notificationItemId(item, d.id);
+      return id ? { ...item, id } : item;
+    });
+    return mergeNotificationRealtimeBuckets(buckets);
+  }
+
   private async readKey(key: string, mode: StorageMode): Promise<any> {
     if (key === 'messages' && mode === 'collection') return this.readMessagesForCurrentUser();
+    if (key === 'notifications' && mode === 'collection') return this.readNotificationsForCurrentUser();
     if (mode === 'collection') {
       const snap = await getDocs(collection(db, key));
       return snap.docs.map((d) => stripInternalFields(d.data()));
@@ -633,6 +691,10 @@ class CentralSyncService {
     this.realtimeDataCache.messages = mergeMessageBuckets(this.realtimeMessageBuckets);
   }
 
+  private mergeRealtimeNotificationBuckets() {
+    this.realtimeDataCache.notifications = mergeNotificationRealtimeBuckets(this.realtimeNotificationBuckets);
+  }
+
   public isRealtimeStreamActive(): boolean {
     return this.realtimeStarted;
   }
@@ -666,6 +728,23 @@ class CentralSyncService {
         this.unsubscribeRealtime.push(userStateUnsub);
       }
 
+      if (user) {
+        const notificationStateUnsub = onSnapshot(
+          collection(db, 'notificationUserStates', user.uid, 'items'),
+          (snapshot) => {
+            const states: Record<string, any> = {};
+            snapshot.docs.forEach((stateDoc) => {
+              const data = stripInternalFields(stateDoc.data());
+              const notificationId = typeof data?.notificationId === 'string' && data.notificationId ? data.notificationId : stateDoc.id;
+              states[notificationId] = data;
+            });
+            this.notifyListeners({ type: 'NOTIFICATION_USER_STATES_UPDATE', payload: states });
+          },
+          (err) => console.warn('[SyncService] realtime notification user states:', err)
+        );
+        this.unsubscribeRealtime.push(notificationStateUnsub);
+      }
+
       // SECURITY_REALTIME_SCOPE_GUARD_V1_3D6F2B1
       const nonAdminUnsafeRealtimeKeys = new Set([
         'teachers', 'students', 'parents', 'supervisors', 'graduates',
@@ -675,6 +754,51 @@ class CentralSyncService {
       ]);
 
       for (const [key, mode] of Object.entries(map)) {
+        if (key === 'notifications' && mode === 'collection') {
+          this.realtimeNotificationBuckets = { targetAuthUid: [], targetAuthUids: [] };
+          if (!user) {
+            this.realtimeDataCache.notifications = [];
+            continue;
+          }
+          if (isAdminUser) {
+            const unsub = onSnapshot(
+              collection(db, 'notifications'),
+              (snapshot) => {
+                this.realtimeDataCache.notifications = snapshot.docs.map((d) => {
+                  const item = stripInternalFields(d.data());
+                  const id = notificationItemId(item, d.id);
+                  return id ? { ...item, id } : item;
+                });
+                this.scheduleRealtimeEmit();
+              },
+              (err) => console.warn('[SyncService] realtime notifications admin:', err)
+            );
+            this.unsubscribeRealtime.push(unsub);
+            continue;
+          }
+          const uid = user.uid;
+          const notificationQueries = [
+            ['targetAuthUid', query(collection(db, 'notifications'), where('targetAuthUid', '==', uid))],
+            ['targetAuthUids', query(collection(db, 'notifications'), where('targetAuthUids', 'array-contains', uid))],
+          ] as const;
+          for (const [bucketName, notificationQuery] of notificationQueries) {
+            const unsub = onSnapshot(
+              notificationQuery,
+              (snapshot) => {
+                this.realtimeNotificationBuckets[bucketName] = snapshot.docs.map((d) => {
+                  const item = stripInternalFields(d.data());
+                  const id = notificationItemId(item, d.id);
+                  return id ? { ...item, id } : item;
+                });
+                this.mergeRealtimeNotificationBuckets();
+                this.scheduleRealtimeEmit();
+              },
+              (err) => console.warn('[SyncService] realtime notifications user query:', err)
+            );
+            this.unsubscribeRealtime.push(unsub);
+          }
+          continue;
+        }
         if (!isAdminUser && nonAdminUnsafeRealtimeKeys.has(key)) continue;
         if (key === 'messages' && mode === 'collection') {
           this.realtimeMessageBuckets = {};
@@ -754,6 +878,7 @@ class CentralSyncService {
     });
     this.unsubscribeRealtime = [];
     this.realtimeMessageBuckets = {};
+    this.realtimeNotificationBuckets = {};
     this.pendingRealtimeEmitIncludesMessages = false;
     if (this.realtimeEmitTimer) {
       clearTimeout(this.realtimeEmitTimer);
@@ -1029,6 +1154,32 @@ class CentralSyncService {
       states[messageId] = data;
     });
     return states;
+  }
+
+  public async readCurrentUserNotificationStates(): Promise<Record<string, any>> {
+    await authIsolationReady;
+    const user = auth.currentUser;
+    if (!user) return {};
+    const snap = await getDocs(collection(db, 'notificationUserStates', user.uid, 'items'));
+    const states: Record<string, any> = {};
+    snap.docs.forEach((stateDoc) => {
+      const data = stripInternalFields(stateDoc.data());
+      const notificationId = typeof data?.notificationId === 'string' && data.notificationId ? data.notificationId : stateDoc.id;
+      states[notificationId] = data;
+    });
+    return states;
+  }
+
+  public async upsertCurrentUserNotificationState(
+    notificationId: string,
+    patch: { isRead?: boolean; isDeleted?: boolean }
+  ): Promise<boolean> {
+    await authIsolationReady;
+    const user = auth.currentUser;
+    if (!user || !notificationId) return false;
+    const result = await persistNotificationUserStateDocument(db, user.uid, notificationId, patch);
+    if (!result.success) console.error('[SyncService] notification user state update failed:', result.message);
+    return result.success;
   }
 
   // SECURITY_MESSAGING_PENDING_RECONCILE_V1_3D6F2C_STAGE0_1

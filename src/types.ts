@@ -157,6 +157,7 @@ export interface User {
 
 export interface EducationalSupervisor {
   id: string;
+  authUid?: string;
   name: string; // e.g. 'أ.د. حيدر جاسم الكناني'
   title: string; // e.g. 'المشرف الأكاديمي والتربوي المعتمد'
   specialization: string; // e.g. 'الفيزياء المتقدمة ورعاية المتفوقين'
@@ -600,6 +601,10 @@ export interface NotificationItem {
   targetRole?: UserRole | 'all';
   targetUserId?: string;
   targetUserIds?: string[];
+  // SECURITY_NOTIFICATION_AUTH_UID_FIELDS_V1_D6F2A
+  senderAuthUid?: string;
+  targetAuthUid?: string;
+  targetAuthUids?: string[];
   targetStudentId?: string;
   targetStudentIds?: string[];
   targetParentId?: string;
