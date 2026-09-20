@@ -208,6 +208,8 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
       : '';
 
   // Rich Recipient directory with complete metadata
+  const canonicalAdminAuthUid =
+    typeof schoolAdminData?.adminAuthUid === 'string' ? schoolAdminData.adminAuthUid.trim() : '';
   const possibleRecipients = [
     {
       id: 'admin-main',
@@ -217,6 +219,7 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
       roleBadge: 'admin' as UserRole,
       subject: 'الإدارة المدرسية العامة',
       gradeLevel: 'جميع المراحل',
+      ...(canonicalAdminAuthUid ? { authUid: canonicalAdminAuthUid } : {}),
     },
     ...teachers.map((t) => ({
       id: t.id,
@@ -1246,6 +1249,13 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
     } else {
       // Direct sending to selectedReceiverIds
       const selectedRecs = possibleRecipients.filter((r) => selectedReceiverIds.includes(r.id));
+      const adminRecipientSelected = selectedReceiverIds.includes('admin-main') ||
+        selectedRecs.some((r) => r.id === 'admin-main' || r.roleBadge === 'admin');
+      // SECURITY_MESSAGING_ADMIN_RECIPIENT_UID_FAIL_CLOSED_V1_3D6F2C_STAGE0_9
+      if (adminRecipientSelected && !canonicalAdminAuthUid) {
+        console.error('[Messaging] Send blocked: canonical adminAuthUid is missing');
+        return;
+      }
       const combinedNames = selectedRecs.length > 0
         ? selectedRecs.map((r) => r.rawName || r.name).join('، ')
         : 'مستلم المدرسة';
@@ -1434,9 +1444,17 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
   };
 
   // Quick Reply Submit
+  // SECURITY_MESSAGING_QUICK_REPLY_UID_ADDRESSING_V1_3D6F2C_STAGE0_8
   const handleQuickReply = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedMessage || !replyContent.trim()) return;
+
+    const originalSenderAuthUid =
+      typeof selectedMessage.senderAuthUid === 'string' ? selectedMessage.senderAuthUid.trim() : '';
+    if (!originalSenderAuthUid) {
+      console.error('[Messaging] Quick reply blocked: original senderAuthUid is missing');
+      return;
+    }
 
     sendMessage({
       senderId: currentUserId,
@@ -1444,6 +1462,16 @@ export const MessagingSystem: React.FC<MessagingSystemProps> = ({
       senderRole: role,
       receiverId: selectedMessage.senderId,
       receiverName: selectedMessage.senderName,
+      receiverAuthUid: originalSenderAuthUid,
+      recipientAuthUids: [originalSenderAuthUid],
+      recipients: [
+        {
+          id: selectedMessage.senderId,
+          name: selectedMessage.senderName,
+          authUid: originalSenderAuthUid,
+          role: selectedMessage.senderRole,
+        },
+      ],
       subject: selectedMessage.subject.startsWith('رد:')
         ? selectedMessage.subject
         : `رد: ${selectedMessage.subject}`,

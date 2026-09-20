@@ -11,6 +11,12 @@ import {
   setDoc,
   writeBatch,
 } from 'firebase/firestore';
+import {
+  buildRealtimeServerUpdatePayload,
+  mergeRealtimeMessageBuckets as mergeMessageBuckets,
+  restoreRealtimeMessagesAfterGenericFetch,
+} from '../utils/messageSyncIsolation';
+import { persistDirectMessageDocument } from './persistDirectMessage';
 
 export interface SyncUser {
   id?: string;
@@ -170,6 +176,8 @@ class CentralSyncService {
   // SECURITY_MESSAGING_SCOPED_REALTIME_V1_3D4B
   private realtimeMessageBuckets: Record<string, any[]> = {};
   private realtimeEmitTimer: ReturnType<typeof setTimeout> | null = null;
+  // SECURITY_MESSAGING_SYNC_ISOLATION_V1_3D6F2C_STAGE0
+  private pendingRealtimeEmitIncludesMessages = false;
   private lastSyncedBy?: SyncUser;
   private lastModified?: string;
   private migrationPromise: Promise<SyncResponse> | null = null;
@@ -582,14 +590,16 @@ class CentralSyncService {
       this.currentVersion = Math.max(this.currentVersion, version);
       this.lastSyncedBy = migration?.completedBy || migration?.startedBy;
       this.lastModified = migration?.completedAt || migration?.startedAt;
-      this.realtimeDataCache = clone(data);
+      // SECURITY_MESSAGING_SYNC_ISOLATION_V1_3D6F2C_STAGE0
+      const restored = restoreRealtimeMessagesAfterGenericFetch(clone(data), this.realtimeMessageBuckets);
+      this.realtimeDataCache = restored;
 
       return {
         success: true,
         version,
         lastModified: migration?.completedAt || migration?.startedAt,
         lastSyncedBy: migration?.completedBy || migration?.startedBy,
-        data,
+        data: restored,
         serverTime: new Date().toISOString(),
       };
     } catch (err: any) {
@@ -601,14 +611,17 @@ class CentralSyncService {
     }
   }
 
-  private scheduleRealtimeEmit() {
+  private scheduleRealtimeEmit(includeMessages = false) {
+    if (includeMessages) this.pendingRealtimeEmitIncludesMessages = true;
     if (this.realtimeEmitTimer) clearTimeout(this.realtimeEmitTimer);
     this.realtimeEmitTimer = setTimeout(() => {
       this.realtimeEmitTimer = null;
       const version = Math.max(this.currentVersion, 1);
+      const emitIncludesMessages = this.pendingRealtimeEmitIncludesMessages;
+      this.pendingRealtimeEmitIncludesMessages = false;
       this.notifyListeners({
         type: 'REALTIME_SERVER_UPDATE',
-        payload: clone(this.realtimeDataCache),
+        payload: buildRealtimeServerUpdatePayload(this.realtimeDataCache, emitIncludesMessages),
         sourceVersion: version,
         lastSyncedBy: this.lastSyncedBy,
         lastModified: this.lastModified,
@@ -617,14 +630,11 @@ class CentralSyncService {
   }
 
   private mergeRealtimeMessageBuckets() {
-    const merged = new Map<string, any>();
-    for (const bucket of Object.values(this.realtimeMessageBuckets)) {
-      for (const item of bucket) {
-        const id = typeof item?.id === 'string' && item.id ? item.id : '';
-        if (id) merged.set(id, item);
-      }
-    }
-    this.realtimeDataCache.messages = [...merged.values()];
+    this.realtimeDataCache.messages = mergeMessageBuckets(this.realtimeMessageBuckets);
+  }
+
+  public isRealtimeStreamActive(): boolean {
+    return this.realtimeStarted;
   }
   public async connectRealtimeStream() {
     if (typeof window === 'undefined' || !this.isOnline || this.realtimeStarted) return;
@@ -638,7 +648,34 @@ class CentralSyncService {
       const isAdminUser = Boolean(user) && ['admin', 'director', 'school_manager'].includes(role);
       this.realtimeStarted = true;
 
+      // SECURITY_MESSAGING_USER_STATE_REALTIME_V1_3D6F2A
+      if (user) {
+        const userStateUnsub = onSnapshot(
+          collection(db, 'messageUserStates', user.uid, 'items'),
+          (snapshot) => {
+            const states: Record<string, any> = {};
+            snapshot.docs.forEach((stateDoc) => {
+              const data = stripInternalFields(stateDoc.data());
+              const messageId = typeof data?.messageId === 'string' && data.messageId ? data.messageId : stateDoc.id;
+              states[messageId] = data;
+            });
+            this.notifyListeners({ type: 'MESSAGE_USER_STATES_UPDATE', payload: states });
+          },
+          (err) => console.warn('[SyncService] realtime message user states:', err)
+        );
+        this.unsubscribeRealtime.push(userStateUnsub);
+      }
+
+      // SECURITY_REALTIME_SCOPE_GUARD_V1_3D6F2B1
+      const nonAdminUnsafeRealtimeKeys = new Set([
+        'teachers', 'students', 'parents', 'supervisors', 'graduates',
+        'attendance', 'submissions', 'financial', 'notifications', 'certificates',
+        'annualPlans', 'dailyLessonPlans', 'customFolders', 'auditLogs',
+        'deletedLectureIds', 'deletedChallengeIds',
+      ]);
+
       for (const [key, mode] of Object.entries(map)) {
+        if (!isAdminUser && nonAdminUnsafeRealtimeKeys.has(key)) continue;
         if (key === 'messages' && mode === 'collection') {
           this.realtimeMessageBuckets = {};
           if (!user) {
@@ -652,7 +689,7 @@ class CentralSyncService {
               (snapshot) => {
                 this.realtimeMessageBuckets.all = snapshot.docs.map((d) => stripInternalFields(d.data()));
                 this.mergeRealtimeMessageBuckets();
-                this.scheduleRealtimeEmit();
+                this.scheduleRealtimeEmit(true);
               },
               (err) => console.warn('[SyncService] realtime messages admin:', err)
             );
@@ -673,7 +710,7 @@ class CentralSyncService {
               (snapshot) => {
                 this.realtimeMessageBuckets[bucketName] = snapshot.docs.map((d) => stripInternalFields(d.data()));
                 this.mergeRealtimeMessageBuckets();
-                this.scheduleRealtimeEmit();
+                this.scheduleRealtimeEmit(true);
               },
               (err) => console.warn('[SyncService] realtime messages user query:', err)
             );
@@ -717,6 +754,11 @@ class CentralSyncService {
     });
     this.unsubscribeRealtime = [];
     this.realtimeMessageBuckets = {};
+    this.pendingRealtimeEmitIncludesMessages = false;
+    if (this.realtimeEmitTimer) {
+      clearTimeout(this.realtimeEmitTimer);
+      this.realtimeEmitTimer = null;
+    }
     this.realtimeStarted = false;
   }
 
@@ -987,6 +1029,34 @@ class CentralSyncService {
       states[messageId] = data;
     });
     return states;
+  }
+
+  // SECURITY_MESSAGING_PENDING_RECONCILE_V1_3D6F2C_STAGE0_1
+  // Single-document re-read for bounded mailbox reconciliation only.
+  // Must not use fetchServerData or scan the school database.
+  public async readCurrentUserMessageState(messageId: string): Promise<any | null> {
+    await authIsolationReady;
+    const user = auth.currentUser;
+    if (!user || !messageId) return null;
+
+    const snap = await getDoc(doc(db, 'messageUserStates', user.uid, 'items', safeDocId(messageId)));
+    if (!snap.exists()) return null;
+    const data = stripInternalFields(snap.data());
+    return data || null;
+  }
+
+  // SECURITY_MESSAGING_DIRECT_PERSIST_V1_3D6F2C_STAGE0_6
+  public async persistDirectMessage(message: any, sourceUser?: SyncUser): Promise<SyncResponse> {
+    await authIsolationReady;
+    const user = auth.currentUser;
+    if (!user) return { success: false, message: 'SECURITY: authenticated sender required' };
+    if (typeof message?.senderAuthUid !== 'string' || message.senderAuthUid !== user.uid) {
+      return { success: false, message: 'SECURITY: senderAuthUid must match the signed-in Auth UID' };
+    }
+    const result = await persistDirectMessageDocument(db, message, sourceUser);
+    return result.success
+      ? { success: true, message: result.id }
+      : { success: false, message: result.message };
   }
 
   public async upsertCurrentUserMessageState(messageId: string, patch: Record<string, any>): Promise<boolean> {

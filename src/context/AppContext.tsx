@@ -78,6 +78,20 @@ import { DEFAULT_ANNUAL_PLANS, DEFAULT_DAILY_LESSON_PLANS } from '../data/initia
 import { INITIAL_EXAM_SCHEDULES } from '../data/initialExamSchedules';
 import { translations } from '../translations/i18n';
 import { saveStoredFile, getStoredFile, deleteStoredFile } from '../utils/fileStorage';
+import {
+  MAILBOX_PENDING_RECONCILE_MS,
+  clearAllMailboxReconciliationTimers,
+  clearMailboxReconciliationTimer,
+  createPendingMailboxOperation,
+  isStaleMailboxReconciliation,
+  mergeMessageUserStatesWithPending,
+  mergePendingDirectMessages,
+  reconcileMailboxOperationFromDirectRead,
+  settlePendingDirectMessages,
+  shouldApplyRemoteMessages,
+  shouldStartMailboxReconciliation,
+  type PendingMailboxOperation,
+} from '../utils/messageSyncIsolation';
 
 interface AppContextType {
   role: UserRole;
@@ -1613,6 +1627,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
+  // SECURITY_MESSAGING_ADMIN_AUTH_UID_PUBLISH_V1_3D6F2C_STAGE0_9
+  // Publish the signed-in admin's Firebase Auth UID onto schoolAdminData for recipient addressing.
+  // Never derive this from profile id, name, email, phone, or admin-main.
+  useEffect(() => {
+    if (role !== 'admin' || currentUser?.role !== 'admin') return;
+    const uid = typeof currentUser?.authUid === 'string' ? currentUser.authUid.trim() : '';
+    if (!uid) return;
+    const existing = typeof schoolAdminData.adminAuthUid === 'string' ? schoolAdminData.adminAuthUid.trim() : '';
+    if (existing === uid) return;
+    updateSchoolAdminData({ adminAuthUid: uid });
+  }, [role, currentUser?.role, currentUser?.authUid, schoolAdminData.adminAuthUid]);
+
   // ─────────────────────────────────────────────────────────────
   // OFFICIAL EXAM SCHEDULES (جداول الامتحانات الرسمية)
   // الصلاحية محصورة بالمديرة والإدارة المدرسية فقط (إضافة، تعديل، حذف)
@@ -2319,7 +2345,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // SECURITY_MESSAGING_USER_STATE_OVERLAY_V1_3D6C1
   const messageUserStateCacheRef = useRef<Record<string, any>>({});
   const messageUserStateOperationRef = useRef<Record<string, number>>({});
+  // SECURITY_MESSAGING_USER_STATE_PENDING_GUARD_V1_3D6F2A
+  // SECURITY_MESSAGING_PENDING_RECONCILE_V1_3D6F2C_STAGE0_1
+  const messageUserStatePendingRef = useRef<Record<string, PendingMailboxOperation>>({});
+  const messageUserStateReconcileTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const mailboxReconcileSessionRef = useRef(0);
+  const pendingDirectMessagePersistRef = useRef<Record<string, DirectMessage>>({});
   const pushDebounceTimer = useRef<any>(null);
+
+  const clearMailboxPendingRuntime = (messageId?: string) => {
+    if (messageId) {
+      clearMailboxReconciliationTimer(messageUserStateReconcileTimersRef.current, messageId);
+      delete messageUserStatePendingRef.current[messageId];
+      return;
+    }
+    mailboxReconcileSessionRef.current += 1;
+    clearAllMailboxReconciliationTimers(messageUserStateReconcileTimersRef.current);
+    messageUserStatePendingRef.current = {};
+    pendingDirectMessagePersistRef.current = {};
+  };
 
 
   // Prevent data loss on accidental refresh before sync completes
@@ -2349,7 +2393,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const applyRemoteData = (remoteData: any, remoteVersion: number, remoteLastSyncedBy?: any) => {
+  const applyRemoteData = (
+    remoteData: any,
+    remoteVersion: number,
+    remoteLastSyncedBy?: any,
+    options?: { applyMessages?: boolean }
+  ) => {
     if (!remoteData || typeof remoteData !== 'object') return;
     isApplyingRemoteUpdate.current = true;
 
@@ -2362,7 +2411,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (Array.isArray(remoteData.submissions)) setSubmissions(remoteData.submissions);
     if (Array.isArray(remoteData.attendance)) setAttendance(remoteData.attendance);
     if (Array.isArray(remoteData.announcements)) setAnnouncements(remoteData.announcements);
-    if (Array.isArray(remoteData.messages)) setMessages(overlayCurrentUserMessageStates(remoteData.messages));
+    // SECURITY_MESSAGING_SYNC_ISOLATION_V1_3D6F2C_STAGE0
+    if (
+      options?.applyMessages !== false &&
+      Array.isArray(remoteData.messages)
+    ) {
+      const mergedRemote = mergePendingDirectMessages(
+        remoteData.messages,
+        pendingDirectMessagePersistRef.current
+      );
+      pendingDirectMessagePersistRef.current = settlePendingDirectMessages(
+        remoteData.messages,
+        pendingDirectMessagePersistRef.current
+      );
+      setMessages(overlayCurrentUserMessageStates(mergedRemote));
+    }
     if (Array.isArray(remoteData.lectures)) setLectures(remoteData.lectures);
     if (Array.isArray(remoteData.deletedLectureIds)) setDeletedLectureIds(remoteData.deletedLectureIds);
     if (Array.isArray(remoteData.deletedChallengeIds)) setDeletedChallengeIds(remoteData.deletedChallengeIds);
@@ -2436,6 +2499,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!currentUser) {
       messageUserStateCacheRef.current = {};
       messageUserStateOperationRef.current = {};
+      clearMailboxPendingRuntime();
       isInitialHydrationDone.current = false;
       setSyncStatus('synced');
       centralSyncService.stopRealtimeStream();
@@ -2447,6 +2511,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSyncStatus('syncing');
         messageUserStateCacheRef.current = {};
         messageUserStateOperationRef.current = {};
+        clearMailboxPendingRuntime();
         try {
           messageUserStateCacheRef.current = await centralSyncService.readCurrentUserMessageStates();
         } catch (stateErr) {
@@ -2457,7 +2522,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (!isMounted) return;
 
         if (res.success && res.data && Object.keys(res.data).length > 5) {
-          applyRemoteData(res.data, res.version || 1, res.lastSyncedBy);
+          applyRemoteData(res.data, res.version || 1, res.lastSyncedBy, {
+            applyMessages: shouldApplyRemoteMessages({
+              source: 'hydration',
+              payloadHasMessages: Array.isArray(res.data.messages),
+              realtimeActive: centralSyncService.isRealtimeStreamActive(),
+            }),
+          });
           isInitialHydrationDone.current = true;
         } else {
           // Server database needs initial seed from local authoritative data
@@ -2493,18 +2564,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const unsubscribeBroadcast = centralSyncService.subscribe(async (evt) => {
       if (evt.type === 'REALTIME_SERVER_UPDATE' && evt.payload) {
         // Instant Server-Sent Event push from server!
-        applyRemoteData(evt.payload, evt.sourceVersion || syncVersionRef.current + 1, evt.lastSyncedBy);
+        applyRemoteData(evt.payload, evt.sourceVersion || syncVersionRef.current + 1, evt.lastSyncedBy, {
+          applyMessages: shouldApplyRemoteMessages({
+            source: 'realtime',
+            payloadHasMessages: Array.isArray(evt.payload.messages),
+            realtimeActive: centralSyncService.isRealtimeStreamActive(),
+          }),
+        });
       } else if (evt.type === 'SERVER_DATA_UPDATED' || evt.type === 'DATABASE_RESET') {
         try {
           const res = await centralSyncService.fetchServerData(undefined, true);
           if (isMounted && res.success && res.data) {
-            applyRemoteData(res.data, res.version || 1, res.lastSyncedBy);
+            applyRemoteData(res.data, res.version || 1, res.lastSyncedBy, {
+              applyMessages: shouldApplyRemoteMessages({
+                source: 'generic-fetch',
+                payloadHasMessages: Array.isArray(res.data.messages),
+                realtimeActive: centralSyncService.isRealtimeStreamActive(),
+              }),
+            });
           }
         } catch {
           // ignore
         }
+      } else if (evt.type === 'MESSAGE_USER_STATES_UPDATE' && evt.payload && typeof evt.payload === 'object') {
+        // SECURITY_MESSAGING_USER_STATE_REALTIME_APPCONTEXT_V1_3D6F2A
+        // SECURITY_MESSAGING_SYNC_ISOLATION_V1_3D6F2C_STAGE0
+        const targetUserId = getCurrentUserIdInContext();
+        if (targetUserId) {
+          const remoteStates = evt.payload as Record<string, any>;
+          const { merged, nextPending, confirmedIds } = mergeMessageUserStatesWithPending(
+            remoteStates,
+            messageUserStateCacheRef.current,
+            messageUserStatePendingRef.current
+          );
+          confirmedIds.forEach((messageId) => {
+            clearMailboxReconciliationTimer(messageUserStateReconcileTimersRef.current, messageId);
+          });
+          messageUserStatePendingRef.current = nextPending;
+          messageUserStateCacheRef.current = merged;
+          setMessages((prev) => overlayCurrentUserMessageStates(prev));
+        }
       } else if (evt.type === 'NETWORK_ONLINE') {
         setSyncStatus('synced');
+        void centralSyncService.connectRealtimeStream();
         forceSyncAll();
       } else if (evt.type === 'NETWORK_OFFLINE') {
         setSyncStatus('offline');
@@ -2520,7 +2622,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         if (res.success) {
           if (!res.notModified && res.data) {
-            applyRemoteData(res.data, res.version || syncVersionRef.current + 1, res.lastSyncedBy);
+            applyRemoteData(res.data, res.version || syncVersionRef.current + 1, res.lastSyncedBy, {
+              applyMessages: shouldApplyRemoteMessages({
+                source: 'generic-fetch',
+                payloadHasMessages: Array.isArray(res.data.messages),
+                realtimeActive: centralSyncService.isRealtimeStreamActive(),
+              }),
+            });
           }
           setSyncStatus('synced');
           setSyncErrorMessage(undefined);
@@ -2536,7 +2644,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try {
         const res = await centralSyncService.fetchServerData(syncVersionRef.current, false);
         if (res.success && !res.notModified && res.data) {
-          applyRemoteData(res.data, res.version || syncVersionRef.current + 1, res.lastSyncedBy);
+          applyRemoteData(res.data, res.version || syncVersionRef.current + 1, res.lastSyncedBy, {
+            applyMessages: shouldApplyRemoteMessages({
+              source: 'generic-fetch',
+              payloadHasMessages: Array.isArray(res.data.messages),
+              realtimeActive: centralSyncService.isRealtimeStreamActive(),
+            }),
+          });
         }
       } catch {
         // ignore
@@ -2546,6 +2660,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     return () => {
       isMounted = false;
+      clearMailboxPendingRuntime();
       clearInterval(pollInterval);
       unsubscribeBroadcast();
       window.removeEventListener('focus', onWindowFocus);
@@ -2664,7 +2779,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // Non-admin user: fetch latest server state
         const fetchRes = await centralSyncService.fetchServerData(undefined, true);
         if (fetchRes.success && fetchRes.data && Object.keys(fetchRes.data).length > 5) {
-          applyRemoteData(fetchRes.data, fetchRes.version || syncVersion, fetchRes.lastSyncedBy);
+          applyRemoteData(fetchRes.data, fetchRes.version || syncVersion, fetchRes.lastSyncedBy, {
+            applyMessages: shouldApplyRemoteMessages({
+              source: 'generic-fetch',
+              payloadHasMessages: Array.isArray(fetchRes.data.messages),
+              realtimeActive: centralSyncService.isRealtimeStreamActive(),
+            }),
+          });
         }
 
         // Then push any non-admin local edits (submissions, messages)
@@ -5381,28 +5502,54 @@ ${defaultReason}
     setNotifications((prev) => [notif, ...prev]);
   };
 
+  const persistSentDirectMessage = (sentMsg: DirectMessage, previousDraft?: DirectMessage) => {
+    pendingDirectMessagePersistRef.current[sentMsg.id] = sentMsg;
+    const sourceUser = {
+      id: currentUser?.id || role,
+      name: currentUser?.name || role,
+      role,
+    };
+    void centralSyncService.persistDirectMessage(sentMsg, sourceUser).then((res) => {
+      if (res.success) return;
+      delete pendingDirectMessagePersistRef.current[sentMsg.id];
+      setSyncStatus('error');
+      setSyncErrorMessage(res.message || 'فشل حفظ الرسالة في قاعدة البيانات');
+      setMessages((prev) => {
+        if (previousDraft) {
+          return prev.map((m) => (m.id === sentMsg.id ? previousDraft : m));
+        }
+        return prev.filter((m) => m.id !== sentMsg.id);
+      });
+    });
+  };
+
   const sendMessage = (data: Omit<DirectMessage, 'id' | 'timestamp' | 'isRead'> & { id?: string }) => {
     const canonicalSender = getCanonicalMessageSender();
     if (!canonicalSender) return;
     const timeStr = new Date().toLocaleString(lang === 'ar' ? 'ar-IQ' : 'en-US');
     if (data.id) {
       // If it was a draft being sent
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === data.id && m.isDraft && (m.senderAuthUid ? m.senderAuthUid === canonicalSender.senderAuthUid : m.senderId === canonicalSender.senderId)
-            ? {
-                ...m,
-                ...data,
-                ...canonicalSender,
-                timestamp: timeStr,
-                folder: 'sent',
-                isDraft: false,
-                isSpam: false,
-                isRead: true,
-              }
-            : m
-        )
+      const previousDraft = messages.find((m) => m.id === data.id);
+      const ownsDraft = Boolean(
+        previousDraft?.isDraft &&
+          (previousDraft.senderAuthUid
+            ? previousDraft.senderAuthUid === canonicalSender.senderAuthUid
+            : previousDraft.senderId === canonicalSender.senderId)
       );
+      if (!ownsDraft || !previousDraft) return;
+      const sentMsg: DirectMessage = {
+        ...previousDraft,
+        ...data,
+        ...canonicalSender,
+        id: data.id,
+        timestamp: timeStr,
+        folder: 'sent',
+        isDraft: false,
+        isSpam: false,
+        isRead: true,
+      };
+      setMessages((prev) => prev.map((m) => (m.id === data.id ? sentMsg : m)));
+      persistSentDirectMessage(sentMsg, previousDraft);
     } else {
       // New sent message
       const randSuffix = Math.random().toString(36).substring(2, 7);
@@ -5417,6 +5564,7 @@ ${defaultReason}
         isSpam: false,
       };
       setMessages((prev) => [newMsg, ...prev]);
+      persistSentDirectMessage(newMsg);
 
       const notif: NotificationItem = {
         id: `notif-${Date.now()}-${randSuffix}`,
@@ -5505,6 +5653,15 @@ ${defaultReason}
     const previousMessageUserState = messages.find((m) => m.id === id)?.userStates?.[targetUserId];
     const operationVersion = (messageUserStateOperationRef.current[id] || 0) + 1;
     messageUserStateOperationRef.current[id] = operationVersion;
+    clearMailboxReconciliationTimer(messageUserStateReconcileTimersRef.current, id);
+    messageUserStatePendingRef.current[id] = createPendingMailboxOperation({
+      messageId: id,
+      operationVersion,
+      patch,
+      rollbackCacheState: previousCacheState,
+      rollbackUiState: previousMessageUserState,
+      targetUserId,
+    });
     messageUserStateCacheRef.current[id] = {
       ...(previousCacheState || {}),
       messageId: id,
@@ -5527,22 +5684,73 @@ ${defaultReason}
       })
     );
 
-    void centralSyncService.upsertCurrentUserMessageState(id, patch).then((ok) => {
-      if (ok) return;
-      if (messageUserStateOperationRef.current[id] !== operationVersion) {
-        console.error('[Messaging] Stale mailbox state write failed:', id);
-        return;
-      }
-      if (previousCacheState === undefined) delete messageUserStateCacheRef.current[id];
-      else messageUserStateCacheRef.current[id] = previousCacheState;
-      console.error('[Messaging] Failed to persist mailbox state; restoring server-backed state:', id);
+    const rollbackMailboxOperation = (operationId: string, operation: PendingMailboxOperation) => {
+      clearMailboxReconciliationTimer(messageUserStateReconcileTimersRef.current, operationId);
+      delete messageUserStatePendingRef.current[operationId];
+      if (operation.rollbackCacheState === undefined) delete messageUserStateCacheRef.current[operationId];
+      else messageUserStateCacheRef.current[operationId] = operation.rollbackCacheState;
+      console.error('[Messaging] Failed to persist mailbox state; restoring last confirmed mailbox state:', operationId);
       setMessages((prev) => prev.map((m) => {
-        if (m.id !== id) return m;
+        if (m.id !== operationId) return m;
         const states = { ...(m.userStates || {}) };
-        if (previousMessageUserState === undefined) delete states[targetUserId];
-        else states[targetUserId] = previousMessageUserState;
+        if (operation.rollbackUiState === undefined) delete states[operation.targetUserId];
+        else states[operation.targetUserId] = operation.rollbackUiState;
         return { ...m, userStates: states };
       }));
+    };
+
+    void centralSyncService.upsertCurrentUserMessageState(id, patch).then((ok) => {
+      const pendingOp = messageUserStatePendingRef.current[id];
+      if (!pendingOp || pendingOp.operationVersion !== operationVersion) {
+        if (!ok) console.error('[Messaging] Stale mailbox state write failed:', id);
+        return;
+      }
+      if (ok) {
+        // SECURITY_MESSAGING_SYNC_ISOLATION_V1_3D6F2C_STAGE0
+        // SECURITY_MESSAGING_PENDING_RECONCILE_V1_3D6F2C_STAGE0_1
+        pendingOp.writeSucceeded = true;
+        if (!shouldStartMailboxReconciliation({
+          pendingOp,
+          scheduledVersion: operationVersion,
+          writeSucceeded: true,
+        })) return;
+        const session = mailboxReconcileSessionRef.current;
+        clearMailboxReconciliationTimer(messageUserStateReconcileTimersRef.current, id);
+        messageUserStateReconcileTimersRef.current[id] = setTimeout(() => {
+          void (async () => {
+            const currentOp = messageUserStatePendingRef.current[id];
+            if (mailboxReconcileSessionRef.current !== session) return;
+            if (isStaleMailboxReconciliation(currentOp, operationVersion)) return;
+            try {
+              const remote = await centralSyncService.readCurrentUserMessageState(id);
+              const stillCurrent = messageUserStatePendingRef.current[id];
+              if (mailboxReconcileSessionRef.current !== session) return;
+              const decision = reconcileMailboxOperationFromDirectRead({
+                pendingOp: stillCurrent,
+                scheduledVersion: operationVersion,
+                remote,
+              });
+              if (decision.action === 'ignore') return;
+              if (decision.action === 'settle' && decision.remote) {
+                clearMailboxReconciliationTimer(messageUserStateReconcileTimersRef.current, id);
+                delete messageUserStatePendingRef.current[id];
+                messageUserStateCacheRef.current[id] = decision.remote;
+                setMessages((prev) => overlayCurrentUserMessageStates(prev));
+                return;
+              }
+              if (stillCurrent) rollbackMailboxOperation(id, stillCurrent);
+            } catch (err) {
+              const stillCurrent = messageUserStatePendingRef.current[id];
+              if (mailboxReconcileSessionRef.current !== session) return;
+              if (isStaleMailboxReconciliation(stillCurrent, operationVersion) || !stillCurrent) return;
+              console.error('[Messaging] Bounded mailbox reconciliation failed:', id, err);
+              rollbackMailboxOperation(id, stillCurrent);
+            }
+          })();
+        }, MAILBOX_PENDING_RECONCILE_MS);
+        return;
+      }
+      rollbackMailboxOperation(id, pendingOp);
     });
   };
 

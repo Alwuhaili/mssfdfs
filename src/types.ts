@@ -923,6 +923,8 @@ export interface SchoolAdminData {
   principalTitle: string;
   principalDegree: string;
   principalImageUrl: string;
+  // SECURITY_MESSAGING_ADMIN_AUTH_UID_V1_3D6F2C_STAGE0_9
+  adminAuthUid?: string;
   assistantPrincipalName?: string;
   assistantPrincipalTitle?: string;
   academicSupervisorName?: string;
