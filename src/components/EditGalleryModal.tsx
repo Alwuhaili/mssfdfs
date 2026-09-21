@@ -18,6 +18,12 @@ import {
   Maximize2,
   FolderOpen,
 } from 'lucide-react';
+import {
+  HOMEPAGE_IMAGE_ACCEPT,
+  homepageStorageErrorMessage,
+  uploadHomepageImage,
+} from '../services/homepageStorageService';
+import { persistPrivateHomepageImageUrl } from '../utils/publicHomepageImageUrl';
 
 export interface GalleryPhoto {
   id: string;
@@ -61,6 +67,8 @@ export const EditGalleryModal: React.FC<EditGalleryModalProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState('الكل');
   const [savedToast, setSavedToast] = useState(false);
+  const [imageUploading, setImageUploading] = useState(false);
+  const [imageUploadError, setImageUploadError] = useState('');
 
   // Active photo form state
   const [formData, setFormData] = useState<GalleryPhoto>({
@@ -125,15 +133,24 @@ export const EditGalleryModal: React.FC<EditGalleryModalProps> = ({
 
   const handleImageFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          handleFormChange('url', reader.result);
-        }
-      };
-      reader.readAsDataURL(file);
-    }
+    e.target.value = '';
+    if (!file) return;
+    const galleryId = formData.id || selectedId;
+    if (!galleryId) return;
+    setImageUploadError('');
+    setImageUploading(true);
+    void (async () => {
+      try {
+        const uploaded = await uploadHomepageImage(file, { kind: 'gallery', galleryId });
+        const url = uploaded.downloadUrl;
+        setFormData((prev) => ({ ...prev, url }));
+        setLocalList((prev) => prev.map((item) => (item.id === galleryId ? { ...item, url } : item)));
+      } catch (error) {
+        setImageUploadError(homepageStorageErrorMessage(error));
+      } finally {
+        setImageUploading(false);
+      }
+    })();
   };
 
   const handleFormChange = (field: keyof GalleryPhoto, value: any) => {
@@ -144,7 +161,14 @@ export const EditGalleryModal: React.FC<EditGalleryModalProps> = ({
   };
 
   const handleSaveAll = () => {
-    const updatedList = localList.map((item) => (item.id === selectedId ? formData : item));
+    const updatedList = localList.map((item) => {
+      const next = item.id === selectedId ? formData : item;
+      const previous = galleryList.find((g) => g.id === next.id);
+      return {
+        ...next,
+        url: persistPrivateHomepageImageUrl(next.url, previous?.url || item.url),
+      };
+    });
     onSaveGalleryList(updatedList);
     setSavedToast(true);
     setTimeout(() => {
@@ -411,10 +435,14 @@ export const EditGalleryModal: React.FC<EditGalleryModalProps> = ({
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept="image/*"
+                      accept={HOMEPAGE_IMAGE_ACCEPT}
                       onChange={handleImageFileUpload}
+                      disabled={imageUploading}
                       className="hidden"
                     />
+                    {imageUploadError ? (
+                      <p className="text-[11px] text-rose-400">{imageUploadError}</p>
+                    ) : null}
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}

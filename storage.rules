@@ -55,6 +55,23 @@ service firebase.storage {
       allow read, write: if signedIn() && (request.auth.uid == uid || isAdmin());
     }
 
+    // HOME-018_STORAGE_HARDENING_V1
+    // Public homepage display uses tokenized getDownloadURL HTTPS links, so
+    // anonymous Storage-rule reads are not required. Admin read is required
+    // for the uploader to call getDownloadURL after create.
+    function validHomepageImageCreate() {
+      return request.resource != null
+        && request.resource.size > 0
+        && request.resource.size <= 2 * 1024 * 1024
+        && request.resource.contentType.matches('image/(jpeg|png|webp)');
+    }
+
+    match /homepage/{allPaths=**} {
+      allow read: if isAdmin();
+      allow create: if isAdmin() && validHomepageImageCreate();
+      allow update, delete: if false;
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }

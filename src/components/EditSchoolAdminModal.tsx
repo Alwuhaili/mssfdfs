@@ -7,6 +7,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { SchoolAdminData } from '../types';
 import {
+  HOMEPAGE_IMAGE_ACCEPT,
+  homepageStorageErrorMessage,
+  uploadHomepageImage,
+} from '../services/homepageStorageService';
+import { persistPrivateHomepageImageUrl } from '../utils/publicHomepageImageUrl';
+import {
   X,
   Save,
   Crown,
@@ -124,6 +130,8 @@ export const EditSchoolAdminModal: React.FC<EditSchoolAdminModalProps> = ({ isOp
   const [newGoal, setNewGoal] = useState('');
   const [photoUploadSuccess, setPhotoUploadSuccess] = useState(false);
   const [saveSuccessNotice, setSaveSuccessNotice] = useState(false);
+  const [imageUploading, setImageUploading] = useState(false);
+  const [imageUploadError, setImageUploadError] = useState('');
 
   // Auto-generate badge option when name changes if user wants
   const handleNameChange = (val: string) => {
@@ -138,34 +146,42 @@ export const EditSchoolAdminModal: React.FC<EditSchoolAdminModalProps> = ({ isOp
     }
   };
 
-  // Handle local file upload for Principal Image
   const handleImageFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          setPrincipalImageUrl(reader.result);
-          setPhotoUploadSuccess(true);
-          setTimeout(() => setPhotoUploadSuccess(false), 4000);
-        }
-      };
-      reader.readAsDataURL(file);
-    }
+    e.target.value = '';
+    if (!file) return;
+    setImageUploadError('');
+    setImageUploading(true);
+    void (async () => {
+      try {
+        const uploaded = await uploadHomepageImage(file, { kind: 'principal' });
+        setPrincipalImageUrl(uploaded.downloadUrl);
+        setPhotoUploadSuccess(true);
+        setTimeout(() => setPhotoUploadSuccess(false), 4000);
+      } catch (error) {
+        setImageUploadError(homepageStorageErrorMessage(error));
+      } finally {
+        setImageUploading(false);
+      }
+    })();
   };
 
-  // Handle local file upload for School Logo
   const handleLogoFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          setSchoolLogoUrl(reader.result);
-        }
-      };
-      reader.readAsDataURL(file);
-    }
+    e.target.value = '';
+    if (!file) return;
+    setImageUploadError('');
+    setImageUploading(true);
+    void (async () => {
+      try {
+        const uploaded = await uploadHomepageImage(file, { kind: 'logo' });
+        setSchoolLogoUrl(uploaded.downloadUrl);
+      } catch (error) {
+        setImageUploadError(homepageStorageErrorMessage(error));
+      } finally {
+        setImageUploading(false);
+      }
+    })();
   };
 
   // Sync state when modal opens
@@ -245,7 +261,7 @@ export const EditSchoolAdminModal: React.FC<EditSchoolAdminModalProps> = ({ isOp
       principalBadge,
       principalTitle,
       principalDegree,
-      principalImageUrl,
+      principalImageUrl: persistPrivateHomepageImageUrl(principalImageUrl, schoolAdminData.principalImageUrl),
       assistantPrincipalName,
       assistantPrincipalTitle,
       academicSupervisorName,
@@ -259,7 +275,7 @@ export const EditSchoolAdminModal: React.FC<EditSchoolAdminModalProps> = ({ isOp
       schoolPolicyInfo,
       schoolPolicyDetail,
       strategicGoals,
-      schoolLogoUrl,
+      schoolLogoUrl: persistPrivateHomepageImageUrl(schoolLogoUrl, schoolAdminData.schoolLogoUrl),
       schoolNameEn,
       academicYearDefault,
       statisticalNumberDefault,
@@ -509,14 +525,18 @@ export const EditSchoolAdminModal: React.FC<EditSchoolAdminModalProps> = ({ isOp
                         <input
                           ref={fileInputRef}
                           type="file"
-                          accept="image/*"
+                          accept={HOMEPAGE_IMAGE_ACCEPT}
                           onChange={handleImageFileUpload}
+                          disabled={imageUploading}
                           className="hidden"
                         />
                       </div>
                       <p className="text-[11px] text-slate-400 mt-1">
-                        يمكنك اختيار ملف صورة عالي الدقة من جهازك (JPG, PNG, WEBP) أو إدخال رابط ويب مباشر.
+                        يمكنك اختيار ملف صورة عالي الدقة من جهازك (JPG, PNG, WEBP) أو إدخال رابط ويب مباشر. يُرفع الملف إلى التخزين السحابي ويُحفظ رابط HTTPS فقط.
                       </p>
+                      {imageUploadError ? (
+                        <p className="text-[11px] text-rose-400 mt-1">{imageUploadError}</p>
+                      ) : null}
                     </div>
 
                     <div>
@@ -1135,8 +1155,9 @@ export const EditSchoolAdminModal: React.FC<EditSchoolAdminModalProps> = ({ isOp
                       <input
                         ref={logoFileInputRef}
                         type="file"
-                        accept="image/*"
+                        accept={HOMEPAGE_IMAGE_ACCEPT}
                         onChange={handleLogoFileUpload}
+                        disabled={imageUploading}
                         className="hidden"
                       />
                     </div>

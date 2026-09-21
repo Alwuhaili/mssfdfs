@@ -20,6 +20,12 @@ import {
   ShieldCheck,
   Megaphone,
 } from 'lucide-react';
+import {
+  HOMEPAGE_IMAGE_ACCEPT,
+  homepageStorageErrorMessage,
+  uploadHomepageImage,
+} from '../services/homepageStorageService';
+import { persistPrivateHomepageImageUrl } from '../utils/publicHomepageImageUrl';
 
 export interface NewsItem {
   id: string;
@@ -64,6 +70,8 @@ export const EditNewsEventsModal: React.FC<EditNewsEventsModalProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState('الكل');
   const [savedToast, setSavedToast] = useState(false);
+  const [imageUploading, setImageUploading] = useState(false);
+  const [imageUploadError, setImageUploadError] = useState('');
 
   // Active item form data
   const [formData, setFormData] = useState<NewsItem>({
@@ -134,15 +142,24 @@ export const EditNewsEventsModal: React.FC<EditNewsEventsModalProps> = ({
 
   const handleImageFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          setFormData((prev) => ({ ...prev, image: reader.result as string }));
-        }
-      };
-      reader.readAsDataURL(file);
-    }
+    e.target.value = '';
+    if (!file) return;
+    const newsId = formData.id || selectedId;
+    if (!newsId) return;
+    setImageUploadError('');
+    setImageUploading(true);
+    void (async () => {
+      try {
+        const uploaded = await uploadHomepageImage(file, { kind: 'news', newsId });
+        const image = uploaded.downloadUrl;
+        setFormData((prev) => ({ ...prev, image }));
+        setLocalList((prev) => prev.map((item) => (item.id === newsId ? { ...item, image } : item)));
+      } catch (error) {
+        setImageUploadError(homepageStorageErrorMessage(error));
+      } finally {
+        setImageUploading(false);
+      }
+    })();
   };
 
   const handleFormChange = (field: keyof NewsItem, value: any) => {
@@ -154,7 +171,14 @@ export const EditNewsEventsModal: React.FC<EditNewsEventsModalProps> = ({
 
   const handleSaveAll = () => {
     // Ensure active item is synced
-    const updatedList = localList.map((item) => (item.id === selectedId ? formData : item));
+    const updatedList = localList.map((item) => {
+      const next = item.id === selectedId ? formData : item;
+      const previous = newsList.find((n) => n.id === next.id);
+      return {
+        ...next,
+        image: persistPrivateHomepageImageUrl(next.image, previous?.image || item.image),
+      };
+    });
     onSaveNewsList(updatedList);
     setSavedToast(true);
     setTimeout(() => {
@@ -437,10 +461,14 @@ export const EditNewsEventsModal: React.FC<EditNewsEventsModalProps> = ({
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept="image/*"
+                      accept={HOMEPAGE_IMAGE_ACCEPT}
                       onChange={handleImageFileUpload}
+                      disabled={imageUploading}
                       className="hidden"
                     />
+                    {imageUploadError ? (
+                      <p className="text-[11px] text-rose-400">{imageUploadError}</p>
+                    ) : null}
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}

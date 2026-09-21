@@ -200,12 +200,17 @@ export const GraduatesView: React.FC<{ onOpenPromotionModal?: () => void }> = ({
     }
   };
 
-  const handleSaveGraduate = (e: React.FormEvent) => {
+  const handleSaveGraduate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name.trim()) return;
 
     if (editingGraduate) {
-      updateGraduate(editingGraduate.id, formData);
+      const ok = await updateGraduate(editingGraduate.id, formData);
+      if (!ok) {
+        setSuccessToast('تعذر حفظ بيانات الخريجة في السجل المركزي.');
+        setTimeout(() => setSuccessToast(null), 4000);
+        return;
+      }
       setEditingGraduate(null);
       setSuccessToast(`تم تعديل بيانات الخريجة (${formData.name}) بنجاح ✓`);
     } else {

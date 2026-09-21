@@ -121,6 +121,38 @@ const stableStringify = (value: any): string => {
 
 const deepEqual = (a: any, b: any) => stableStringify(a) === stableStringify(b);
 
+// SCHOOL_ADMIN_DATA_SYNC_GUARD_V1
+export const SCHOOL_ADMIN_DATA_SYNC_KEY = 'schoolAdminData';
+
+// SCHOOL_ADMIN_DATA_DEDICATED_WRITE_V2
+// These keys must never be written through generic pushUpdates / full payloads.
+const DEDICATED_WRITE_ONLY_KEYS = new Set<string>([SCHOOL_ADMIN_DATA_SYNC_KEY, 'teachers', 'graduates']);
+
+export function omitDedicatedPendingSyncKeys(
+  payload: Record<string, any> | null | undefined,
+  pendingKeys: readonly string[]
+): Record<string, any> {
+  const next: Record<string, any> = { ...(payload && typeof payload === 'object' ? payload : {}) };
+  for (const key of pendingKeys) {
+    if (Object.prototype.hasOwnProperty.call(next, key)) {
+      delete next[key];
+    }
+  }
+  return next;
+}
+
+export function stripDedicatedWriteOnlyKeys(
+  payload: Record<string, any> | null | undefined
+): Record<string, any> {
+  const next: Record<string, any> = { ...(payload && typeof payload === 'object' ? payload : {}) };
+  for (const key of DEDICATED_WRITE_ONLY_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(next, key)) {
+      delete next[key];
+    }
+  }
+  return next;
+}
+
 // SECURITY_MESSAGING_IGNORE_MAILBOX_OVERLAY_V1_3D6B2
 const stripMessageMailboxOverlay = (value: any) => {
   if (!isPlainObject(value)) return value;
@@ -857,7 +889,8 @@ class CentralSyncService {
           const unsub = onSnapshot(
             doc(db, SETTINGS_COLLECTION, key),
             (snapshot) => {
-              this.realtimeDataCache[key] = snapshot.exists() ? clone(snapshot.data()?.value) : undefined;
+              const value = snapshot.exists() ? clone(snapshot.data()?.value) : undefined;
+              this.realtimeDataCache[key] = value;
               this.scheduleRealtimeEmit();
             },
             (err) => console.warn('[SyncService] realtime setting:', err)
@@ -1236,16 +1269,54 @@ class CentralSyncService {
     }
   }
 
+  public echoRealtimeCacheKey(key: string, value: any) {
+    if (!key) return;
+    this.realtimeDataCache[key] = clone(value);
+  }
+
   public async pushUpdates(updates: any, sourceUser?: SyncUser, _clientVersion?: number): Promise<SyncResponse> {
+    // SCHOOL_ADMIN_DATA_DEDICATED_WRITE_V2
+    const sanitized = stripDedicatedWriteOnlyKeys(updates);
     const current = await this.fetchServerData(undefined, true);
     if (!current.success) return current;
-    return this.patchKeys(updates || {}, current.data || {}, sourceUser);
+    return this.patchKeys(sanitized, current.data || {}, sourceUser);
   }
 
   public async directObjectMutation(key: string, dataObj: any, sourceUser?: SyncUser): Promise<boolean> {
     const current = await this.fetchServerData(undefined, true);
     if (!current.success) return false;
-    const res = await this.patchKeys({ [key]: dataObj }, { [key]: current.data?.[key] }, sourceUser);
+    if (key === SCHOOL_ADMIN_DATA_SYNC_KEY && !isPlainObject(current.data?.[key])) {
+      return false;
+    }
+    const localValue =
+      key === SCHOOL_ADMIN_DATA_SYNC_KEY && isPlainObject(current.data?.[key]) && isPlainObject(dataObj)
+        ? { ...clone(current.data[key]), ...clone(dataObj) }
+        : dataObj;
+    const res = await this.patchKeys({ [key]: localValue }, { [key]: current.data?.[key] }, sourceUser);
+    if (res.success && DEDICATED_WRITE_ONLY_KEYS.has(key)) {
+      this.echoRealtimeCacheKey(key, localValue);
+    }
+    return res.success;
+  }
+
+  // SCHOOL_ADMIN_DATA_DEDICATED_WRITE_V2
+  // Patch selected fields onto the existing Firestore settings object.
+  // Never creates a document from INITIAL/client defaults.
+  public async patchSettingFields(
+    key: string,
+    fields: Record<string, any>,
+    sourceUser?: SyncUser
+  ): Promise<boolean> {
+    if (!key || !isPlainObject(fields) || Object.keys(fields).length === 0) return false;
+    const current = await this.fetchServerData(undefined, true);
+    if (!current.success) return false;
+    const remote = current.data?.[key];
+    if (!isPlainObject(remote)) return false;
+    const localValue = { ...clone(remote), ...clone(fields) };
+    const res = await this.patchKeys({ [key]: localValue }, { [key]: remote }, sourceUser);
+    if (res.success && DEDICATED_WRITE_ONLY_KEYS.has(key)) {
+      this.echoRealtimeCacheKey(key, localValue);
+    }
     return res.success;
   }
 
@@ -1253,6 +1324,9 @@ class CentralSyncService {
     const current = await this.fetchServerData(undefined, true);
     if (!current.success) return false;
     const res = await this.patchKeys({ [key]: dataArray }, { [key]: current.data?.[key] }, sourceUser);
+    if (res.success && DEDICATED_WRITE_ONLY_KEYS.has(key)) {
+      this.echoRealtimeCacheKey(key, dataArray);
+    }
     return res.success;
   }
 

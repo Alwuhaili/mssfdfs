@@ -15,6 +15,12 @@ import {
   Upload,
   Camera,
 } from 'lucide-react';
+import {
+  HOMEPAGE_IMAGE_ACCEPT,
+  homepageStorageErrorMessage,
+  uploadHomepageImage,
+} from '../services/homepageStorageService';
+import { persistPrivateHomepageImageUrl } from '../utils/publicHomepageImageUrl';
 
 interface EditHonorStudentModalProps {
   isOpen: boolean;
@@ -62,18 +68,30 @@ export const EditHonorStudentModal: React.FC<EditHonorStudentModalProps> = ({
   });
 
   const [savedToast, setSavedToast] = useState(false);
+  const [imageUploading, setImageUploading] = useState(false);
+  const [imageUploadError, setImageUploadError] = useState('');
 
   const handleAvatarFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          setFormData((prev) => ({ ...prev, avatar: reader.result as string }));
-        }
-      };
-      reader.readAsDataURL(file);
-    }
+    e.target.value = '';
+    if (!file) return;
+    setImageUploadError('');
+    setImageUploading(true);
+    void (async () => {
+      try {
+        const sourceId = `rank-${formData.rank}-${grade}`;
+        const uploaded = await uploadHomepageImage(file, {
+          kind: 'honor',
+          sourceType: 'student',
+          sourceId,
+        });
+        setFormData((prev) => ({ ...prev, avatar: uploaded.downloadUrl }));
+      } catch (error) {
+        setImageUploadError(homepageStorageErrorMessage(error));
+      } finally {
+        setImageUploading(false);
+      }
+    })();
   };
 
   useEffect(() => {
@@ -102,7 +120,11 @@ export const EditHonorStudentModal: React.FC<EditHonorStudentModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSaveStudent(formData);
+    const current = students.find((s) => s.rank === formData.rank);
+    onSaveStudent({
+      ...formData,
+      avatar: persistPrivateHomepageImageUrl(formData.avatar, current?.avatar),
+    });
     setSavedToast(true);
     setTimeout(() => {
       setSavedToast(false);
@@ -283,13 +305,17 @@ export const EditHonorStudentModal: React.FC<EditHonorStudentModalProps> = ({
                 <Upload className="w-4 h-4 text-slate-950" />
                 <span>تحميل صورة</span>
               </button>
-              <input
+                <input
                 ref={avatarFileInputRef}
                 type="file"
-                accept="image/*"
+                accept={HOMEPAGE_IMAGE_ACCEPT}
                 onChange={handleAvatarFileUpload}
+                disabled={imageUploading}
                 className="hidden"
               />
+              {imageUploadError ? (
+                <p className="text-[11px] text-rose-500">{imageUploadError}</p>
+              ) : null}
 
               {Boolean(formData.avatar && formData.avatar.trim()) && (
                 <div

@@ -4,7 +4,9 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { assertUniqueIdentity, stableUsername, type IdentityRecord } from '../utils/identityPolicy';
-import { centralSyncService } from '../services/syncService';
+import { centralSyncService, SCHOOL_ADMIN_DATA_SYNC_KEY } from '../services/syncService';
+import { publishPublicSchoolInfo, initializePublicSchoolInfoFromAuthoritative, initializePublicFacultyFromAuthoritative, initializePublicHonorBoardFromAuthoritative, publishPublicFaculty, publishPublicHonorBoard } from '../services/publicHomepageService';
+import { buildPublicHonorBoard, HONOR_ROLL_DEMO_NAMES } from '../utils/publicHomepageFacultyHonor';
 import { FirebaseAuthService } from '../services/firebaseAuthService';
 import {
   UserRole,
@@ -124,7 +126,7 @@ interface AppContextType {
   supervisors: EducationalSupervisor[];
   graduates: GraduateStudent[];
   addGraduate: (grad: Omit<GraduateStudent, 'id'>) => void;
-  updateGraduate: (id: string, updated: Partial<GraduateStudent>) => void;
+  updateGraduate: (id: string, updated: Partial<GraduateStudent>) => Promise<boolean>;
   deleteGraduate: (id: string) => void;
   promoteStudents: (options: {
     academicYearFrom?: string;
@@ -206,9 +208,9 @@ interface AppContextType {
   ) => { success: boolean; message: string };
 
   // User Management Actions (Edit, Delete, Ban/Restrict)
-  updateTeacher: (id: string, updated: Partial<Teacher>) => void;
-  deleteTeacher: (id: string) => void;
-  updateStudent: (id: string, updated: Partial<Student>) => void;
+  updateTeacher: (id: string, updated: Partial<Teacher>) => Promise<boolean>;
+  deleteTeacher: (id: string) => Promise<boolean>;
+  updateStudent: (id: string, updated: Partial<Student>) => Promise<boolean>;
   deleteStudent: (id: string) => void;
   updateParent: (id: string, updated: Partial<Parent>) => void;
   deleteParent: (id: string) => void;
@@ -241,7 +243,7 @@ interface AppContextType {
   saveSubjectQuotas: (quotas: GradeSubjectQuota[]) => void;
 
   // Actions
-  addTeacher: (teacher: Omit<Teacher, 'id' | 'status' | 'joinedDate'>) => void;
+  addTeacher: (teacher: Omit<Teacher, 'id' | 'status' | 'joinedDate'>) => Promise<boolean>;
   addStudent: (student: Omit<Student, 'id' | 'status' | 'enrollmentYear'> & { enrollmentYear?: string }) => void;
   createExam: (exam: Omit<Exam, 'id' | 'createdAt'>) => void;
   updateExam: (id: string, updated: Partial<Exam>) => void;
@@ -949,6 +951,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const raw = initialStored?.graduates || INITIAL_GRADUATES;
     return raw.filter((g) => !isPersonBlacklisted(g.name));
   });
+  const teachersRef = useRef(teachers);
+  const studentsRef = useRef(students);
+  const graduatesRef = useRef(graduates);
+  teachersRef.current = teachers;
+  studentsRef.current = students;
+  graduatesRef.current = graduates;
   const [exams, setExams] = useState<Exam[]>(
     () => initialStored?.exams || INITIAL_EXAMS
   );
@@ -1135,6 +1143,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     return data;
   });
+
+  // SCHOOL_ADMIN_DATA_SYNC_GUARD_V1
+  // Per-key pending dedicated mutations. Unrelated keys keep synchronizing.
+  const pendingSyncMutationsRef = useRef<Record<string, number>>({});
+  const pendingSyncMutationGenerationRef = useRef(0);
+  // HOME_PUBLIC_INITIALIZATION_V1
+  const authoritativeSchoolAdminReceivedRef = useRef(false);
+  const authoritativeTeachersReceivedRef = useRef(false);
+  const authoritativeStudentsReceivedRef = useRef(false);
+  const authoritativeGraduatesReceivedRef = useRef(false);
+
+  const beginPendingSyncMutation = (key: string): number => {
+    const token = pendingSyncMutationGenerationRef.current + 1;
+    pendingSyncMutationGenerationRef.current = token;
+    pendingSyncMutationsRef.current[key] = token;
+    return token;
+  };
+
+  const isSyncKeyPending = (key: string): boolean =>
+    pendingSyncMutationsRef.current[key] !== undefined;
+
+  const settlePendingSyncMutation = (key: string, token: number) => {
+    if (pendingSyncMutationsRef.current[key] === token) {
+      delete pendingSyncMutationsRef.current[key];
+    }
+  };
+  const [syncHydrationGeneration, setSyncHydrationGeneration] = useState(0);
 
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>(() => {
     return initialStored?.auditLogs || INITIAL_AUDIT_LOGS;
@@ -1626,11 +1661,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('[SECURITY] Blocked unauthorized school administration update.');
       return;
     }
-    setSchoolAdminData((prev) => {
-      const newData = { ...prev, ...updated };
-      centralSyncService.directObjectMutation('schoolAdminData', newData, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return newData;
-    });
+    // SCHOOL_ADMIN_DATA_DEDICATED_WRITE_V2
+    if (!isInitialHydrationDone.current) {
+      console.warn('[SCHOOL_ADMIN_DATA_DEDICATED_WRITE_V2] Blocked schoolAdminData write before hydration.');
+      return;
+    }
+    const sourceUser = { id: currentUser?.id || role, name: currentUser?.name || role, role };
+    const mutationToken = beginPendingSyncMutation(SCHOOL_ADMIN_DATA_SYNC_KEY);
+    const nextPublicSource = { ...schoolAdminData, ...updated };
+    setSchoolAdminData((prev) => ({ ...prev, ...updated }));
+    void centralSyncService
+      .directObjectMutation(SCHOOL_ADMIN_DATA_SYNC_KEY, updated, sourceUser)
+      .then((ok) => {
+        if (ok) {
+          void publishPublicSchoolInfo(nextPublicSource);
+        }
+      })
+      .finally(() => {
+        settlePendingSyncMutation(SCHOOL_ADMIN_DATA_SYNC_KEY, mutationToken);
+      });
     addAuditLog({
       action: 'تحديث بيانات ورؤية الإدارة المدرسية',
       actionType: 'settings_change',
@@ -1641,16 +1690,107 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // SECURITY_MESSAGING_ADMIN_AUTH_UID_PUBLISH_V1_3D6F2C_STAGE0_9
-  // Publish the signed-in admin's Firebase Auth UID onto schoolAdminData for recipient addressing.
-  // Never derive this from profile id, name, email, phone, or admin-main.
+  // Publish only adminAuthUid onto the existing Firestore schoolAdminData document.
+  // Never write INITIAL hours/uniform/policy as a side effect of login/F5.
   useEffect(() => {
     if (role !== 'admin' || currentUser?.role !== 'admin') return;
+    if (!isInitialHydrationDone.current) return;
     const uid = typeof currentUser?.authUid === 'string' ? currentUser.authUid.trim() : '';
     if (!uid) return;
     const existing = typeof schoolAdminData.adminAuthUid === 'string' ? schoolAdminData.adminAuthUid.trim() : '';
     if (existing === uid) return;
-    updateSchoolAdminData({ adminAuthUid: uid });
-  }, [role, currentUser?.role, currentUser?.authUid, schoolAdminData.adminAuthUid]);
+    const sourceUser = { id: currentUser?.id || role, name: currentUser?.name || role, role };
+    void centralSyncService
+      .patchSettingFields(SCHOOL_ADMIN_DATA_SYNC_KEY, { adminAuthUid: uid }, sourceUser)
+      .then((ok) => {
+        if (ok) {
+          setSchoolAdminData((prev) => ({ ...prev, adminAuthUid: uid }));
+        }
+      });
+  }, [role, currentUser?.role, currentUser?.authUid, schoolAdminData.adminAuthUid, syncHydrationGeneration]);
+
+  // HOME_PUBLIC_INITIALIZATION_V1
+  // Admin-only catch-up: project hydrated server schoolAdminData into publicContent/homepage.schoolInfo
+  // when the public projection is missing or incomplete. Never uses INITIAL_* or guest paths.
+  useEffect(() => {
+    if (!currentUser) return;
+    if (role !== 'admin' || currentUser.role !== 'admin') return;
+    if (!isInitialHydrationDone.current) return;
+    if (!authoritativeSchoolAdminReceivedRef.current) return;
+    if (isSyncKeyPending(SCHOOL_ADMIN_DATA_SYNC_KEY)) return;
+
+    let cancelled = false;
+    void initializePublicSchoolInfoFromAuthoritative({
+      authenticated: true,
+      role,
+      currentUserRole: currentUser.role,
+      hydrated: isInitialHydrationDone.current,
+      authoritativeReceived: authoritativeSchoolAdminReceivedRef.current,
+      pendingSchoolAdminWrite: isSyncKeyPending(SCHOOL_ADMIN_DATA_SYNC_KEY),
+      schoolAdminData,
+      initialSchoolAdminData: INITIAL_SCHOOL_ADMIN_DATA,
+    }).then((result) => {
+      if (cancelled || !result.written) return;
+      console.info('[PUBLIC_HOMEPAGE] Initialized public schoolInfo from authoritative schoolAdminData');
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [role, currentUser?.role, currentUser?.authUid, syncHydrationGeneration]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    if (role !== 'admin' || currentUser.role !== 'admin') return;
+    if (!isInitialHydrationDone.current) return;
+    if (!authoritativeTeachersReceivedRef.current) return;
+    if (isSyncKeyPending('teachers')) return;
+
+    let cancelled = false;
+    void initializePublicFacultyFromAuthoritative({
+      authenticated: true,
+      role,
+      currentUserRole: currentUser.role,
+      hydrated: isInitialHydrationDone.current,
+      authoritativeReceived: authoritativeTeachersReceivedRef.current,
+      teachers,
+      initialTeachers: INITIAL_TEACHERS,
+    }).then((result) => {
+      if (cancelled || !result.written) return;
+      console.info('[PUBLIC_HOMEPAGE] Initialized public faculty from authoritative teachers');
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [role, currentUser?.role, currentUser?.authUid, syncHydrationGeneration, teachers]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    if (role !== 'admin' || currentUser.role !== 'admin') return;
+    if (!isInitialHydrationDone.current) return;
+    if (!authoritativeStudentsReceivedRef.current || !authoritativeGraduatesReceivedRef.current) return;
+    if (isSyncKeyPending('students') || isSyncKeyPending('graduates')) return;
+
+    let cancelled = false;
+    void initializePublicHonorBoardFromAuthoritative({
+      authenticated: true,
+      role,
+      currentUserRole: currentUser.role,
+      hydrated: isInitialHydrationDone.current,
+      authoritativeReceived: true,
+      students,
+      graduates,
+      honorRollDemo: HONOR_ROLL_DEMO_NAMES.map((name) => ({ name })),
+    }).then((result) => {
+      if (cancelled || !result.written) return;
+      console.info('[PUBLIC_HOMEPAGE] Initialized public honorBoard from authoritative students/graduates');
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [role, currentUser?.role, currentUser?.authUid, syncHydrationGeneration, students, graduates]);
 
   // ─────────────────────────────────────────────────────────────
   // OFFICIAL EXAM SCHEDULES (جداول الامتحانات الرسمية)
@@ -2415,11 +2555,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!remoteData || typeof remoteData !== 'object') return;
     isApplyingRemoteUpdate.current = true;
 
-    if (Array.isArray(remoteData.teachers)) setTeachers(remoteData.teachers);
-    if (Array.isArray(remoteData.students)) setStudents(remoteData.students);
+    if (Array.isArray(remoteData.teachers)) {
+      authoritativeTeachersReceivedRef.current = true;
+      if (!isSyncKeyPending('teachers')) setTeachers(remoteData.teachers);
+    }
+    if (Array.isArray(remoteData.students)) {
+      authoritativeStudentsReceivedRef.current = true;
+      if (!isSyncKeyPending('students')) setStudents(remoteData.students);
+    }
     if (Array.isArray(remoteData.parents)) setParents(remoteData.parents);
     if (Array.isArray(remoteData.supervisors)) setSupervisors(remoteData.supervisors);
-    if (Array.isArray(remoteData.graduates)) setGraduates(remoteData.graduates);
+    if (Array.isArray(remoteData.graduates)) {
+      authoritativeGraduatesReceivedRef.current = true;
+      if (!isSyncKeyPending('graduates')) setGraduates(remoteData.graduates);
+    }
     if (Array.isArray(remoteData.exams)) setExams(remoteData.exams);
     if (Array.isArray(remoteData.submissions)) setSubmissions(remoteData.submissions);
     if (Array.isArray(remoteData.attendance)) setAttendance(remoteData.attendance);
@@ -2449,7 +2598,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (Array.isArray(remoteData.certificates)) setCertificates(remoteData.certificates);
     if (Array.isArray(remoteData.calendarEvents)) setCalendarEvents(remoteData.calendarEvents);
     if (Array.isArray(remoteData.challenges)) setChallenges(remoteData.challenges);
-    if (remoteData.schoolAdminData) setSchoolAdminData(remoteData.schoolAdminData);
+    // SCHOOL_ADMIN_DATA_SYNC_GUARD_V1
+    if (remoteData.schoolAdminData) {
+      authoritativeSchoolAdminReceivedRef.current = true;
+      if (!isSyncKeyPending(SCHOOL_ADMIN_DATA_SYNC_KEY)) {
+        setSchoolAdminData(remoteData.schoolAdminData);
+      }
+    }
     if (remoteData.decisionSettings) setDecisionSettings(remoteData.decisionSettings);
     if (remoteData.disciplinarySettings) setDisciplinarySettings(remoteData.disciplinarySettings);
     if (Array.isArray(remoteData.auditLogs)) setAuditLogs(remoteData.auditLogs);
@@ -2515,6 +2670,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setNotificationUserStates({});
       clearMailboxPendingRuntime();
       isInitialHydrationDone.current = false;
+      authoritativeSchoolAdminReceivedRef.current = false;
+      authoritativeTeachersReceivedRef.current = false;
+      authoritativeStudentsReceivedRef.current = false;
+      authoritativeGraduatesReceivedRef.current = false;
       setSyncStatus('synced');
       centralSyncService.stopRealtimeStream();
       return () => { isMounted = false; };
@@ -2553,6 +2712,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             }),
           });
           isInitialHydrationDone.current = true;
+          setSyncHydrationGeneration((n) => n + 1);
         } else {
           // Server database needs initial seed from local authoritative data
           const payload = getFullPayload();
@@ -2569,11 +2729,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setSyncStatus('synced');
           }
           isInitialHydrationDone.current = true;
+          setSyncHydrationGeneration((n) => n + 1);
         }
       } catch (err: any) {
         console.warn('Initial sync error, continuing with local state:', err);
         setSyncStatus('offline');
         isInitialHydrationDone.current = true;
+        setSyncHydrationGeneration((n) => n + 1);
       }
     };
 
@@ -3571,8 +3733,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const t = translations[lang];
 
+  const syncSourceUser = () => ({
+    id: currentUser?.id || role,
+    name: currentUser?.name || role,
+    role,
+  });
+
+  const isAdminActor = () => role === 'admin' && currentUser?.role === 'admin';
+
+  const publishHonorFromLists = async (nextStudents: Student[], nextGraduates: GraduateStudent[]) => {
+    if (!isAdminActor()) return;
+    await publishPublicHonorBoard(buildPublicHonorBoard(nextStudents, nextGraduates));
+  };
+
   // Actions
-  const addTeacher = (data: Omit<Teacher, 'id' | 'status' | 'joinedDate'>) => {
+  const addTeacher = async (data: Omit<Teacher, 'id' | 'status' | 'joinedDate'>): Promise<boolean> => {
+    if (!isAdminActor()) {
+      console.warn('[SECURITY] Blocked unauthorized teacher create.');
+      return false;
+    }
+    if (!isInitialHydrationDone.current) return false;
     const randSuffix = Math.random().toString(36).substring(2, 7);
     const newTeacher: Teacher = {
       ...data,
@@ -3581,33 +3761,41 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       joinedDate: new Date().toISOString().split('T')[0],
       rating: 5.0,
     };
-    setTeachers((prev) => {
-      const updated = [newTeacher, ...prev];
-      // Instantly sync to firebase
-      centralSyncService.directArrayMutation('teachers', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
-    });
-
-    addAuditLog({
-      action: `إضافة مدرسة جديدة: ${newTeacher.name}`,
-      actionType: 'create',
-      targetCategory: 'teachers',
-      targetId: newTeacher.id,
-      targetName: newTeacher.name,
-      details: `تمت إضافة المدرسة لتدريس مادة (${newTeacher.subject}) للصفوف (${(newTeacher.assignedGrades || []).join('، ')})`,
-      severity: 'success',
-    });
-
-    // Push notification
-    const notif: NotificationItem = {
-      id: `notif-${Date.now()}-${randSuffix}`,
-      title: lang === 'ar' ? 'انضمام مدرسة جديدة للهيئة التدريسية' : 'New Faculty Member Added',
-      message: `${newTeacher.name} - ${newTeacher.subject}`,
-      type: 'info',
-      timestamp: lang === 'ar' ? 'الآن' : 'Just now',
-      isRead: false,
-    };
-    addNotification(notif);
+    const previous = teachersRef.current;
+    const updated = [newTeacher, ...previous];
+    const token = beginPendingSyncMutation('teachers');
+    setTeachers(updated);
+    teachersRef.current = updated;
+    try {
+      const ok = await centralSyncService.directArrayMutation('teachers', updated, syncSourceUser());
+      if (!ok) {
+        setTeachers(previous);
+        teachersRef.current = previous;
+        return false;
+      }
+      await publishPublicFaculty(updated);
+      addAuditLog({
+        action: `إضافة مدرسة جديدة: ${newTeacher.name}`,
+        actionType: 'create',
+        targetCategory: 'teachers',
+        targetId: newTeacher.id,
+        targetName: newTeacher.name,
+        details: `تمت إضافة المدرسة لتدريس مادة (${newTeacher.subject}) للصفوف (${(newTeacher.assignedGrades || []).join('، ')})`,
+        severity: 'success',
+      });
+      const notif: NotificationItem = {
+        id: `notif-${Date.now()}-${randSuffix}`,
+        title: lang === 'ar' ? 'انضمام مدرسة جديدة للهيئة التدريسية' : 'New Faculty Member Added',
+        message: `${newTeacher.name} - ${newTeacher.subject}`,
+        type: 'info',
+        timestamp: lang === 'ar' ? 'الآن' : 'Just now',
+        isRead: false,
+      };
+      addNotification(notif);
+      return true;
+    } finally {
+      settlePendingSyncMutation('teachers', token);
+    }
   };
 
   const identityRecords = (): IdentityRecord[] => [
@@ -3697,66 +3885,92 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // User Management Implementations
-  const updateTeacher = (id: string, updateData: Partial<Teacher>) => {
+  const updateTeacher = async (id: string, updateData: Partial<Teacher>): Promise<boolean> => {
     // SECURITY_TEACHER_PROFILE_ADMIN_MANAGED_V1
-    if (role !== 'admin' || currentUser?.role !== 'admin') {
+    if (!isAdminActor()) {
       console.warn('[SECURITY] Blocked unauthorized teacher profile update.');
-      return;
+      return false;
     }
-    let teacherName = '';
-    setTeachers((prev) => {
-      const updatedArray = prev.map((t) => {
-        if (t.id === id) {
-          teacherName = t.name;
-          return { ...t, ...updateData };
-        }
-        return t;
+    if (!isInitialHydrationDone.current) return false;
+    const previous = teachersRef.current;
+    const target = previous.find((t) => t.id === id);
+    if (!target) return false;
+    const updatedArray = previous.map((t) => (t.id === id ? { ...t, ...updateData } : t));
+    const token = beginPendingSyncMutation('teachers');
+    setTeachers(updatedArray);
+    teachersRef.current = updatedArray;
+    try {
+      const ok = await centralSyncService.directArrayMutation('teachers', updatedArray, syncSourceUser());
+      if (!ok) {
+        setTeachers(previous);
+        teachersRef.current = previous;
+        return false;
+      }
+      await publishPublicFaculty(updatedArray);
+      addAuditLog({
+        action: `تعديل بيانات المدرسة: ${target.name || id}`,
+        actionType: 'update',
+        targetCategory: 'teachers',
+        targetId: id,
+        targetName: target.name || id,
+        details: `تم تحديث السجل والبيانات للمدرسة (${target.name})`,
+        severity: 'info',
       });
-      centralSyncService.directArrayMutation('teachers', updatedArray, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updatedArray;
-    });
-
-    addAuditLog({
-      action: `تعديل بيانات المدرسة: ${teacherName || id}`,
-      actionType: 'update',
-      targetCategory: 'teachers',
-      targetId: id,
-      targetName: teacherName || id,
-      details: `تم تحديث السجل والبيانات للمدرسة (${teacherName})`,
-      severity: 'info',
-    });
+      return true;
+    } finally {
+      settlePendingSyncMutation('teachers', token);
+    }
   };
 
-  const deleteTeacher = (id: string) => {
-    let deletedName = '';
-    setTeachers((prev) => {
-      const target = prev.find((t) => t.id === id);
-      if (target) deletedName = target.name;
-      const updated = prev.filter((t) => t.id !== id);
-      centralSyncService.directArrayMutation('teachers', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
-    });
-    // Delete their passcode completely from the system instead of leaving it
-    setUserPasscodes(prev => {
-      const copy = { ...prev };
-      delete copy[`teacher-${id}`];
-            return copy;
-    });
-    addAuditLog({
-      action: `حذف حساب مدرسة: ${deletedName || id}`,
-      actionType: 'delete',
-      targetCategory: 'teachers',
-      targetId: id,
-      targetName: deletedName || id,
-      details: `تم حذف حساب وبيانات المدرسة (${deletedName}) نهائياً من النظام`,
-      severity: 'danger',
-    });
+  const deleteTeacher = async (id: string): Promise<boolean> => {
+    if (!isAdminActor()) {
+      console.warn('[SECURITY] Blocked unauthorized teacher delete.');
+      return false;
+    }
+    if (!isInitialHydrationDone.current) return false;
+    const previous = teachersRef.current;
+    const target = previous.find((t) => t.id === id);
+    const updated = previous.filter((t) => t.id !== id);
+    const token = beginPendingSyncMutation('teachers');
+    setTeachers(updated);
+    teachersRef.current = updated;
+    try {
+      const ok = await centralSyncService.directArrayMutation('teachers', updated, syncSourceUser());
+      if (!ok) {
+        setTeachers(previous);
+        teachersRef.current = previous;
+        return false;
+      }
+      await publishPublicFaculty(updated);
+      setUserPasscodes((prev) => {
+        const copy = { ...prev };
+        delete copy[`teacher-${id}`];
+        return copy;
+      });
+      addAuditLog({
+        action: `حذف حساب مدرسة: ${target?.name || id}`,
+        actionType: 'delete',
+        targetCategory: 'teachers',
+        targetId: id,
+        targetName: target?.name || id,
+        details: `تم حذف حساب وبيانات المدرسة (${target?.name}) نهائياً من النظام`,
+        severity: 'danger',
+      });
+      return true;
+    } finally {
+      settlePendingSyncMutation('teachers', token);
+    }
   };
 
-  const updateStudent = (id: string, updated: Partial<Student>) => {
-    // 1. Find the target student synchronously from the current state
-    const currentStudent = students.find(s => s.id === id);
-    if (!currentStudent) return; // Prevent crashes if student not found
+  const updateStudent = async (id: string, updated: Partial<Student>): Promise<boolean> => {
+    if (!isAdminActor()) {
+      console.warn('[SECURITY] Blocked unauthorized student update.');
+      return false;
+    }
+    if (!isInitialHydrationDone.current) return false;
+    const previousStudents = studentsRef.current;
+    const currentStudent = previousStudents.find((s) => s.id === id);
+    if (!currentStudent) return false;
 
     let targetStudent = { ...currentStudent, ...updated, username: currentStudent.username || stableUsername('student', id) };
     assertUniqueIdentity({ id, role: 'student', email: targetStudent.email, phone: targetStudent.phone, nationalId: targetStudent.nationalId }, identityRecords(), id);
@@ -3766,7 +3980,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     const studentName = targetStudent.name || id;
 
-    // 2. Check if parent needs to be created or updated
     let parentFound = false;
     let newParentId = targetStudent.parentId;
     let updatedParents = parents.map((p) => {
@@ -3801,12 +4014,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         targetStudent.parentId = newParentId;
     }
 
-    // 3. Update students array
-    const updatedStudents = students.map(s => s.id === id ? targetStudent : s);
-    
-    // 4. Update financial record if missing
+    const updatedStudents = previousStudents.map((s) => (s.id === id ? targetStudent : s));
+
     let updatedFin = [...financial];
-    const hasFin = updatedFin.some(f => f.studentId === id);
+    const hasFin = updatedFin.some((f) => f.studentId === id);
     if (!hasFin) {
         const randSuffix = Math.random().toString(36).substring(2, 7);
         const fin = {
@@ -3823,29 +4034,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updatedFin = [fin, ...updatedFin];
     }
 
-    // 5. Apply the updates to state and sync
+    const token = beginPendingSyncMutation('students');
     setStudents(updatedStudents);
-    centralSyncService.directArrayMutation('students', updatedStudents, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-    
-    setParents(updatedParents);
-    centralSyncService.directArrayMutation('parents', updatedParents, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-    
-    if (!hasFin) {
-        setFinancial(updatedFin);
-        centralSyncService.directArrayMutation('financial', updatedFin, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-    }
+    studentsRef.current = updatedStudents;
+    try {
+      const ok = await centralSyncService.directArrayMutation('students', updatedStudents, syncSourceUser());
+      if (!ok) {
+        setStudents(previousStudents);
+        studentsRef.current = previousStudents;
+        return false;
+      }
 
-    addAuditLog({
-      action: `تعديل بيانات الطالبة: ${studentName}`,
-      actionType: updated.status ? 'status_change' : 'update',
-      targetCategory: 'students',
-      targetId: id,
-      targetName: studentName,
-      details: updated.status
-        ? `تعديل حالة الطالبة (${studentName}) إلى [${updated.status}]`
-        : `تحديث بيانات ومعلومات الطالبة (${studentName})`,
-      severity: 'info',
-    });
+      setParents(updatedParents);
+      void centralSyncService.directArrayMutation('parents', updatedParents, syncSourceUser());
+
+      if (!hasFin) {
+        setFinancial(updatedFin);
+        void centralSyncService.directArrayMutation('financial', updatedFin, syncSourceUser());
+      }
+
+      await publishHonorFromLists(updatedStudents, graduatesRef.current);
+
+      addAuditLog({
+        action: `تعديل بيانات الطالبة: ${studentName}`,
+        actionType: updated.status ? 'status_change' : 'update',
+        targetCategory: 'students',
+        targetId: id,
+        targetName: studentName,
+        details: updated.status
+          ? `تعديل حالة الطالبة (${studentName}) إلى [${updated.status}]`
+          : `تحديث بيانات ومعلومات الطالبة (${studentName})`,
+        severity: 'info',
+      });
+      return true;
+    } finally {
+      settlePendingSyncMutation('students', token);
+    }
   };
 
   const addShieldToStudent = (studentId: string, shield: Omit<StudentShieldBadge, 'id'>) => {
@@ -4071,15 +4295,66 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...gradData,
       id: `grad-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
     };
-    setGraduates((prev) => [newGrad, ...prev]);
+    const previous = graduatesRef.current;
+    const next = [newGrad, ...previous];
+    setGraduates(next);
+    graduatesRef.current = next;
+    if (!isAdminActor() || !isInitialHydrationDone.current) return;
+    const token = beginPendingSyncMutation('graduates');
+    void centralSyncService.directArrayMutation('graduates', next, syncSourceUser()).then((ok) => {
+      if (!ok) {
+        setGraduates(previous);
+        graduatesRef.current = previous;
+      } else {
+        void publishHonorFromLists(studentsRef.current, next);
+      }
+      settlePendingSyncMutation('graduates', token);
+    });
   };
 
-  const updateGraduate = (id: string, updated: Partial<GraduateStudent>) => {
-    setGraduates((prev) => prev.map((g) => (g.id === id ? { ...g, ...updated } : g)));
+  const updateGraduate = async (id: string, updated: Partial<GraduateStudent>): Promise<boolean> => {
+    if (!isAdminActor()) {
+      console.warn('[SECURITY] Blocked unauthorized graduate update.');
+      return false;
+    }
+    if (!isInitialHydrationDone.current) return false;
+    const previous = graduatesRef.current;
+    const target = previous.find((g) => g.id === id);
+    if (!target) return false;
+    const next = previous.map((g) => (g.id === id ? { ...g, ...updated } : g));
+    const token = beginPendingSyncMutation('graduates');
+    setGraduates(next);
+    graduatesRef.current = next;
+    try {
+      const ok = await centralSyncService.directArrayMutation('graduates', next, syncSourceUser());
+      if (!ok) {
+        setGraduates(previous);
+        graduatesRef.current = previous;
+        return false;
+      }
+      await publishHonorFromLists(studentsRef.current, next);
+      return true;
+    } finally {
+      settlePendingSyncMutation('graduates', token);
+    }
   };
 
   const deleteGraduate = (id: string) => {
-    setGraduates((prev) => prev.filter((g) => g.id !== id));
+    const previous = graduatesRef.current;
+    const next = previous.filter((g) => g.id !== id);
+    setGraduates(next);
+    graduatesRef.current = next;
+    if (!isAdminActor() || !isInitialHydrationDone.current) return;
+    const token = beginPendingSyncMutation('graduates');
+    void centralSyncService.directArrayMutation('graduates', next, syncSourceUser()).then((ok) => {
+      if (!ok) {
+        setGraduates(previous);
+        graduatesRef.current = previous;
+      } else {
+        void publishHonorFromLists(studentsRef.current, next);
+      }
+      settlePendingSyncMutation('graduates', token);
+    });
   };
 
   const promoteStudents = (options: {
@@ -4151,14 +4426,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     setStudents(updatedStudentsList);
+    studentsRef.current = updatedStudentsList;
 
     if (newGraduatesToInsert.length > 0) {
-      setGraduates((prev) => {
-        const filtered = newGraduatesToInsert.filter(
-          (ng) => !prev.some((p) => p.name === ng.name && p.graduationYear === ng.graduationYear)
-        );
-        return [...filtered, ...prev];
-      });
+      const previousGrads = graduatesRef.current;
+      const filtered = newGraduatesToInsert.filter(
+        (ng) => !previousGrads.some((p) => p.name === ng.name && p.graduationYear === ng.graduationYear)
+      );
+      const nextGrads = [...filtered, ...previousGrads];
+      setGraduates(nextGrads);
+      graduatesRef.current = nextGrads;
+      if (isAdminActor() && isInitialHydrationDone.current) {
+        const token = beginPendingSyncMutation('graduates');
+        void centralSyncService.directArrayMutation('graduates', nextGrads, syncSourceUser()).then((ok) => {
+          if (!ok) {
+            setGraduates(previousGrads);
+            graduatesRef.current = previousGrads;
+          } else {
+            void publishHonorFromLists(updatedStudentsList, nextGrads);
+          }
+          settlePendingSyncMutation('graduates', token);
+        });
+      }
     }
 
     return { promotedCount, graduatedCount, retainedCount };

@@ -24,10 +24,13 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
-    // Public website content only. Never put private student/parent data here.
-    match /publicContent/{document=**} {
-      allow read: if true;
-      allow write: if isAdmin();
+    // HOME-004_006_PUBLIC_HOMEPAGE_V1
+    // Public homepage projection only. Guests may GET homepage; they cannot list
+    // other publicContent docs or write. Admin is the only writer.
+    match /publicContent/{docId} {
+      allow get: if docId == 'homepage';
+      allow list: if false;
+      allow create, update, delete: if isAdmin() && docId == 'homepage';
     }
 
     match /announcements/{id} {

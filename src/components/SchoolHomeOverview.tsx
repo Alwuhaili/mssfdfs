@@ -5,7 +5,7 @@
  * صور وانجازات المديرة والهيئة التدريسية، والألعاب والمنافسات والتحديات.
  */
 
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { EditHonorStudentModal } from './EditHonorStudentModal';
 import { EditFacultyModal, FacultyMember } from './EditFacultyModal';
@@ -13,6 +13,28 @@ import { EditSchoolAdminModal } from './EditSchoolAdminModal';
 import { QuickEditPrincipalModal } from './QuickEditPrincipalModal';
 import { EditNewsEventsModal, NewsItem } from './EditNewsEventsModal';
 import { EditGalleryModal } from './EditGalleryModal';
+import {
+  publishPublicGallery,
+  publishPublicNews,
+  subscribePublicHomepage,
+} from '../services/publicHomepageService';
+import {
+  hasGalleryField,
+  hasNewsField,
+  type PublicSchoolInfo,
+} from '../utils/publicHomepageProjection';
+import {
+  HONOR_BOARD_GRADES,
+  HONOR_ACADEMIC_YEAR,
+  buildPublicHonorBoard,
+  type PublicFacultyItem,
+  type PublicHonorEntry,
+} from '../utils/publicHomepageFacultyHonor';
+import {
+  HOMEPAGE_IMAGE_ACCEPT,
+  homepageStorageErrorMessage,
+  uploadHomepageImage,
+} from '../services/homepageStorageService';
 import {
   Trophy,
   Crown,
@@ -479,135 +501,145 @@ export const SchoolHomeOverview: React.FC = () => {
     schoolAdminData,
     updateSchoolAdminData,
   } = useApp();
+  const isGuest = role === 'guest';
+  const isHomepageAdmin = role === 'admin';
   const [isEditSchoolAdminModalOpen, setIsEditSchoolAdminModalOpen] = useState(false);
   const principalFileInputRef = useRef<HTMLInputElement>(null);
+  const localHomepageMigrateOnceRef = useRef(false);
+  const [publicLoaded, setPublicLoaded] = useState(false);
+  const [publicRaw, setPublicRaw] = useState<Record<string, any> | null>(null);
+  const [publicSchool, setPublicSchool] = useState<PublicSchoolInfo>({});
+  const [newsList, setNewsList] = useState<NewsItem[]>([]);
+  const [galleryList, setGalleryList] = useState<GalleryPhoto[]>([]);
+  const [publicFaculty, setPublicFaculty] = useState<PublicFacultyItem[]>([]);
+  const [publicHonorBoard, setPublicHonorBoard] = useState<PublicHonorEntry[]>([]);
+
+  useEffect(() => {
+    const unsub = subscribePublicHomepage(
+      (snap) => {
+        setPublicRaw(snap.raw);
+        setPublicLoaded(true);
+        if (snap.data) {
+          setPublicSchool(snap.data.schoolInfo);
+          setNewsList(snap.data.news as NewsItem[]);
+          setGalleryList(snap.data.gallery as GalleryPhoto[]);
+          setPublicFaculty(snap.data.faculty || []);
+          setPublicHonorBoard(snap.data.honorBoard || []);
+        } else {
+          setPublicSchool({});
+          setNewsList([]);
+          setGalleryList([]);
+          setPublicFaculty([]);
+          setPublicHonorBoard([]);
+        }
+      },
+      () => {
+        setPublicLoaded(true);
+      }
+    );
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    if (!isHomepageAdmin || !publicLoaded || localHomepageMigrateOnceRef.current) return;
+    localHomepageMigrateOnceRef.current = true;
+    try {
+      if (!hasNewsField(publicRaw)) {
+        const saved = localStorage.getItem('maysan_news_events_v2');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            void publishPublicNews(parsed);
+          }
+        }
+      }
+      if (!hasGalleryField(publicRaw)) {
+        const saved = localStorage.getItem('maysan_gallery_photos_v2');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            void publishPublicGallery(parsed);
+          }
+        }
+      }
+    } catch {
+      // Ignore unreadable local leftovers. They must never overwrite Firestore.
+    }
+  }, [isHomepageAdmin, publicLoaded, publicRaw]);
+
+  const displaySchool = isGuest
+    ? {
+        schoolWorkingHoursInfo: publicSchool.schoolWorkingHoursInfo,
+        schoolWorkingHoursDetail: publicSchool.schoolWorkingHoursDetail,
+        schoolUniformInfo: publicSchool.schoolUniformInfo,
+        schoolUniformDetail: publicSchool.schoolUniformDetail,
+        schoolPolicyInfo: publicSchool.schoolPolicyInfo,
+        schoolPolicyDetail: publicSchool.schoolPolicyDetail,
+        principalName: publicSchool.principalName,
+        principalBadge: publicSchool.principalBadge,
+        principalTitle: publicSchool.principalTitle,
+        principalDegree: publicSchool.principalDegree,
+        principalImageUrl: publicSchool.principalImageUrl,
+        visionMessage: publicSchool.visionMessage,
+        achievements: publicSchool.achievements,
+        assistantPrincipalName: publicSchool.assistantPrincipalName,
+        assistantPrincipalTitle: publicSchool.assistantPrincipalTitle,
+        academicSupervisorName: publicSchool.academicSupervisorName,
+        academicSupervisorTitle: publicSchool.academicSupervisorTitle,
+        schoolNameEn: publicSchool.schoolNameEn,
+        schoolLogoUrl: publicSchool.schoolLogoUrl,
+      }
+    : schoolAdminData;
 
   const handlePrincipalImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          updateSchoolAdminData({ principalImageUrl: reader.result });
-        }
-      };
-      reader.readAsDataURL(file);
-    }
+    e.target.value = '';
+    if (!file || !isHomepageAdmin) return;
+    void (async () => {
+      try {
+        const uploaded = await uploadHomepageImage(file, { kind: 'principal' });
+        updateSchoolAdminData({ principalImageUrl: uploaded.downloadUrl });
+        setSaveToast('تم رفع صورة المديرة وحفظ الرابط الآمن.');
+      } catch (error) {
+        setSaveToast(homepageStorageErrorMessage(error));
+      }
+      setTimeout(() => setSaveToast(null), 3500);
+    })();
   };
 
-  // Historical Honor Roll for academic year 2025-2026.
-  // IMPORTANT: the board shows the grade the student was in LAST YEAR, not her current grade.
-  // Mapping after annual promotion:
-  // last year's 1st -> current 2nd, 2nd -> current 3rd, ... 5th -> current 6th.
-  // last year's 6th -> graduates collection.
-  const HONOR_ACADEMIC_YEAR = '2025-2026';
-  const LAST_YEAR_TO_CURRENT_GRADE: Record<string, string> = {
-    'الصف الأول المتوسط': 'الصف الثاني المتوسط',
-    'الصف الثاني المتوسط': 'الصف الثالث المتوسط',
-    'الصف الثالث المتوسط': 'الصف الرابع العلمي',
-    'الصف الرابع العلمي': 'الصف الخامس العلمي',
-    'الصف الخامس العلمي': 'الصف السادس العلمي',
-  };
+  const toHonorStudent = (entry: PublicHonorEntry): HonorStudent => ({
+    studentId: entry.sourceType === 'student' ? entry.sourceId : undefined,
+    graduateId: entry.sourceType === 'graduate' ? entry.sourceId : undefined,
+    sourceType: entry.sourceType,
+    rank: entry.rank,
+    name: entry.name,
+    grade: entry.grade,
+    section: entry.section,
+    gpa: entry.gpa,
+    avatar: entry.avatar,
+    specialty: entry.specialty,
+    dream: entry.dream,
+  });
 
-  const isFromHonorAcademicYear = (year: unknown) => {
-    const normalized = String(year ?? '').replace(/[^0-9]/g, '');
-    return normalized.includes('2025') && normalized.includes('2026');
-  };
-
-  const wasEnrolledBy2025 = (student: any) => {
-    const year = Number.parseInt(String(student?.enrollmentYear ?? ''), 10);
-    // If legacy data has no enrollment year, keep it eligible rather than silently dropping it.
-    return !Number.isFinite(year) || year <= 2025;
+  const groupHonorBoard = (entries: PublicHonorEntry[]): Record<string, HonorStudent[]> => {
+    const result: Record<string, HonorStudent[]> = {};
+    HONOR_BOARD_GRADES.forEach((grade) => {
+      result[grade] = [];
+    });
+    entries.forEach((entry) => {
+      if (!result[entry.grade]) result[entry.grade] = [];
+      result[entry.grade].push(toHonorStudent(entry));
+    });
+    Object.keys(result).forEach((grade) => {
+      result[grade].sort((a, b) => a.rank - b.rank);
+    });
+    return result;
   };
 
   const honorRollData = useMemo<Record<string, HonorStudent[]>>(() => {
-    const result: Record<string, HonorStudent[]> = {};
-
-    Object.keys(HONOR_ROLL_DATA).forEach((historicalGrade) => {
-      // Sixth scientific in 2025-2026 has already graduated, so read from graduates.
-      if (historicalGrade === 'الصف السادس العلمي') {
-        const topGraduates = graduates
-          .filter((graduate: any) => isFromHonorAcademicYear(graduate.graduationYear))
-          .slice()
-          .sort((a: any, b: any) => {
-            const gpaDiff =
-              (Number(b.honorGpa2025_2026 ?? b.gpa) || 0) -
-              (Number(a.honorGpa2025_2026 ?? a.gpa) || 0);
-            if (gpaDiff !== 0) return gpaDiff;
-            return String(a.name || '').localeCompare(String(b.name || ''), 'ar');
-          })
-          .slice(0, 3);
-
-        result[historicalGrade] = topGraduates.map((graduate: any, index: number) => {
-          const legacy = HONOR_ROLL_DATA[historicalGrade]?.[index];
-          return {
-            graduateId: graduate.id,
-            sourceType: 'graduate',
-            rank: (index + 1) as 1 | 2 | 3,
-            name: graduate.name,
-            // Keep the historical grade displayed on the 2025-2026 board.
-            grade: historicalGrade,
-            section: graduate.honorSection2025_2026 || graduate.section || 'أ',
-            gpa: Number(graduate.honorGpa2025_2026 ?? graduate.gpa) || 0,
-            avatar: graduate.avatar || legacy?.avatar || '',
-            specialty:
-              graduate.honorSpecialty ||
-              graduate.collegeOrSpecialty ||
-              legacy?.specialty ||
-              'التفوق الدراسي والتميز الأكاديمي',
-            dream:
-              graduate.honorDream ||
-              graduate.notes ||
-              legacy?.dream ||
-              'مواصلة التفوق وتحقيق الطموح العلمي',
-          };
-        });
-        return;
-      }
-
-      const currentGrade = LAST_YEAR_TO_CURRENT_GRADE[historicalGrade];
-      const topStudents = students
-        .filter((student: any) => student.gradeLevel === currentGrade)
-        .filter((student: any) => wasEnrolledBy2025(student))
-        .filter((student: any) => !['محظورة', 'منقولة'].includes(String(student.status || '')))
-        .slice()
-        .sort((a: any, b: any) => {
-          const getHistoricalGpa = (student: any) =>
-            Number(student.honorGpa2025_2026 ?? student.previousAcademicYearGpa ?? student.gpa) || 0;
-          const gpaDiff = getHistoricalGpa(b) - getHistoricalGpa(a);
-          if (gpaDiff !== 0) return gpaDiff;
-          return String(a.name || '').localeCompare(String(b.name || ''), 'ar');
-        })
-        .slice(0, 3);
-
-      result[historicalGrade] = topStudents.map((student: any, index: number) => {
-        const legacy = HONOR_ROLL_DATA[historicalGrade]?.[index];
-        return {
-          studentId: student.id,
-          sourceType: 'student',
-          rank: (index + 1) as 1 | 2 | 3,
-          name: student.name,
-          // Display LAST YEAR'S grade, even though the student has been promoted.
-          grade: historicalGrade,
-          section: student.honorSection2025_2026 || student.previousSection || student.section || 'أ',
-          gpa: Number(student.honorGpa2025_2026 ?? student.previousAcademicYearGpa ?? student.gpa) || 0,
-          avatar: student.avatar || legacy?.avatar || '',
-          specialty:
-            student.honorSpecialty ||
-            student.specialty ||
-            legacy?.specialty ||
-            'التفوق الدراسي والتميز الأكاديمي',
-          dream:
-            student.honorDream ||
-            student.dream ||
-            legacy?.dream ||
-            'مواصلة التفوق وتحقيق الطموح العلمي',
-        };
-      });
-    });
-
-    return result;
-  }, [students, graduates]);
+    if (isGuest) return groupHonorBoard(publicHonorBoard);
+    return groupHonorBoard(buildPublicHonorBoard(students, graduates));
+  }, [isGuest, publicHonorBoard, students, graduates]);
 
   // Honor Roll Admin Editing State
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -618,28 +650,36 @@ export const SchoolHomeOverview: React.FC = () => {
   const [selectedHonorGrade, setSelectedHonorGrade] = useState<string>('الصف السادس العلمي');
 
   const handleHonorStudentAvatarUpload = (studentRank: 1 | 2 | 3, file: File) => {
+    if (!isHomepageAdmin) return;
     const honorStudent = honorRollData[selectedHonorGrade]?.find((student) => student.rank === studentRank);
     if (!honorStudent) return;
+    const sourceType = honorStudent.sourceType === 'graduate' ? 'graduate' : 'student';
+    const sourceId = honorStudent.graduateId || honorStudent.studentId || `${selectedHonorGrade}-r${studentRank}`;
 
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      if (typeof reader.result !== 'string') return;
-
-      if (honorStudent.sourceType === 'graduate' && honorStudent.graduateId) {
-        updateGraduate(honorStudent.graduateId, { avatar: reader.result } as any);
-      } else if (honorStudent.studentId) {
-        updateStudent(honorStudent.studentId, { avatar: reader.result } as any);
-      } else {
-        return;
+    void (async () => {
+      try {
+        const uploaded = await uploadHomepageImage(file, { kind: 'honor', sourceType, sourceId });
+        const avatar = uploaded.downloadUrl;
+        let ok = false;
+        if (honorStudent.sourceType === 'graduate' && honorStudent.graduateId) {
+          ok = await updateGraduate(honorStudent.graduateId, { avatar } as any);
+        } else if (honorStudent.studentId) {
+          ok = await updateStudent(honorStudent.studentId, { avatar } as any);
+        }
+        setSaveToast(
+          ok
+            ? 'تم رفع صورة الطالبة المتفوقة وحفظ الرابط الآمن.'
+            : 'تعذر حفظ صورة الطالبة في السجل المركزي.'
+        );
+      } catch (error) {
+        setSaveToast(homepageStorageErrorMessage(error));
       }
-
-      setSaveToast('تم تحديث صورة الطالبة المتفوقة ومزامنتها مركزياً 📸');
       setTimeout(() => setSaveToast(null), 3000);
-    };
-    reader.readAsDataURL(file);
+    })();
   };
 
   const handleSaveHonorStudent = (updatedStudent: HonorStudent) => {
+    if (!isHomepageAdmin) return;
     const currentHonorStudent = honorRollData[selectedHonorGrade]?.find(
       (student) => student.rank === updatedStudent.rank,
     );
@@ -650,40 +690,35 @@ export const SchoolHomeOverview: React.FC = () => {
       return;
     }
 
-    if (currentHonorStudent.sourceType === 'graduate' && currentHonorStudent.graduateId) {
-      updateGraduate(
-        currentHonorStudent.graduateId,
-        {
+    void (async () => {
+      let ok = false;
+      if (currentHonorStudent.sourceType === 'graduate' && currentHonorStudent.graduateId) {
+        ok = await updateGraduate(currentHonorStudent.graduateId, {
           name: updatedStudent.name,
           avatar: updatedStudent.avatar,
           honorSection2025_2026: updatedStudent.section,
           honorGpa2025_2026: Number(updatedStudent.gpa),
           honorSpecialty: updatedStudent.specialty,
           honorDream: updatedStudent.dream,
-        } as any,
-      );
-    } else if (currentHonorStudent.studentId) {
-      updateStudent(
-        currentHonorStudent.studentId,
-        {
+        } as any);
+      } else if (currentHonorStudent.studentId) {
+        ok = await updateStudent(currentHonorStudent.studentId, {
           name: updatedStudent.name,
           avatar: updatedStudent.avatar,
-          // Do NOT write updatedStudent.grade here: on the historical board it is the 2025-2026 grade,
-          // while the central student record must keep her CURRENT promoted grade.
           honorSection2025_2026: updatedStudent.section,
           honorGpa2025_2026: Number(updatedStudent.gpa),
           honorSpecialty: updatedStudent.specialty,
           honorDream: updatedStudent.dream,
-        } as any,
-      );
-    } else {
-      setSaveToast('تعذر تحديد سجل الطالبة المركزي.');
-      setTimeout(() => setSaveToast(null), 3500);
-      return;
-    }
+        } as any);
+      }
 
-    setSaveToast(`تم تحديث بيانات الطالبة "${updatedStudent.name}" ومزامنتها مركزياً 🏆`);
-    setTimeout(() => setSaveToast(null), 4500);
+      setSaveToast(
+        ok
+          ? `تم تحديث بيانات الطالبة "${updatedStudent.name}" ومزامنتها مركزياً 🏆`
+          : 'تعذر حفظ بيانات الطالبة. لم يتم نشر لوحة الشرف.'
+      );
+      setTimeout(() => setSaveToast(null), 4500);
+    })();
   };
 
   const handleResetHonorRoll = () => {
@@ -694,6 +729,20 @@ export const SchoolHomeOverview: React.FC = () => {
   // Faculty members are derived from the centrally synchronized teachers collection.
   // Academic-achievement fields are stored on the teacher document itself so every device sees the same data.
   const facultyList = useMemo<FacultyMember[]>(() => {
+    if (isGuest) {
+      return publicFaculty.map((teacher) => ({
+        id: teacher.id,
+        name: teacher.name || '',
+        roleTitle: teacher.facultyRoleTitle || 'عضو الهيئة التدريسية',
+        subject: teacher.subject || '',
+        avatar: teacher.avatar || '',
+        degree: teacher.facultyDegree || '',
+        researchCount: teacher.researchCount || 0,
+        booksCount: teacher.booksCount || 0,
+        gamesCount: teacher.gamesCount || 0,
+        achievements: Array.isArray(teacher.facultyAchievements) ? teacher.facultyAchievements : [],
+      }));
+    }
     return teachers.map((teacher: any) => ({
       id: teacher.id,
       name: teacher.name || '',
@@ -710,7 +759,7 @@ export const SchoolHomeOverview: React.FC = () => {
         ? teacher.achievements
         : [],
     }));
-  }, [teachers]);
+  }, [isGuest, publicFaculty, teachers]);
 
   const [isFacultyModalOpen, setIsFacultyModalOpen] = useState(false);
   const [selectedFacultyIdToEdit, setSelectedFacultyIdToEdit] = useState<string | undefined>(undefined);
@@ -733,47 +782,62 @@ export const SchoolHomeOverview: React.FC = () => {
   });
 
   const handleSaveFacultyList = (newList: FacultyMember[]) => {
+    if (!isHomepageAdmin) return;
     const currentIds = new Set(teachers.map((teacher: any) => teacher.id));
     const nextIds = new Set(newList.map((faculty) => faculty.id));
 
-    // Persist edits of existing teachers to Firestore through AppContext.
-    newList.forEach((faculty) => {
-      if (currentIds.has(faculty.id)) {
-        updateTeacher(faculty.id, toCentralTeacherPatch(faculty) as any);
-        return;
+    void (async () => {
+      let allOk = true;
+      for (const faculty of newList) {
+        if (currentIds.has(faculty.id)) {
+          const ok = await updateTeacher(faculty.id, toCentralTeacherPatch(faculty) as any);
+          if (!ok) allOk = false;
+          continue;
+        }
+        const ok = await addTeacher({
+          name: faculty.name,
+          email: '',
+          phone: '',
+          subject: faculty.subject || '',
+          assignedGrades: [],
+          avatar: faculty.avatar || '',
+          facultyRoleTitle: faculty.roleTitle,
+          facultyDegree: faculty.degree,
+          researchCount: Number(faculty.researchCount) || 0,
+          booksCount: Number(faculty.booksCount) || 0,
+          gamesCount: Number(faculty.gamesCount) || 0,
+          facultyAchievements: Array.isArray(faculty.achievements) ? faculty.achievements : [],
+        } as any);
+        if (!ok) allOk = false;
       }
 
-      // A new faculty card created from this modal must also become a real central teacher record.
-      addTeacher({
-        name: faculty.name,
-        email: '',
-        phone: '',
-        subject: faculty.subject || '',
-        assignedGrades: [],
-        avatar: faculty.avatar || '',
-        facultyRoleTitle: faculty.roleTitle,
-        facultyDegree: faculty.degree,
-        researchCount: Number(faculty.researchCount) || 0,
-        booksCount: Number(faculty.booksCount) || 0,
-        gamesCount: Number(faculty.gamesCount) || 0,
-        facultyAchievements: Array.isArray(faculty.achievements) ? faculty.achievements : [],
-      } as any);
-    });
+      for (const teacher of teachers) {
+        if (!nextIds.has(teacher.id)) {
+          const ok = await deleteTeacher(teacher.id);
+          if (!ok) allOk = false;
+        }
+      }
 
-    // If EditFacultyModal removed an existing teacher, delete the central teacher document too.
-    teachers.forEach((teacher: any) => {
-      if (!nextIds.has(teacher.id)) deleteTeacher(teacher.id);
-    });
-
-    setSaveToast('تم تحديث بيانات وإنجازات الهيئة التدريسية ومزامنتها مركزياً 🎓');
-    setTimeout(() => setSaveToast(null), 4500);
+      setSaveToast(
+        allOk
+          ? 'تم تحديث بيانات وإنجازات الهيئة التدريسية ومزامنتها مركزياً 🎓'
+          : 'تعذر حفظ بعض سجلات الهيئة التدريسية. لم يتم اعتماد التغيير بالكامل.'
+      );
+      setTimeout(() => setSaveToast(null), 4500);
+    })();
   };
 
   const handleDirectDeleteTeacherInHome = (teacher: FacultyMember) => {
-    deleteTeacher(teacher.id);
-    setDeleteConfirmTeacherInHome(null);
-    setSaveToast(`تم حذف الأستاذة (${teacher.name}) من السجل المركزي للهيئة التدريسية 🗑️`);
-    setTimeout(() => setSaveToast(null), 4500);
+    if (!isHomepageAdmin) return;
+    void deleteTeacher(teacher.id).then((ok) => {
+      setDeleteConfirmTeacherInHome(null);
+      setSaveToast(
+        ok
+          ? `تم حذف الأستاذة (${teacher.name}) من السجل المركزي للهيئة التدريسية 🗑️`
+          : 'تعذر حذف الأستاذة من السجل المركزي.'
+      );
+      setTimeout(() => setSaveToast(null), 4500);
+    });
   };
 
   const handleResetFacultyList = () => {
@@ -802,120 +866,117 @@ export const SchoolHomeOverview: React.FC = () => {
   };
 
   const handleSaveGalleryList = (newList: GalleryPhoto[]) => {
+    if (!isHomepageAdmin) return;
     setGalleryList(newList);
-    try {
-      localStorage.setItem('maysan_gallery_photos_v2', JSON.stringify(newList));
-    } catch (e) {
-      console.error('Failed to persist gallery list', e);
-    }
-    setSaveToast('تم تحديث وحفظ معرض الصور والأنشطة المدرسية بنجاح! 📸');
-    setTimeout(() => setSaveToast(null), 4500);
+    void publishPublicGallery(newList).then((ok) => {
+      setSaveToast(
+        ok
+          ? 'تم نشر معرض الصور في الصفحة الرسمية 📸'
+          : 'تعذر نشر معرض الصور. لم يتم تغيير المصدر العام.'
+      );
+      setTimeout(() => setSaveToast(null), 4500);
+    });
   };
 
   const handleResetGalleryList = () => {
-    if (window.confirm('هل أنت متأكد من إعادة تعيين معرض الصور والأنشطة إلى المعرض الافتراضي؟')) {
+    if (!isHomepageAdmin) return;
+    if (window.confirm('هل أنت متأكد من إعادة تعيين معرض الصور والأنشطة إلى المعرض الافتراضي ونشره في الصفحة الرسمية؟')) {
       setGalleryList(GALLERY_PHOTOS);
-      try {
-        localStorage.removeItem('maysan_gallery_photos_v2');
-      } catch (e) {}
-      setSaveToast('تمت إعادة تعيين معرض الصور إلى القائمة الأساسية.');
+      void publishPublicGallery(GALLERY_PHOTOS);
+      setSaveToast('تم نشر معرض الصور الافتراضي في الصفحة الرسمية بأمر الإدارة.');
       setTimeout(() => setSaveToast(null), 4500);
     }
   };
 
   const handleSaveNewsList = (newList: NewsItem[]) => {
+    if (!isHomepageAdmin) return;
     setNewsList(newList);
-    try {
-      localStorage.setItem('maysan_news_events_v2', JSON.stringify(newList));
-    } catch (e) {
-      console.error('Failed to persist news list', e);
-    }
-    setSaveToast('تم تحديث وحفظ سجل الأخبار والمهرجانات والفعاليات بنجاح! 📣');
-    setTimeout(() => setSaveToast(null), 4500);
+    void publishPublicNews(newList).then((ok) => {
+      setSaveToast(
+        ok
+          ? 'تم نشر الأخبار والمهرجانات في الصفحة الرسمية 📣'
+          : 'تعذر نشر الأخبار. لم يتم تغيير المصدر العام.'
+      );
+      setTimeout(() => setSaveToast(null), 4500);
+    });
   };
 
   const handleResetNewsList = () => {
-    if (window.confirm('هل أنت متأكد من إعادة تعيين سجل الأخبار والمهرجانات إلى القائمة الافتراضية؟')) {
+    if (!isHomepageAdmin) return;
+    if (window.confirm('هل أنت متأكد من إعادة تعيين سجل الأخبار والمهرجانات إلى القائمة الافتراضية ونشرها في الصفحة الرسمية؟')) {
       setNewsList(NEWS_EVENTS_DATA);
-      try {
-        localStorage.removeItem('maysan_news_events_v2');
-      } catch (e) {}
-      setSaveToast('تمت إعادة تعيين سجل الأخبار والمهرجانات إلى البيانات الأساسية.');
+      void publishPublicNews(NEWS_EVENTS_DATA);
+      setSaveToast('تم نشر الأخبار الافتراضية في الصفحة الرسمية بأمر الإدارة.');
       setTimeout(() => setSaveToast(null), 4500);
     }
   };
 
   const handleFacultyAvatarUpload = (teacherId: string, file: File) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      if (typeof reader.result === 'string') {
-        const newAvatar = reader.result;
-        updateTeacher(teacherId, { avatar: newAvatar } as any);
-        setSaveToast('تم تحديث صورة الأستاذة/المدرسة ومزامنتها مركزياً 📸');
-        setTimeout(() => setSaveToast(null), 3500);
+    if (!isHomepageAdmin) return;
+    void (async () => {
+      try {
+        const uploaded = await uploadHomepageImage(file, { kind: 'faculty', teacherId });
+        const ok = await updateTeacher(teacherId, { avatar: uploaded.downloadUrl } as any);
+        setSaveToast(
+          ok
+            ? 'تم رفع صورة الأستاذة وحفظ الرابط الآمن.'
+            : 'تعذر حفظ صورة الأستاذة في السجل المركزي.'
+        );
+      } catch (error) {
+        setSaveToast(homepageStorageErrorMessage(error));
       }
-    };
-    reader.readAsDataURL(file);
+      setTimeout(() => setSaveToast(null), 3500);
+    })();
   };
 
-  // News & Events state with localStorage persistence
-  const [newsList, setNewsList] = useState<NewsItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('maysan_news_events_v2');
-      return saved ? JSON.parse(saved) : NEWS_EVENTS_DATA;
-    } catch (e) {
-      return NEWS_EVENTS_DATA;
-    }
-  });
-
-  // Gallery Photos state with localStorage persistence
-  const [galleryList, setGalleryList] = useState<GalleryPhoto[]>(() => {
-    try {
-      const saved = localStorage.getItem('maysan_gallery_photos_v2');
-      return saved ? JSON.parse(saved) : GALLERY_PHOTOS;
-    } catch (e) {
-      return GALLERY_PHOTOS;
-    }
-  });
-
   const handleNewsImageUpload = (newsId: string, file: File) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      if (typeof reader.result === 'string') {
-        const newImg = reader.result;
+    if (!isHomepageAdmin) return;
+    void (async () => {
+      try {
+        const uploaded = await uploadHomepageImage(file, { kind: 'news', newsId });
+        const newImg = uploaded.downloadUrl;
         const updated = newsList.map((n) => (n.id === newsId ? { ...n, image: newImg } : n));
+        const ok = await publishPublicNews(updated);
+        if (!ok) {
+          setSaveToast('تم رفع الصورة لكن تعذر نشر الخبر.');
+          setTimeout(() => setSaveToast(null), 3500);
+          return;
+        }
         setNewsList(updated);
-        try {
-          localStorage.setItem('maysan_news_events_v2', JSON.stringify(updated));
-        } catch (e) {}
         if (activeNewsModal && activeNewsModal.id === newsId) {
           setActiveNewsModal({ ...activeNewsModal, image: newImg });
         }
-        setSaveToast('تم تحديث صورة الخبر/الفعالية بنجاح 📸');
-        setTimeout(() => setSaveToast(null), 3500);
+        setSaveToast('تم رفع صورة الخبر ونشر الرابط الآمن.');
+      } catch (error) {
+        setSaveToast(homepageStorageErrorMessage(error));
       }
-    };
-    reader.readAsDataURL(file);
+      setTimeout(() => setSaveToast(null), 3500);
+    })();
   };
 
   const handleGalleryImageUpload = (photoId: string, file: File) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      if (typeof reader.result === 'string') {
-        const newUrl = reader.result;
+    if (!isHomepageAdmin) return;
+    void (async () => {
+      try {
+        const uploaded = await uploadHomepageImage(file, { kind: 'gallery', galleryId: photoId });
+        const newUrl = uploaded.downloadUrl;
         const updated = galleryList.map((g) => (g.id === photoId ? { ...g, url: newUrl } : g));
+        const ok = await publishPublicGallery(updated);
+        if (!ok) {
+          setSaveToast('تم رفع الصورة لكن تعذر نشر المعرض.');
+          setTimeout(() => setSaveToast(null), 3500);
+          return;
+        }
         setGalleryList(updated);
-        try {
-          localStorage.setItem('maysan_gallery_photos_v2', JSON.stringify(updated));
-        } catch (e) {}
         if (activePhotoModal && activePhotoModal.id === photoId) {
           setActivePhotoModal({ ...activePhotoModal, url: newUrl });
         }
-        setSaveToast('تم تحديث صورة المعرض التوثيقي بنجاح 📸');
-        setTimeout(() => setSaveToast(null), 3500);
+        setSaveToast('تم رفع صورة المعرض ونشر الرابط الآمن.');
+      } catch (error) {
+        setSaveToast(homepageStorageErrorMessage(error));
       }
-    };
-    reader.readAsDataURL(file);
+      setTimeout(() => setSaveToast(null), 3500);
+    })();
   };
 
   // Selected Category for News & Events
@@ -939,6 +1000,11 @@ export const SchoolHomeOverview: React.FC = () => {
 
   return (
     <div className="space-y-10 font-arabic text-slate-900 dark:text-slate-100 pb-12">
+      {isGuest && !publicLoaded && (
+        <div className="p-4 rounded-2xl bg-teal-500/10 border border-teal-500/30 text-teal-800 dark:text-teal-200 text-sm font-bold">
+          جاري تحميل الصفحة الرسمية من المصدر العام…
+        </div>
+      )}
       
       {/* =========================================================
           SECTION 1: HERO BANNER & SCHOOL OFFICIAL INFORMATION BAR
@@ -990,10 +1056,14 @@ export const SchoolHomeOverview: React.FC = () => {
                 )}
               </div>
               <p className="text-sm font-extrabold text-white">
-                {schoolAdminData.schoolWorkingHoursInfo || 'من 8:00 صباحاً وحتى 1:30 ظهراً'}
+                {isGuest && !publicLoaded
+                  ? 'جاري التحميل…'
+                  : displaySchool.schoolWorkingHoursInfo || (isGuest ? '—' : 'من 8:00 صباحاً وحتى 1:30 ظهراً')}
               </p>
               <p className="text-[11px] text-slate-300">
-                {schoolAdminData.schoolWorkingHoursDetail || 'طيلة أيام الأسبوع من (الأحد إلى الخميس)'}
+                {isGuest && !publicLoaded
+                  ? ''
+                  : displaySchool.schoolWorkingHoursDetail || (isGuest ? '' : 'طيلة أيام الأسبوع من (الأحد إلى الخميس)')}
               </p>
             </div>
 
@@ -1016,10 +1086,14 @@ export const SchoolHomeOverview: React.FC = () => {
                 )}
               </div>
               <p className="text-xs font-bold text-white leading-snug">
-                {schoolAdminData.schoolUniformInfo || 'الصدرية الرصاصية (الرمادي) + قميص أبيض ناصع + حجاب أبيض + شعار المدرسة'}
+                {isGuest && !publicLoaded
+                  ? 'جاري التحميل…'
+                  : displaySchool.schoolUniformInfo || (isGuest ? '—' : 'الصدرية الرصاصية (الرمادي) + قميص أبيض ناصع + حجاب أبيض + شعار المدرسة')}
               </p>
               <p className="text-[11px] text-slate-300">
-                {schoolAdminData.schoolUniformDetail || 'مع حذاء أسود / رياضي مريح للأنشطة'}
+                {isGuest && !publicLoaded
+                  ? ''
+                  : displaySchool.schoolUniformDetail || (isGuest ? '' : 'مع حذاء أسود / رياضي مريح للأنشطة')}
               </p>
             </div>
 
@@ -1042,10 +1116,14 @@ export const SchoolHomeOverview: React.FC = () => {
                 )}
               </div>
               <p className="text-xs font-bold text-white">
-                {schoolAdminData.schoolPolicyInfo || 'انضباط أكاديمي عالي وحظر الهواتف'}
+                {isGuest && !publicLoaded
+                  ? 'جاري التحميل…'
+                  : displaySchool.schoolPolicyInfo || (isGuest ? '—' : 'انضباط أكاديمي عالي وحظر الهواتف')}
               </p>
               <p className="text-[11px] text-slate-300">
-                {schoolAdminData.schoolPolicyDetail || 'تعزيز البحث العلمي والابتكار البرمجي ورعاية الموهوبين'}
+                {isGuest && !publicLoaded
+                  ? ''
+                  : displaySchool.schoolPolicyDetail || (isGuest ? '' : 'تعزيز البحث العلمي والابتكار البرمجي ورعاية الموهوبين')}
               </p>
             </div>
 
@@ -1096,7 +1174,11 @@ export const SchoolHomeOverview: React.FC = () => {
           <div className="md:col-span-4 flex flex-col items-center text-center space-y-3">
             <div className="relative group">
               <img
-                src={schoolAdminData.principalImageUrl || 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=500&auto=format&fit=crop&q=80'}
+                src={
+                  isGuest && !publicLoaded
+                    ? 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=500&auto=format&fit=crop&q=80'
+                    : displaySchool.principalImageUrl || 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=500&auto=format&fit=crop&q=80'
+                }
                 alt="مديرة المدرسة"
                 className="w-44 h-44 sm:w-52 sm:h-52 rounded-3xl object-cover shadow-xl border-4 border-amber-500/30 group-hover:scale-105 transition-all duration-300"
                 referrerPolicy="no-referrer"
@@ -1106,7 +1188,7 @@ export const SchoolHomeOverview: React.FC = () => {
                   <input
                     ref={principalFileInputRef}
                     type="file"
-                    accept="image/*"
+                    accept={HOMEPAGE_IMAGE_ACCEPT}
                     onChange={handlePrincipalImageUpload}
                     className="hidden"
                   />
@@ -1125,19 +1207,19 @@ export const SchoolHomeOverview: React.FC = () => {
               )}
               <span className="absolute -bottom-3 left-1/2 -translate-x-1/2 px-3.5 py-1 rounded-full bg-slate-900 text-amber-300 text-[11px] font-bold border border-amber-400/40 shadow-md whitespace-nowrap flex items-center gap-1">
                 <Crown className="w-3.5 h-3.5 text-amber-400" />
-                {schoolAdminData.principalBadge}
+                {displaySchool.principalBadge}
               </span>
             </div>
 
             <div className="pt-2">
               <h3 className="font-bold text-base text-slate-900 dark:text-white">
-                {schoolAdminData.principalName}
+                {isGuest && !publicLoaded ? '…' : displaySchool.principalName}
               </h3>
               <p className="text-xs text-teal-600 dark:text-teal-400 font-bold">
-                {schoolAdminData.principalTitle}
+                {isGuest && !publicLoaded ? '' : displaySchool.principalTitle}
               </p>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                {schoolAdminData.principalDegree}
+                {isGuest && !publicLoaded ? '' : displaySchool.principalDegree}
               </p>
               {role === 'admin' && (
                 <div className="pt-2">
@@ -1163,7 +1245,7 @@ export const SchoolHomeOverview: React.FC = () => {
                 <span>رسالة الإدارة المدرسية للطالبات ولأولياء الأمور:</span>
               </div>
               <p className="text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-relaxed italic">
-                "{schoolAdminData.visionMessage}"
+                "{isGuest && !publicLoaded ? 'جاري تحميل الرسالة الرسمية…' : displaySchool.visionMessage || ''}"
               </p>
             </div>
 
@@ -1175,7 +1257,7 @@ export const SchoolHomeOverview: React.FC = () => {
               </h4>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                {(schoolAdminData.achievements || []).map((ach, idx) => (
+                {(isGuest && !publicLoaded ? [] : displaySchool.achievements || []).map((ach, idx) => (
                   <div key={idx} className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 flex items-start gap-2">
                     <CheckCircle2 className="w-4 h-4 text-teal-600 dark:text-teal-400 shrink-0 mt-0.5" />
                     <span>{ach}</span>
@@ -1192,28 +1274,28 @@ export const SchoolHomeOverview: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
                 <div className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-center">
                   <span className="text-[10px] text-indigo-600 dark:text-indigo-400 font-bold block">
-                    {schoolAdminData.assistantPrincipalTitle || 'معاونة شؤون الطالبات والتسجيل'}
+                    {displaySchool.assistantPrincipalTitle || 'معاونة شؤون الطالبات والتسجيل'}
                   </span>
                   <span className="text-xs font-bold text-slate-900 dark:text-white block mt-0.5">
-                    {schoolAdminData.assistantPrincipalName || 'زينب علي الموسوي'}
+                    {displaySchool.assistantPrincipalName || 'زينب علي الموسوي'}
                   </span>
                 </div>
 
                 <div className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-center">
                   <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold block">
-                    {schoolAdminData.academicSupervisorTitle || 'المشرف الأكاديمي والتربوي المعتمد'}
+                    {displaySchool.academicSupervisorTitle || 'المشرف الأكاديمي والتربوي المعتمد'}
                   </span>
                   <span className="text-xs font-bold text-slate-900 dark:text-white block mt-0.5">
-                    {schoolAdminData.academicSupervisorName || 'أ.د. حيدر جاسم الكناني'}
+                    {displaySchool.academicSupervisorName || 'أ.د. حيدر جاسم الكناني'}
                   </span>
                 </div>
 
                 <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-center">
                   <span className="text-[10px] text-amber-700 dark:text-amber-400 font-bold block">
-                    {schoolAdminData.principalTitle || 'مديرة ثانوية ميسان للمتميزات'}
+                    {displaySchool.principalTitle || 'مديرة ثانوية ميسان للمتميزات'}
                   </span>
                   <span className="text-xs font-black text-amber-950 dark:text-amber-300 block mt-0.5">
-                    {schoolAdminData.principalName || 'الهام صبيح سعدون'}
+                    {displaySchool.principalName || 'الهام صبيح سعدون'}
                   </span>
                 </div>
               </div>
@@ -1280,7 +1362,7 @@ export const SchoolHomeOverview: React.FC = () => {
 
         {/* Grade Selector Tabs */}
         <div className="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar">
-          {Object.keys(honorRollData).map((grade) => {
+          {HONOR_BOARD_GRADES.map((grade) => {
             const isSelected = selectedHonorGrade === grade;
             return (
               <button
@@ -1353,7 +1435,7 @@ export const SchoolHomeOverview: React.FC = () => {
                         <input
                           id={`honor-file-input-${student.rank}`}
                           type="file"
-                          accept="image/*"
+                          accept={HOMEPAGE_IMAGE_ACCEPT}
                           onChange={(e) => {
                             const file = e.target.files?.[0];
                             if (file) handleHonorStudentAvatarUpload(student.rank, file);
@@ -1592,7 +1674,7 @@ export const SchoolHomeOverview: React.FC = () => {
                           <input
                             id={`faculty-file-input-${teacher.id}`}
                             type="file"
-                            accept="image/*"
+                            accept={HOMEPAGE_IMAGE_ACCEPT}
                             onChange={(e) => {
                               const file = e.target.files?.[0];
                               if (file) handleFacultyAvatarUpload(teacher.id, file);
@@ -1807,6 +1889,11 @@ export const SchoolHomeOverview: React.FC = () => {
 
         {/* News Cards Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          {publicLoaded && filteredNews.length === 0 && (
+            <div className="md:col-span-2 p-6 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 text-center text-xs text-slate-500">
+              لا توجد أخبار منشورة في الصفحة الرسمية حالياً.
+            </div>
+          )}
           {filteredNews.map((news) => (
             <div
               key={news.id}
@@ -1814,9 +1901,12 @@ export const SchoolHomeOverview: React.FC = () => {
             >
               <div className="space-y-3">
                 <div
-                  className="relative overflow-hidden rounded-2xl h-44 group cursor-pointer"
-                  onClick={() => document.getElementById(`news-file-input-${news.id}`)?.click()}
-                  title="اضغط لتغيير صورة الخبر من جهازك"
+                  className={`relative overflow-hidden rounded-2xl h-44 group ${isHomepageAdmin ? 'cursor-pointer' : ''}`}
+                  onClick={() => {
+                    if (!isHomepageAdmin) return;
+                    document.getElementById(`news-file-input-${news.id}`)?.click();
+                  }}
+                  title={isHomepageAdmin ? 'اضغط لتغيير صورة الخبر من جهازك' : undefined}
                 >
                   <img
                     src={news.image || 'https://images.unsplash.com/photo-1523240795612-9a054b0db644?w=800&auto=format&fit=crop&q=80'}
@@ -1824,20 +1914,24 @@ export const SchoolHomeOverview: React.FC = () => {
                     className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                     referrerPolicy="no-referrer"
                   />
-                  <input
-                    id={`news-file-input-${news.id}`}
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) handleNewsImageUpload(news.id, file);
-                    }}
-                    className="hidden"
-                  />
+                  {isHomepageAdmin && (
+                    <input
+                      id={`news-file-input-${news.id}`}
+                      type="file"
+                      accept={HOMEPAGE_IMAGE_ACCEPT}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) handleNewsImageUpload(news.id, file);
+                      }}
+                      className="hidden"
+                    />
+                  )}
+                  {isHomepageAdmin && (
                   <div className="absolute top-3 left-3 px-2.5 py-1 rounded-xl bg-slate-950/80 text-teal-300 text-xs font-bold backdrop-blur-md opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 border border-teal-500/30">
                     <Camera className="w-3.5 h-3.5 text-teal-400" />
                     <span>تغيير الصورة</span>
                   </div>
+                  )}
                   <span className="absolute top-3 right-3 px-3 py-1 rounded-full bg-slate-900/80 text-white text-[11px] font-bold backdrop-blur-md">
                     {news.category}
                   </span>
@@ -1952,21 +2046,29 @@ export const SchoolHomeOverview: React.FC = () => {
               <img
                 src={photo.url || 'https://images.unsplash.com/photo-1523240795612-9a054b0db644?w=800&auto=format&fit=crop&q=80'}
                 alt={photo.title}
-                onClick={() => document.getElementById(`gallery-file-input-${photo.id}`)?.click()}
+                onClick={() => {
+                  if (isHomepageAdmin) {
+                    document.getElementById(`gallery-file-input-${photo.id}`)?.click();
+                    return;
+                  }
+                  setActivePhotoModal(photo);
+                }}
                 className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500 cursor-pointer"
-                title="اضغط لتغيير هذه الصورة من جهازك"
+                title={isHomepageAdmin ? 'اضغط لتغيير هذه الصورة من جهازك' : photo.title}
                 referrerPolicy="no-referrer"
               />
+              {isHomepageAdmin && (
               <input
                 id={`gallery-file-input-${photo.id}`}
                 type="file"
-                accept="image/*"
+                accept={HOMEPAGE_IMAGE_ACCEPT}
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (file) handleGalleryImageUpload(photo.id, file);
                 }}
                 className="hidden"
               />
+              )}
               <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent opacity-80 group-hover:opacity-90 transition-opacity pointer-events-none" />
 
               <div className="absolute bottom-3 right-3 left-3 space-y-1 text-white pointer-events-none">
@@ -1982,6 +2084,7 @@ export const SchoolHomeOverview: React.FC = () => {
               </div>
 
               <div className="absolute top-3 left-3 flex items-center gap-2 z-10">
+                {isHomepageAdmin && (
                 <button
                   type="button"
                   onClick={() => document.getElementById(`gallery-file-input-${photo.id}`)?.click()}
@@ -1991,6 +2094,7 @@ export const SchoolHomeOverview: React.FC = () => {
                   <Camera className="w-3.5 h-3.5 text-teal-400" />
                   <span>تغيير</span>
                 </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setActivePhotoModal(photo)}
@@ -2032,9 +2136,12 @@ export const SchoolHomeOverview: React.FC = () => {
             </button>
 
             <div
-              className="relative h-64 group cursor-pointer"
-              onClick={() => document.getElementById(`news-modal-file-input-${activeNewsModal.id}`)?.click()}
-              title="اضغط هنا لتغيير صورة الخبر من مستكشف الملفات"
+              className={`relative h-64 group ${isHomepageAdmin ? 'cursor-pointer' : ''}`}
+              onClick={() => {
+                if (!isHomepageAdmin) return;
+                document.getElementById(`news-modal-file-input-${activeNewsModal.id}`)?.click();
+              }}
+              title={isHomepageAdmin ? 'اضغط هنا لتغيير صورة الخبر من مستكشف الملفات' : undefined}
             >
               <img
                 src={activeNewsModal.image || 'https://images.unsplash.com/photo-1523240795612-9a054b0db644?w=800&auto=format&fit=crop&q=80'}
@@ -2042,22 +2149,26 @@ export const SchoolHomeOverview: React.FC = () => {
                 className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                 referrerPolicy="no-referrer"
               />
+              {isHomepageAdmin && (
               <input
                 id={`news-modal-file-input-${activeNewsModal.id}`}
                 type="file"
-                accept="image/*"
+                accept={HOMEPAGE_IMAGE_ACCEPT}
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (file) handleNewsImageUpload(activeNewsModal.id, file);
                 }}
                 className="hidden"
               />
+              )}
+              {isHomepageAdmin && (
               <div className="absolute top-4 right-4 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
                 <span className="px-3 py-1.5 rounded-xl bg-slate-950/80 text-teal-300 font-bold text-xs flex items-center gap-1.5 border border-teal-500/40 backdrop-blur-md">
                   <Camera className="w-4 h-4 text-teal-400" />
                   <span>تغيير صورة الخبر من جهازك</span>
                 </span>
               </div>
+              )}
               <div className="absolute inset-0 bg-gradient-to-t from-slate-900 via-transparent to-transparent opacity-80" />
               <div className="absolute bottom-4 right-4 left-4 text-white">
                 <span className="px-3 py-1 rounded-full bg-indigo-600 text-white text-xs font-bold">
@@ -2120,9 +2231,12 @@ export const SchoolHomeOverview: React.FC = () => {
             </button>
 
             <div
-              className="max-h-[70vh] overflow-hidden flex items-center justify-center bg-black relative group cursor-pointer"
-              onClick={() => document.getElementById(`lightbox-file-input-${activePhotoModal.id}`)?.click()}
-              title="اضغط لتغيير الصورة من مستكشف الملفات"
+              className={`max-h-[70vh] overflow-hidden flex items-center justify-center bg-black relative group ${isHomepageAdmin ? 'cursor-pointer' : ''}`}
+              onClick={() => {
+                if (!isHomepageAdmin) return;
+                document.getElementById(`lightbox-file-input-${activePhotoModal.id}`)?.click();
+              }}
+              title={isHomepageAdmin ? 'اضغط لتغيير الصورة من مستكشف الملفات' : undefined}
             >
               <img
                 src={activePhotoModal.url || 'https://images.unsplash.com/photo-1523240795612-9a054b0db644?w=800&auto=format&fit=crop&q=80'}
@@ -2130,22 +2244,26 @@ export const SchoolHomeOverview: React.FC = () => {
                 className="max-h-[70vh] w-auto object-contain"
                 referrerPolicy="no-referrer"
               />
+              {isHomepageAdmin && (
               <input
                 id={`lightbox-file-input-${activePhotoModal.id}`}
                 type="file"
-                accept="image/*"
+                accept={HOMEPAGE_IMAGE_ACCEPT}
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (file) handleGalleryImageUpload(activePhotoModal.id, file);
                 }}
                 className="hidden"
               />
+              )}
+              {isHomepageAdmin && (
               <div className="absolute bottom-4 left-4 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
                 <span className="px-3 py-1.5 rounded-xl bg-slate-950/80 text-teal-300 text-xs font-bold flex items-center gap-1.5 border border-teal-500/40 backdrop-blur-md">
                   <Camera className="w-4 h-4 text-teal-400" />
                   <span>اضغط لتغيير هذه الصورة من جهازك</span>
                 </span>
               </div>
+              )}
             </div>
 
             <div className="p-6 space-y-2">

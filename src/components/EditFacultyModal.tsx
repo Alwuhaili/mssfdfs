@@ -23,6 +23,12 @@ import {
   ArrowUpZA,
   ArrowUpDown,
 } from 'lucide-react';
+import {
+  HOMEPAGE_IMAGE_ACCEPT,
+  homepageStorageErrorMessage,
+  uploadHomepageImage,
+} from '../services/homepageStorageService';
+import { persistPrivateHomepageImageUrl } from '../utils/publicHomepageImageUrl';
 
 export interface FacultyMember {
   id: string;
@@ -73,18 +79,29 @@ export const EditFacultyModal: React.FC<EditFacultyModalProps> = ({
   const [selectedId, setSelectedId] = useState<string>('');
   const [savedToast, setSavedToast] = useState<string | null>(null);
   const [deleteConfirmTeacher, setDeleteConfirmTeacher] = useState<FacultyMember | null>(null);
+  const [imageUploading, setImageUploading] = useState(false);
 
   const handleAvatarFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          setFormData((prev) => ({ ...prev, avatar: reader.result as string }));
-        }
-      };
-      reader.readAsDataURL(file);
-    }
+    e.target.value = '';
+    if (!file) return;
+    const teacherId = formData.id || selectedId;
+    if (!teacherId) return;
+    setImageUploading(true);
+    void (async () => {
+      try {
+        const uploaded = await uploadHomepageImage(file, { kind: 'faculty', teacherId });
+        setFormData((prev) => ({ ...prev, avatar: uploaded.downloadUrl }));
+        setLocalList((prev) =>
+          prev.map((item) => (item.id === teacherId ? { ...item, avatar: uploaded.downloadUrl } : item))
+        );
+      } catch (error) {
+        setSavedToast(homepageStorageErrorMessage(error));
+        setTimeout(() => setSavedToast(null), 3500);
+      } finally {
+        setImageUploading(false);
+      }
+    })();
   };
 
   // Active form data
@@ -230,8 +247,10 @@ export const EditFacultyModal: React.FC<EditFacultyModalProps> = ({
 
     // Filter empty achievements
     const cleanedAchievements = formData.achievements.filter((a) => a.trim().length > 0);
+    const previous = localList.find((item) => item.id === selectedId);
     const updatedForm = {
       ...formData,
+      avatar: persistPrivateHomepageImageUrl(formData.avatar, previous?.avatar),
       achievements: cleanedAchievements.length > 0 ? cleanedAchievements : ['إنجازات أكاديمية ومشاركة بالمهرجانات والمعارض العلمية'],
     };
 
@@ -591,8 +610,9 @@ export const EditFacultyModal: React.FC<EditFacultyModalProps> = ({
                 <input
                   ref={avatarFileInputRef}
                   type="file"
-                  accept="image/*"
+                  accept={HOMEPAGE_IMAGE_ACCEPT}
                   onChange={handleAvatarFileUpload}
+                  disabled={imageUploading}
                   className="hidden"
                 />
 
