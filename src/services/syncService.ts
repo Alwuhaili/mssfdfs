@@ -9,6 +9,7 @@ import {
   where,
   runTransaction,
   setDoc,
+  deleteDoc,
   writeBatch,
 } from 'firebase/firestore';
 import {
@@ -16,6 +17,13 @@ import {
   mergeRealtimeMessageBuckets as mergeMessageBuckets,
   restoreRealtimeMessagesAfterGenericFetch,
 } from '../utils/messageSyncIsolation';
+import {
+  DEDICATED_WRITE_ONLY_KEYS,
+  planCollectionArrayPatch,
+  stripDedicatedWriteOnlyKeys,
+} from '../utils/collectionSyncSafety';
+
+export { DEDICATED_WRITE_ONLY_KEYS, stripDedicatedWriteOnlyKeys };
 import { persistDirectMessageDocument } from './persistDirectMessage';
 import { persistNotificationUserStateDocument } from './persistNotificationUserState';
 
@@ -124,28 +132,12 @@ const deepEqual = (a: any, b: any) => stableStringify(a) === stableStringify(b);
 // SCHOOL_ADMIN_DATA_SYNC_GUARD_V1
 export const SCHOOL_ADMIN_DATA_SYNC_KEY = 'schoolAdminData';
 
-// SCHOOL_ADMIN_DATA_DEDICATED_WRITE_V2
-// These keys must never be written through generic pushUpdates / full payloads.
-const DEDICATED_WRITE_ONLY_KEYS = new Set<string>([SCHOOL_ADMIN_DATA_SYNC_KEY, 'teachers', 'graduates']);
-
 export function omitDedicatedPendingSyncKeys(
   payload: Record<string, any> | null | undefined,
   pendingKeys: readonly string[]
 ): Record<string, any> {
   const next: Record<string, any> = { ...(payload && typeof payload === 'object' ? payload : {}) };
   for (const key of pendingKeys) {
-    if (Object.prototype.hasOwnProperty.call(next, key)) {
-      delete next[key];
-    }
-  }
-  return next;
-}
-
-export function stripDedicatedWriteOnlyKeys(
-  payload: Record<string, any> | null | undefined
-): Record<string, any> {
-  const next: Record<string, any> = { ...(payload && typeof payload === 'object' ? payload : {}) };
-  for (const key of DEDICATED_WRITE_ONLY_KEYS) {
     if (Object.prototype.hasOwnProperty.call(next, key)) {
       delete next[key];
     }
@@ -936,13 +928,14 @@ class CentralSyncService {
     const baseMap = new Map(base.map((item) => [item.id, item]));
     const localMap = new Map(local.map((item) => [item.id, item]));
     const changedIds = new Set<string>();
+    const arrayPatchPlan = planCollectionArrayPatch(local, base);
+    if (arrayPatchPlan.inferredDeleteIds.length > 0) {
+      throw new Error(`SYNC_MASS_DELETE_SAFETY_V1: inferred deletes are forbidden for ${key}`);
+    }
 
     for (const [id, localItem] of localMap.entries()) {
       const baseItem = baseMap.get(id);
       if (baseItem === undefined || !deepEqual(key === 'messages' ? stripMessageMailboxOverlay(localItem) : localItem, key === 'messages' ? stripMessageMailboxOverlay(baseItem) : baseItem)) changedIds.add(id);
-    }
-    for (const id of baseMap.keys()) {
-      if (!localMap.has(id)) changedIds.add(id);
     }
 
     // SECURITY_MESSAGING_NEW_MESSAGE_CREATE_V1_3C
@@ -977,9 +970,8 @@ class CentralSyncService {
           const snap = serverSnapshots[index];
           const serverItem = snap.exists() ? stripInternalFields(snap.data()) : undefined;
 
-          // Local deletion: only delete when server still equals our base snapshot.
+          // SYNC_MASS_DELETE_SAFETY_V1: absence from a client array is never a delete.
           if (baseItem !== undefined && localItem === undefined) {
-            if (serverItem !== undefined && deepEqual(serverItem, baseItem)) tx.delete(ref);
             return;
           }
 
@@ -1173,7 +1165,68 @@ class CentralSyncService {
     }
   }
 
-  // SECURITY_MESSAGING_USER_STATE_SERVICE_V1_3D6B
+  public async createCollectionDocument(
+    key: string,
+    id: string,
+    localItem: any,
+    sourceUser?: SyncUser
+  ): Promise<SyncResponse> {
+    return this.upsertCollectionDocument(key, id, localItem, undefined, sourceUser);
+  }
+
+  public async updateCollectionDocument(
+    key: string,
+    id: string,
+    localItem: any,
+    baseItem: any,
+    sourceUser?: SyncUser
+  ): Promise<SyncResponse> {
+    return this.upsertCollectionDocument(key, id, localItem, baseItem, sourceUser);
+  }
+
+  // SYNC_MASS_DELETE_SAFETY_V1: the only collection delete path is an explicit id.
+  public async deleteCollectionDocument(
+    key: string,
+    id: string,
+    sourceUser?: SyncUser
+  ): Promise<SyncResponse> {
+    if (!this.isOnline) return { success: false, message: 'الجهاز غير متصل بالإنترنت حالياً' };
+    try {
+      const migration = await this.readMigrationMeta();
+      if (migration?.status !== 'completed') {
+        return { success: false, message: 'ترحيل Collections لم يكتمل؛ تم منع الكتابة لحماية البيانات.' };
+      }
+      const map = await this.ensureStorageMapLoaded();
+      const mode = map[key] || 'collection';
+      if (mode !== 'collection') {
+        return { success: false, message: `المفتاح ${key} ليس Collection في مخطط Firestore الحالي.` };
+      }
+      if (!this.canWriteKey(key, sourceUser)) {
+        return { success: false, message: `تم منع حذف ${key} بسبب الصلاحيات.` };
+      }
+      if (!id) {
+        return { success: false, message: 'معرف السجل غير صالح.' };
+      }
+      await deleteDoc(doc(db, key, safeDocId(id)));
+      this.currentVersion = Math.max(this.currentVersion + 1, Date.now());
+      this.lastSyncedBy = clone(sourceUser || {});
+      this.lastModified = new Date().toISOString();
+      const version = this.currentVersion;
+      this.broadcastToTabs('SERVER_DATA_UPDATED', undefined, version);
+      return {
+        success: true,
+        version,
+        lastModified: this.lastModified,
+        lastSyncedBy: this.lastSyncedBy,
+      };
+    } catch (err: any) {
+      console.error(`[SyncService] delete ${key}/${id} failed:`, err);
+      return {
+        success: false,
+        message: `${err?.code ? `[${err.code}] ` : ''}${err?.message || 'فشل حذف السجل في Firestore'}`,
+      };
+    }
+  }
   public async readCurrentUserMessageStates(): Promise<Record<string, any>> {
     await authIsolationReady;
     const user = auth.currentUser;

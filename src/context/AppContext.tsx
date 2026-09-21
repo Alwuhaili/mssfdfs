@@ -3741,6 +3741,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const isAdminActor = () => role === 'admin' && currentUser?.role === 'admin';
 
+  const persistCollectionDoc = async (key: string, id: string, item: any, baseItem?: any): Promise<boolean> => {
+    const res = await centralSyncService.upsertCollectionDocument(key, id, item, baseItem, syncSourceUser());
+    return res.success;
+  };
+
+  const deleteCollectionDoc = async (key: string, id: string): Promise<boolean> => {
+    const res = await centralSyncService.deleteCollectionDocument(key, id, syncSourceUser());
+    return res.success;
+  };
+
+  const persistChangedCollectionDocs = (key: string, previous: Array<{ id: string }>, next: Array<{ id: string }>) => {
+    const prevMap = new Map(previous.map((item) => [item.id, item]));
+    next.forEach((item) => {
+      const before = prevMap.get(item.id);
+      if (JSON.stringify(before) !== JSON.stringify(item)) {
+        void persistCollectionDoc(key, item.id, item, before);
+      }
+    });
+  };
+
   const publishHonorFromLists = async (nextStudents: Student[], nextGraduates: GraduateStudent[]) => {
     if (!isAdminActor()) return;
     await publishPublicHonorBoard(buildPublicHonorBoard(nextStudents, nextGraduates));
@@ -3767,7 +3787,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setTeachers(updated);
     teachersRef.current = updated;
     try {
-      const ok = await centralSyncService.directArrayMutation('teachers', updated, syncSourceUser());
+      const ok = await persistCollectionDoc('teachers', newTeacher.id, newTeacher);
       if (!ok) {
         setTeachers(previous);
         teachersRef.current = previous;
@@ -3820,12 +3840,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       status: 'منتظمة',
       enrollmentYear: data.enrollmentYear?.trim() || '2026',
     };
-    setStudents((prev) => {
-      const updated = [newStudent, ...prev];
-      // Instantly sync to firebase
-      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
-    });
+    setStudents((prev) => [newStudent, ...prev]);
+    void persistCollectionDoc('students', studentId, newStudent);
 
     // Auto add parent account link
     const newParent: Parent = {
@@ -3838,11 +3854,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       studentName: newStudent.name,
       gradeLevel: newStudent.gradeLevel,
     };
-    setParents((prev) => {
-      const updated = [newParent, ...prev];
-      centralSyncService.directArrayMutation('parents', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
-    });
+    setParents((prev) => [newParent, ...prev]);
+    void persistCollectionDoc('parents', parentId, newParent);
 
     // Create initial tuition financial record
     const fin: FinancialRecord = {
@@ -3900,7 +3913,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setTeachers(updatedArray);
     teachersRef.current = updatedArray;
     try {
-      const ok = await centralSyncService.directArrayMutation('teachers', updatedArray, syncSourceUser());
+      const ok = await persistCollectionDoc('teachers', id, updatedArray.find((t) => t.id === id), target);
       if (!ok) {
         setTeachers(previous);
         teachersRef.current = previous;
@@ -3935,7 +3948,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setTeachers(updated);
     teachersRef.current = updated;
     try {
-      const ok = await centralSyncService.directArrayMutation('teachers', updated, syncSourceUser());
+      const ok = await deleteCollectionDoc('teachers', id);
       if (!ok) {
         setTeachers(previous);
         teachersRef.current = previous;
@@ -4038,7 +4051,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setStudents(updatedStudents);
     studentsRef.current = updatedStudents;
     try {
-      const ok = await centralSyncService.directArrayMutation('students', updatedStudents, syncSourceUser());
+      const ok = await persistCollectionDoc('students', id, targetStudent, currentStudent);
       if (!ok) {
         setStudents(previousStudents);
         studentsRef.current = previousStudents;
@@ -4046,7 +4059,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       setParents(updatedParents);
-      void centralSyncService.directArrayMutation('parents', updatedParents, syncSourceUser());
+      const linkedParent = updatedParents.find((p) => p.id === targetStudent.parentId || p.studentId === id);
+      if (linkedParent) {
+        const previousParent = parents.find((p) => p.id === linkedParent.id);
+        void persistCollectionDoc('parents', linkedParent.id, linkedParent, previousParent);
+      }
 
       if (!hasFin) {
         setFinancial(updatedFin);
@@ -4096,32 +4113,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateStudentBadges = (studentId: string, badges: string[]) => {
-    setStudents((prev) =>
-      prev.map((s) => (s.id === studentId ? { ...s, badges } : s))
-    );
+    setStudents((prev) => {
+      const next = prev.map((s) => (s.id === studentId ? { ...s, badges } : s));
+      const updated = next.find((s) => s.id === studentId);
+      const before = prev.find((s) => s.id === studentId);
+      if (updated) void persistCollectionDoc('students', studentId, updated, before);
+      return next;
+    });
   };
 
   const deleteStudent = (id: string) => {
-    let deletedName = '';
-    setStudents((prev) => {
-      const target = prev.find((s) => s.id === id);
-      if (target) deletedName = target.name;
-      const updated = prev.filter((s) => s.id !== id);
-      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
-    });
-    // Delete their passcode completely from the system instead of leaving it
+    const target = studentsRef.current.find((s) => s.id === id);
+    const deletedName = target?.name || '';
+    const linkedParentId = target?.parentId;
+    setStudents((prev) => prev.filter((s) => s.id !== id));
+    studentsRef.current = studentsRef.current.filter((s) => s.id !== id);
+    void deleteCollectionDoc('students', id);
     setUserPasscodes(prev => {
       const copy = { ...prev };
       delete copy[`student-${id}`];
             return copy;
     });
-    // Also remove parent linked record if any
-    setParents((prev) => {
-      const updated = prev.filter((p) => p.studentId !== id);
-      centralSyncService.directArrayMutation('parents', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
-      return updated;
-    });
+    if (linkedParentId) {
+      setParents((prev) => prev.filter((p) => p.id !== linkedParentId && p.studentId !== id));
+      void deleteCollectionDoc('parents', linkedParentId);
+    } else {
+      const linked = parents.find((p) => p.studentId === id);
+      setParents((prev) => prev.filter((p) => p.studentId !== id));
+      if (linked?.id) void deleteCollectionDoc('parents', linked.id);
+    }
     setFinancial((prev) => {
       const updated = prev.filter((f) => f.studentId !== id);
       centralSyncService.directArrayMutation('financial', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
@@ -4161,6 +4181,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           isPrimary: s.id === newSupervisor.id,
         }));
       }
+      persistChangedCollectionDocs('supervisors', prev, updatedList);
       return updatedList;
     });
 
@@ -4195,7 +4216,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateSupervisor = (id: string, updated: Partial<EducationalSupervisor>) => {
     let supervisorName = '';
     setSupervisors((prev) => {
-      return prev.map((s) => {
+      const next = prev.map((s) => {
         if (s.id === id) {
           supervisorName = updated.name || s.name;
           const merged = { ...s, ...updated };
@@ -4206,6 +4227,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         return s;
       });
+      persistChangedCollectionDocs('supervisors', prev, next);
+      return next;
     });
 
     if (updated.isPrimary || (updated.name && supervisors.find(s => s.id === id)?.isPrimary)) {
@@ -4247,7 +4270,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           academicSupervisorName: remaining[0].name,
           timetableSupervisorName: remaining[0].name,
         });
+        void persistCollectionDoc('supervisors', remaining[0].id, remaining[0]);
       }
+      void deleteCollectionDoc('supervisors', id);
       return remaining;
     });
 
@@ -4266,12 +4291,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const target = supervisors.find((s) => s.id === id);
     if (!target) return;
 
-    setSupervisors((prev) =>
-      prev.map((s) => ({
+    setSupervisors((prev) => {
+      const next = prev.map((s) => ({
         ...s,
         isPrimary: s.id === id,
-      }))
-    );
+      }));
+      persistChangedCollectionDocs('supervisors', prev, next);
+      return next;
+    });
 
     updateSchoolAdminData({
       academicSupervisorName: target.name,
@@ -4301,7 +4328,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     graduatesRef.current = next;
     if (!isAdminActor() || !isInitialHydrationDone.current) return;
     const token = beginPendingSyncMutation('graduates');
-    void centralSyncService.directArrayMutation('graduates', next, syncSourceUser()).then((ok) => {
+    void persistCollectionDoc('graduates', newGrad.id, newGrad).then((ok) => {
       if (!ok) {
         setGraduates(previous);
         graduatesRef.current = previous;
@@ -4326,7 +4353,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setGraduates(next);
     graduatesRef.current = next;
     try {
-      const ok = await centralSyncService.directArrayMutation('graduates', next, syncSourceUser());
+      const ok = await persistCollectionDoc('graduates', id, next.find((g) => g.id === id), target);
       if (!ok) {
         setGraduates(previous);
         graduatesRef.current = previous;
@@ -4346,7 +4373,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     graduatesRef.current = next;
     if (!isAdminActor() || !isInitialHydrationDone.current) return;
     const token = beginPendingSyncMutation('graduates');
-    void centralSyncService.directArrayMutation('graduates', next, syncSourceUser()).then((ok) => {
+    void deleteCollectionDoc('graduates', id).then((ok) => {
       if (!ok) {
         setGraduates(previous);
         graduatesRef.current = previous;
@@ -4427,6 +4454,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setStudents(updatedStudentsList);
     studentsRef.current = updatedStudentsList;
+    persistChangedCollectionDocs('students', students, updatedStudentsList);
 
     if (newGraduatesToInsert.length > 0) {
       const previousGrads = graduatesRef.current;
@@ -4438,7 +4466,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       graduatesRef.current = nextGrads;
       if (isAdminActor() && isInitialHydrationDone.current) {
         const token = beginPendingSyncMutation('graduates');
-        void centralSyncService.directArrayMutation('graduates', nextGrads, syncSourceUser()).then((ok) => {
+        void Promise.all(filtered.map((grad) => persistCollectionDoc('graduates', grad.id, grad))).then((results) => {
+          const ok = results.every(Boolean);
           if (!ok) {
             setGraduates(previousGrads);
             graduatesRef.current = previousGrads;
@@ -4454,13 +4483,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateParent = (id: string, updated: Partial<Parent>) => {
-    setParents((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, ...updated } : p))
-    );
+    setParents((prev) => {
+      const next = prev.map((p) => (p.id === id ? { ...p, ...updated } : p));
+      const after = next.find((p) => p.id === id);
+      const before = prev.find((p) => p.id === id);
+      if (after) void persistCollectionDoc('parents', id, after, before);
+      return next;
+    });
   };
 
   const deleteParent = (id: string) => {
     setParents((prev) => prev.filter((p) => p.id !== id));
+    void deleteCollectionDoc('parents', id);
   };
 
   const updateFinancialRecord = (id: string, updated: Partial<FinancialRecord>) => {
@@ -4899,7 +4933,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             warningLevel: newWarn
           };
         });
-        centralSyncService.directArrayMutation('students', updatedArray, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+        persistChangedCollectionDocs('students', prev, updatedArray);
         return updatedArray;
       });
     }
@@ -4979,7 +5013,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               warningLevel: newWarn
             };
           });
-          centralSyncService.directArrayMutation('students', updatedArray, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+          persistChangedCollectionDocs('students', prev, updatedArray);
           return updatedArray;
         });
       }
@@ -5164,7 +5198,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         return s;
       });
-      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      persistChangedCollectionDocs('students', prev, updated);
       return updated;
     });
   };
@@ -5306,7 +5340,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             warningLevel: newWarn
           };
         });
-        centralSyncService.directArrayMutation('students', updatedArray, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+        persistChangedCollectionDocs('students', prev, updatedArray);
         return updatedArray;
       });
     }
@@ -5466,7 +5500,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           warningLevel: newWarn
         };
       });
-      centralSyncService.directArrayMutation('students', updatedArray, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      persistChangedCollectionDocs('students', prev, updatedArray);
       return updatedArray;
     });
 
@@ -5671,7 +5705,7 @@ ${newDecision.notes || 'يرجى مراجعة إدارة المدرسة فورا
           warningLevel: newWarn
         };
       });
-      centralSyncService.directArrayMutation('students', updatedArray, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      persistChangedCollectionDocs('students', prev, updatedArray);
       return updatedArray;
     });
 
@@ -5788,7 +5822,7 @@ ${defaultReason}
         // For now just removing it from the array.
         return { ...s, disciplinaryDecisions: filteredDecisions };
       });
-      centralSyncService.directArrayMutation('students', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      persistChangedCollectionDocs('students', prev, updated);
       return updated;
     });
   };
