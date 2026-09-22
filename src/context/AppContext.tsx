@@ -781,6 +781,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, []);
 
+  // SECURITY_AUTH_LIVE_PROFILE_GUARD_V1
+  // FORCE_LOGOUT_ON_ACCOUNT_BLOCK_V1
+  // Live-watch the verified Firestore profile so a mid-session block/suspend
+  // signs the user out without requiring a refresh. Admin is excluded.
+  useEffect(() => {
+    if (!currentUser?.authUid || currentUser.role === 'admin') return undefined;
+
+    const unsubscribe = FirebaseAuthService.watchAuthenticatedProfileSession(currentUser, () => {
+      setCurrentUser(null);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [currentUser?.authUid, currentUser?.role, currentUser?.profileId, currentUser?.profileCollection]);
+
   // One-time cleanup for browsers that still contain the old automatic-login keys.
   useEffect(() => {
     try {
@@ -3254,15 +3270,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let generatedCount = 0;
     let skippedCount = 0;
     const academicYear = customAcademicYear || schoolAdminData?.academicYear || '2026 - 2027';
+    const normalizeAcademicYear = (value?: string) =>
+      String(value || '')
+        .trim()
+        .replace(/\s+/g, '')
+        .replace(/\//g, '-');
+    const normalizedAcademicYear = normalizeAcademicYear(academicYear);
     const nowIso = new Date().toISOString().split('T')[0];
 
     const newOrUpdatedCerts: StudentCertificate[] = [];
     const targetStudentIds = new Set(targetStudents.map((s) => s.id));
-    const targetNationalIds = new Set(targetStudents.map((s) => s.nationalId));
+    const targetNationalIds = new Set(
+      targetStudents.map((s) => s.nationalId).filter((id): id is string => Boolean(id))
+    );
 
     targetStudents.forEach((student, sIdx) => {
       const existingCert = certificates.find(
-        (c) => c.studentId === student.id || c.nationalId === student.nationalId
+        (c) =>
+          (c.studentId === student.id ||
+            (Boolean(student.nationalId) && c.nationalId === student.nationalId)) &&
+          normalizeAcademicYear(c.academicYear) === normalizedAcademicYear
       );
 
       if (existingCert && !overwriteExisting) {
@@ -3346,9 +3373,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setCertificates((prev) => {
       if (overwriteExisting) {
-        const remaining = prev.filter(
-          (c) => !targetStudentIds.has(c.studentId) && !targetNationalIds.has(c.nationalId)
-        );
+        const remaining = prev.filter((c) => {
+          const belongsToTargetStudent =
+            targetStudentIds.has(c.studentId) ||
+            (Boolean(c.nationalId) && targetNationalIds.has(c.nationalId));
+
+          const belongsToTargetAcademicYear =
+            normalizeAcademicYear(c.academicYear) === normalizedAcademicYear;
+
+          return !(belongsToTargetStudent && belongsToTargetAcademicYear);
+        });
         return [...remaining, ...newOrUpdatedCerts];
       }
       return [...prev, ...newOrUpdatedCerts];
@@ -3372,11 +3406,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteCertificate = (id: string) => {
     setCertificates((prev) => prev.filter((c) => c.id !== id));
+    void deleteCollectionDoc('certificates', id);
   };
 
   const deleteMultipleCertificates = (ids: string[]) => {
     const idSet = new Set(ids);
     setCertificates((prev) => prev.filter((c) => !idSet.has(c.id)));
+
+    ids.forEach((id) => {
+      void deleteCollectionDoc('certificates', id);
+    });
   };
 
   const deleteCertificatesForScope = (options: {
@@ -3401,14 +3440,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       remaining = certificates.filter((c) => c.studentId !== studentId && c.id !== studentId);
     }
 
+    const remainingIds = new Set(remaining.map((certificate) => certificate.id));
+    const certificatesToDelete = certificates.filter(
+      (certificate) => !remainingIds.has(certificate.id)
+    );
+
     const deletedCount = initialCount - remaining.length;
     setCertificates(remaining);
+
+    certificatesToDelete.forEach((certificate) => {
+      void deleteCollectionDoc('certificates', certificate.id);
+    });
 
     const message = `تم حذف (${deletedCount}) شهادة مدرسية بنجاح.`;
     return { deletedCount, message };
   };
 
   const clearAllCertificates = () => {
+    const certificatesToDelete = [...certificates];
+
+    certificatesToDelete.forEach((certificate) => {
+      void deleteCollectionDoc('certificates', certificate.id);
+    });
     setCertificates([]);
   };
 
