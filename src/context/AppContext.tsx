@@ -3164,42 +3164,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!student) return;
 
     const subjectsList = getSubjectsForGrade(student.gradeLevel);
-    const defaultSubjects: SubjectGrade[] = subjectsList.map((subjectName, idx) => {
-      if (isBlank) {
-        return {
-          id: `sub-${student.id}-${idx + 1}`,
-          subjectName,
-          firstTermAvg: 0,
-          midYearGrade: 0,
-          secondTermAvg: 0,
-          annualSaeiAvg: 0,
-          finalExamGrade: 0,
-          finalGrade: 0,
-          resitGrade: null,
-          postResitGrade: 0,
-          decisionMarks: 0,
-          isExempt: false,
-          exemptionType: 'none',
-          notes: '',
-        };
-      }
-      return {
-        id: `sub-${Date.now()}-${idx + 1}`,
-        subjectName,
-        firstTermAvg: 90,
-        midYearGrade: 92,
-        secondTermAvg: 90,
-        annualSaeiAvg: 91,
-        finalExamGrade: 94,
-        finalGrade: 93,
-        resitGrade: null,
-        postResitGrade: 93,
-        decisionMarks: 0,
-        isExempt: false,
-        exemptionType: 'none',
-        notes: '',
-      };
-    });
+    // CERTIFICATE_OFFICIAL_GRADES_ONLY_V2
+    // A new official certificate starts without academic results.
+    // Verified grades must be entered or imported separately.
+    const defaultSubjects: SubjectGrade[] = subjectsList.map((subjectName, idx) => ({
+      id: `sub-${student.id}-${idx + 1}`,
+      subjectName,
+      firstTermAvg: 0,
+      midYearGrade: 0,
+      secondTermAvg: 0,
+      annualSaeiAvg: 0,
+      finalExamGrade: 0,
+      finalGrade: 0,
+      resitGrade: null,
+      postResitGrade: 0,
+      decisionMarks: 0,
+      isExempt: false,
+      exemptionType: 'none',
+      notes: '',
+    }));
 
     const newCert: StudentCertificate = computeCertificateStats({
       id: `cert-${student.id}-${Date.now()}`,
@@ -3210,8 +3193,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       section: student.section,
       academicYear: schoolAdminData?.academicYear || '2026 - 2027',
       issueDate: new Date().toISOString().split('T')[0],
-      status: isBlank ? 'مؤجلة' : 'ناجحة',
-      appreciation: isBlank ? '-' : 'ممتاز',
+      status: 'مؤجلة',
+      appreciation: '-',
       overallFirstTermAvg: 0,
       overallMidYearGrade: 0,
       overallSecondTermAvg: 0,
@@ -3220,7 +3203,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       overallFinalGrade: 0,
       overallPostResitAvg: 0,
       subjects: defaultSubjects,
-      notes: isBlank ? 'نموذج شهادة رسمي جاهز للإدخال اليدوي للدرجات' : undefined,
+      notes: 'نموذج شهادة رسمي جاهز للإدخال اليدوي للدرجات',
     }, decisionSettings);
 
     setCertificates((prev) => [...prev, newCert]);
@@ -3298,50 +3281,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       const subjectsList = getSubjectsForGrade(student.gradeLevel);
-      let subjects: SubjectGrade[];
-
-      if (isBlankTemplate) {
-        // نموذج شهادة فارغ للإدخال اليدوي أو الطباعة الورقية
-        subjects = subjectsList.map((subjectName, idx) => ({
-          id: `sub-${student.id}-${idx + 1}`,
-          subjectName,
-          firstTermAvg: 0,
-          midYearGrade: 0,
-          secondTermAvg: 0,
-          annualSaeiAvg: 0,
-          finalExamGrade: 0,
-          finalGrade: 0,
-          resitGrade: null,
-          postResitGrade: 0,
-          decisionMarks: 0,
-          isExempt: false,
-          exemptionType: 'none',
-          notes: '',
-        }));
-      } else {
-        // شهادة بدرجات مقدرة بناء على معدل الطالبة
-        const baseScore = Math.max(50, Math.min(100, Math.round(student.gpa || 92)));
-        subjects = subjectsList.map((subjectName, idx) => {
-          const jitter = (idx % 5) - 2;
-          const subjectScore = Math.max(50, Math.min(100, baseScore + jitter));
-          return {
-            id: `sub-${student.id}-${idx + 1}`,
-            subjectName,
-            firstTermAvg: subjectScore,
-            midYearGrade: subjectScore,
-            secondTermAvg: subjectScore,
-            annualSaeiAvg: subjectScore,
-            finalExamGrade: subjectScore,
-            finalGrade: subjectScore,
-            resitGrade: null,
-            postResitGrade: subjectScore,
-            decisionMarks: 0,
-            isExempt: false,
-            exemptionType: 'none',
-            notes: '',
-          };
-        });
-      }
+      // CERTIFICATE_OFFICIAL_GRADES_ONLY_V2
+      // Bulk issuance creates empty official certificate records only.
+      // Never derive subject grades from student.gpa.
+      const subjects: SubjectGrade[] = subjectsList.map((subjectName, idx) => ({
+        id: `sub-${student.id}-${idx + 1}`,
+        subjectName,
+        firstTermAvg: 0,
+        midYearGrade: 0,
+        secondTermAvg: 0,
+        annualSaeiAvg: 0,
+        finalExamGrade: 0,
+        finalGrade: 0,
+        resitGrade: null,
+        postResitGrade: 0,
+        decisionMarks: 0,
+        isExempt: false,
+        exemptionType: 'none',
+        notes: '',
+      }));
 
       const rawCert: StudentCertificate = {
         id: existingCert && overwriteExisting ? existingCert.id : `cert-${student.id}-${Date.now()}-${sIdx}`,
@@ -3353,8 +3311,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         academicYear,
         issueDate: nowIso,
         certificateModel: options.targetModel || 'model3_final_round1',
-        status: isBlankTemplate ? 'مؤجلة' : 'ناجحة',
-        appreciation: isBlankTemplate ? '-' : 'امتياز',
+        status: 'مؤجلة',
+        appreciation: '-',
         overallFirstTermAvg: 0,
         overallMidYearGrade: 0,
         overallSecondTermAvg: 0,
@@ -3363,7 +3321,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         overallFinalGrade: 0,
         overallPostResitAvg: 0,
         subjects,
-        notes: isBlankTemplate ? 'نموذج شهادة رسمي جاهز للإدخال اليدوي للدرجات' : undefined,
+        notes: 'نموذج شهادة رسمي جاهز للإدخال اليدوي للدرجات',
       };
 
       const computed = computeCertificateStats(rawCert, decisionSettings);
