@@ -88,7 +88,16 @@ const PREFERRED_COLLECTION_KEYS = new Set([
   'dailyLessonPlans',
   'examSchedules',
   'customFolders',
+  'academicEnrollments',
+  'accelerationPolicies',
+  'accelerationAttempts',
 ]);
+
+const ACADEMIC_SYNC_COLLECTION_KEYS = [
+  'academicEnrollments',
+  'accelerationPolicies',
+  'accelerationAttempts',
+] as const;
 
 const ADMIN_EXCLUSIVE_KEYS = new Set([
   'teachers',
@@ -109,6 +118,9 @@ const ADMIN_EXCLUSIVE_KEYS = new Set([
   'deletedChallengeIds', // SECURITY_SYNC_ADMIN_SETTINGS_V1_3C4
   'notifications', // SECURITY_SYNC_ADMIN_NOTIFICATIONS_V1_3C5
   'auditLogs', // SECURITY_SYNC_ADMIN_AUDIT_LOGS_V1_3C6
+  'academicEnrollments',
+  'accelerationPolicies',
+  'accelerationAttempts',
 ]);
 
 const clone = <T,>(value: T): T => {
@@ -555,14 +567,24 @@ class CentralSyncService {
     return this.migrationPromise;
   }
 
-  private async ensureStorageMapLoaded(): Promise<StorageMap> {
-    if (Object.keys(this.storageMap).length > 0) return this.storageMap;
-    let meta = await this.readMigrationMeta();
-    if (meta?.status !== 'completed' || !meta?.storageMap) {
-      meta = await this.waitForMigrationCompleted();
+  private async ensureAcademicCollectionsInStorageMap(map: StorageMap): Promise<StorageMap> {
+    const next: StorageMap = { ...map };
+    for (const key of ACADEMIC_SYNC_COLLECTION_KEYS) {
+      if (next[key] !== 'collection') next[key] = 'collection';
     }
-    this.storageMap = clone(meta.storageMap);
-    return this.storageMap;
+    this.storageMap = next;
+    return next;
+  }
+
+  private async ensureStorageMapLoaded(): Promise<StorageMap> {
+    if (Object.keys(this.storageMap).length === 0) {
+      let meta = await this.readMigrationMeta();
+      if (meta?.status !== 'completed' || !meta?.storageMap) {
+        meta = await this.waitForMigrationCompleted();
+      }
+      this.storageMap = clone(meta.storageMap);
+    }
+    return this.ensureAcademicCollectionsInStorageMap(this.storageMap);
   }
 
   // SECURITY_MESSAGING_SCOPED_FETCH_V1_3D4A
@@ -775,6 +797,7 @@ class CentralSyncService {
         'attendance', 'submissions', 'financial', 'notifications', 'certificates',
         'annualPlans', 'dailyLessonPlans', 'customFolders', 'auditLogs',
         'deletedLectureIds', 'deletedChallengeIds',
+        'academicEnrollments', 'accelerationPolicies', 'accelerationAttempts',
       ]);
 
       for (const [key, mode] of Object.entries(map)) {

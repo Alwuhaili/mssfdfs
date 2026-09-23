@@ -53,6 +53,18 @@ import {
   ExamScheduleSlot,
   ExamTermType,
 } from '../types';
+import type {
+  AcademicEnrollment,
+  AccelerationAttempt,
+  AccelerationPolicy,
+} from '../types/academicHistory';
+import {
+  executeStudentAccelerationPromotion as executeStudentAccelerationPromotionTx,
+  executeStudentRegularPromotion as executeStudentRegularPromotionTx,
+  executeStudentRepeatYear as executeStudentRepeatYearTx,
+  type AcademicTransitionResult,
+} from '../services/academicTransactionsService';
+import { assertPolicyDeletable } from '../services/accelerationService';
 import {
   INITIAL_TEACHERS,
   INITIAL_STUDENTS,
@@ -144,6 +156,23 @@ interface AppContextType {
   financial: FinancialRecord[];
   notifications: NotificationItem[];
   certificates: StudentCertificate[];
+  academicEnrollments: AcademicEnrollment[];
+  accelerationPolicies: AccelerationPolicy[];
+  accelerationAttempts: AccelerationAttempt[];
+  executeStudentRepeatYear: (input: { studentId: string; actorId?: string }) => Promise<AcademicTransitionResult>;
+  executeStudentRegularPromotion: (input: {
+    studentId: string;
+    actorId?: string;
+    isSecondRound?: boolean;
+  }) => Promise<AcademicTransitionResult>;
+  executeStudentAccelerationPromotion: (input: {
+    studentId: string;
+    attemptId: string;
+    actorId?: string;
+  }) => Promise<AcademicTransitionResult>;
+  upsertAccelerationPolicy: (policy: AccelerationPolicy) => Promise<boolean>;
+  deleteAccelerationPolicy: (policyId: string) => Promise<boolean>;
+  upsertAccelerationAttempt: (attempt: AccelerationAttempt) => Promise<boolean>;
   calendarEvents: CalendarEvent[];
   schoolAdminData: SchoolAdminData;
   updateSchoolAdminData: (updated: Partial<SchoolAdminData>) => void;
@@ -1076,6 +1105,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const initialDisc = initialStored?.disciplinarySettings || DEFAULT_DISCIPLINARY_SETTINGS;
     return raw.map((c) => computeCertificateStats(c, initialSettings));
   });
+  const [academicEnrollments, setAcademicEnrollments] = useState<AcademicEnrollment[]>([]);
+  const [accelerationPolicies, setAccelerationPolicies] = useState<AccelerationPolicy[]>([]);
+  const [accelerationAttempts, setAccelerationAttempts] = useState<AccelerationAttempt[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>(
     () => initialStored?.calendarEvents || INITIAL_CALENDAR_EVENTS
   );
@@ -2612,6 +2644,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (Array.isArray(remoteData.financial)) setFinancial(remoteData.financial);
     if (Array.isArray(remoteData.notifications)) setNotifications(remoteData.notifications);
     if (Array.isArray(remoteData.certificates)) setCertificates(remoteData.certificates);
+    if (Array.isArray(remoteData.academicEnrollments)) setAcademicEnrollments(remoteData.academicEnrollments);
+    if (Array.isArray(remoteData.accelerationPolicies)) setAccelerationPolicies(remoteData.accelerationPolicies);
+    if (Array.isArray(remoteData.accelerationAttempts)) setAccelerationAttempts(remoteData.accelerationAttempts);
     if (Array.isArray(remoteData.calendarEvents)) setCalendarEvents(remoteData.calendarEvents);
     if (Array.isArray(remoteData.challenges)) setChallenges(remoteData.challenges);
     // SCHOOL_ADMIN_DATA_SYNC_GUARD_V1
@@ -3770,6 +3805,141 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         void persistCollectionDoc(key, item.id, item, before);
       }
     });
+  };
+
+  const blockedAcademicWrite = (): AcademicTransitionResult => ({
+    success: false,
+    code: 'FORBIDDEN',
+    message: 'هذه العملية الأكاديمية مخصصة للإدارة فقط.',
+  });
+
+  const executeStudentRepeatYear = async (input: {
+    studentId: string;
+    actorId?: string;
+  }): Promise<AcademicTransitionResult> => {
+    if (!isAdminActor()) return blockedAcademicWrite();
+    if (!isInitialHydrationDone.current) {
+      return { success: false, message: 'تعذر التنفيذ قبل اكتمال تحميل البيانات.' };
+    }
+    return executeStudentRepeatYearTx({
+      studentId: input.studentId,
+      actorId: input.actorId || currentUser?.id,
+    });
+  };
+
+  const executeStudentRegularPromotion = async (input: {
+    studentId: string;
+    actorId?: string;
+    isSecondRound?: boolean;
+  }): Promise<AcademicTransitionResult> => {
+    if (!isAdminActor()) return blockedAcademicWrite();
+    if (!isInitialHydrationDone.current) {
+      return { success: false, message: 'تعذر التنفيذ قبل اكتمال تحميل البيانات.' };
+    }
+    return executeStudentRegularPromotionTx({
+      studentId: input.studentId,
+      actorId: input.actorId || currentUser?.id,
+      isSecondRound: input.isSecondRound,
+    });
+  };
+
+  const executeStudentAccelerationPromotion = async (input: {
+    studentId: string;
+    attemptId: string;
+    actorId?: string;
+  }): Promise<AcademicTransitionResult> => {
+    if (!isAdminActor()) return blockedAcademicWrite();
+    if (!isInitialHydrationDone.current) {
+      return { success: false, message: 'تعذر التنفيذ قبل اكتمال تحميل البيانات.' };
+    }
+    return executeStudentAccelerationPromotionTx({
+      studentId: input.studentId,
+      attemptId: input.attemptId,
+      actorId: input.actorId || currentUser?.id,
+    });
+  };
+
+  const upsertAccelerationPolicy = async (policy: AccelerationPolicy): Promise<boolean> => {
+    if (!isAdminActor() || !policy?.id) {
+      console.warn('[SECURITY] Blocked unauthorized acceleration policy write.');
+      return false;
+    }
+    const previous = accelerationPolicies.find((row) => row.id === policy.id);
+    const ok = await persistCollectionDoc('accelerationPolicies', policy.id, policy, previous);
+    if (ok) {
+      setAccelerationPolicies((prev) => {
+        const index = prev.findIndex((row) => row.id === policy.id);
+        if (index === -1) return [policy, ...prev];
+        const next = [...prev];
+        next[index] = policy;
+        return next;
+      });
+    }
+    return ok;
+  };
+
+  const deleteAccelerationPolicy = async (policyId: string): Promise<boolean> => {
+    if (!isAdminActor() || !policyId) {
+      console.warn('[SECURITY] Blocked unauthorized acceleration policy delete.');
+      return false;
+    }
+    try {
+      // Client/domain guard only. Authoritative server-side/transactional
+      // referential enforcement for policy–attempt links is a future hardening item.
+      assertPolicyDeletable(policyId, accelerationAttempts);
+    } catch (error) {
+      console.warn('[Academic] Policy delete blocked:', error);
+      return false;
+    }
+    const ok = await deleteCollectionDoc('accelerationPolicies', policyId);
+    if (ok) {
+      setAccelerationPolicies((prev) => prev.filter((row) => row.id !== policyId));
+    }
+    return ok;
+  };
+
+  const upsertAccelerationAttempt = async (attempt: AccelerationAttempt): Promise<boolean> => {
+    if (!isAdminActor() || !attempt?.id) {
+      console.warn('[SECURITY] Blocked unauthorized acceleration attempt write.');
+      return false;
+    }
+    const previous = accelerationAttempts.find((row) => row.id === attempt.id);
+    const lockedByTransition = Boolean(
+      previous && (previous.status === 'approved' || previous.resultingEnrollmentId)
+    );
+    const toPersist: AccelerationAttempt = !previous
+      ? {
+          ...(({ resultingEnrollmentId: _ignored, ...rest }) => rest)(attempt),
+          status: attempt.status === 'approved' ? 'nominated' : attempt.status,
+        }
+      : lockedByTransition
+        ? {
+            ...previous,
+            updatedAt: attempt.updatedAt || previous.updatedAt,
+          }
+        : {
+            ...attempt,
+            studentId: previous.studentId,
+            policyId: previous.policyId,
+            sourceEnrollmentId: previous.sourceEnrollmentId,
+            sourceGradeLevel: previous.sourceGradeLevel,
+            targetExamGradeLevel: previous.targetExamGradeLevel,
+            resultingGradeLevel: previous.resultingGradeLevel,
+            policySnapshot: previous.policySnapshot,
+            createdAt: previous.createdAt,
+            resultingEnrollmentId: previous.resultingEnrollmentId,
+          };
+    const ok = await persistCollectionDoc('accelerationAttempts', toPersist.id, toPersist, previous);
+    if (ok) {
+      setAccelerationAttempts((prev) => {
+        const index = prev.findIndex((row) => row.id === toPersist.id);
+        if (index === -1) return [toPersist, ...prev];
+        const next = [...prev];
+        next[index] = toPersist;
+        return next;
+      });
+    }
+    return ok;
   };
 
   const publishHonorFromLists = async (nextStudents: Student[], nextGraduates: GraduateStudent[]) => {
@@ -7204,6 +7374,15 @@ ${defaultReason}
         financial,
         notifications,
         certificates,
+        academicEnrollments,
+        accelerationPolicies,
+        accelerationAttempts,
+        executeStudentRepeatYear,
+        executeStudentRegularPromotion,
+        executeStudentAccelerationPromotion,
+        upsertAccelerationPolicy,
+        deleteAccelerationPolicy,
+        upsertAccelerationAttempt,
         calendarEvents,
         schoolAdminData,
         updateSchoolAdminData,
