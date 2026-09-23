@@ -7,6 +7,8 @@ import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { ALL_GRADES_LIST, GradeLevel } from '../types';
 import { AddTeacherModal, AddStudentModal } from './AddUserModals';
+import { AcademicHistoryModal } from './AcademicHistoryModal';
+import { AccelerationPoliciesModal } from './AccelerationPoliciesModal';
 import { EditUserModal } from './EditUserModal';
 import { EditSchoolAdminModal } from './EditSchoolAdminModal';
 import { QuickEditPrincipalModal } from './QuickEditPrincipalModal';
@@ -85,6 +87,7 @@ import {
   ArrowDownAZ,
   ArrowUpZA,
   SlidersHorizontal,
+  History,
 } from 'lucide-react';
 
 export const AdminDashboard: React.FC<{ activeTab: string }> = ({ activeTab }) => {
@@ -115,11 +118,19 @@ export const AdminDashboard: React.FC<{ activeTab: string }> = ({ activeTab }) =
     schoolAdminData,
     lang,
     t,
+    academicEnrollments,
+    accelerationPolicies,
+    accelerationAttempts,
+    upsertAccelerationPolicy,
+    deleteAccelerationPolicy,
+    upsertAccelerationAttempt,
   } = useApp();
 
   const [isEditAdminDataOpen, setIsEditAdminDataOpen] = useState(false);
   const [isPromotionModalOpen, setIsPromotionModalOpen] = useState(false);
   const [selectedIdCardStudent, setSelectedIdCardStudent] = useState<any | null>(null);
+  const [academicHistoryStudentId, setAcademicHistoryStudentId] = useState<string | null>(null);
+  const [isAccelerationPoliciesOpen, setIsAccelerationPoliciesOpen] = useState(false);
 
   // Admin Attendance State
   const [attSubTab, setAttSubTab] = useState<'disciplinary' | 'review_edit' | 'daily'>('disciplinary');
@@ -1110,6 +1121,14 @@ export const AdminDashboard: React.FC<{ activeTab: string }> = ({ activeTab }) =
               </select>
 
               <button
+                onClick={() => setIsAccelerationPoliciesOpen(true)}
+                className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm cursor-pointer"
+              >
+                <ShieldCheck className="w-4 h-4" />
+                <span>سياسات التسريع</span>
+              </button>
+
+              <button
                 onClick={() => setIsPromotionModalOpen(true)}
                 className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm cursor-pointer"
               >
@@ -1249,6 +1268,15 @@ export const AdminDashboard: React.FC<{ activeTab: string }> = ({ activeTab }) =
                           >
                             <span>🪪</span>
                             <span className="hidden sm:inline">البطاقة والأوسمة</span>
+                          </button>
+
+                          <button
+                            onClick={() => setAcademicHistoryStudentId(std.id)}
+                            className="px-2.5 py-1.5 rounded-lg bg-violet-50 hover:bg-violet-100 text-violet-800 border border-violet-200 text-[11px] font-extrabold flex items-center gap-1 transition-all shadow-sm cursor-pointer"
+                            title="السجل الأكاديمي للطالبة"
+                          >
+                            <History className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">السجل الأكاديمي</span>
                           </button>
 
                           {/* Edit button */}
@@ -2053,6 +2081,31 @@ export const AdminDashboard: React.FC<{ activeTab: string }> = ({ activeTab }) =
       {/* Modals */}
       <AddTeacherModal isOpen={isAddTeacherOpen} onClose={() => setIsAddTeacherOpen(false)} />
       <AddStudentModal isOpen={isAddStudentOpen} onClose={() => setIsAddStudentOpen(false)} />
+      {academicHistoryStudentId && (
+        <AcademicHistoryModal
+          isOpen
+          onClose={() => setAcademicHistoryStudentId(null)}
+          studentId={academicHistoryStudentId}
+          enrollments={academicEnrollments}
+          policies={accelerationPolicies}
+          attempts={accelerationAttempts}
+          onNominateAttempt={async (attempt) => {
+            await upsertAccelerationAttempt(attempt);
+          }}
+        />
+      )}
+      <AccelerationPoliciesModal
+        isOpen={isAccelerationPoliciesOpen}
+        onClose={() => setIsAccelerationPoliciesOpen(false)}
+        policies={accelerationPolicies}
+        attempts={accelerationAttempts}
+        onSavePolicy={async (policy) => {
+          await upsertAccelerationPolicy(policy);
+        }}
+        onDeletePolicy={async (policyId) => {
+          await deleteAccelerationPolicy(policyId);
+        }}
+      />
 
       {/* Edit User Modal */}
       <EditUserModal
