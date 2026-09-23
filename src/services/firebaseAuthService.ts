@@ -1,5 +1,5 @@
 import { EmailAuthProvider, reauthenticateWithCredential, signInWithEmailAndPassword, signOut as firebaseSignOut, updatePassword } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { auth, authIsolationReady, db } from '../lib/firebase';
 import type { CurrentUser, UserRole } from '../types';
 
@@ -20,10 +20,24 @@ const profileCollectionForRole = (role: UserRole): string | null => {
   if (role === 'supervisor') return 'supervisors';
   return null;
 };
-const assertProfileCanSignIn = (role: UserRole, profile: any): void => {
+
+const BLOCKED_PROFILE_STATUSES = new Set([
+  'محظور',
+  'محظورة',
+  'موقوف',
+  'موقوفة',
+  'blocked',
+  'disabled',
+  'suspended',
+]);
+
+const isProfileBlockedOrSuspended = (profile: any): boolean => {
   const status = String(profile?.status || '').trim();
-  const blocked = new Set(['محظور', 'محظورة', 'موقوف', 'موقوفة', 'blocked', 'disabled', 'suspended']);
-  if (blocked.has(status.toLowerCase()) || blocked.has(status)) {
+  return BLOCKED_PROFILE_STATUSES.has(status) || BLOCKED_PROFILE_STATUSES.has(status.toLowerCase());
+};
+
+const assertProfileCanSignIn = (_role: UserRole, profile: any): void => {
+  if (isProfileBlockedOrSuspended(profile)) {
     throw new Error('هذا الحساب موقوف أو محظور. يرجى مراجعة إدارة المدرسة.');
   }
 };
@@ -100,6 +114,91 @@ export class FirebaseAuthService {
       try { await firebaseSignOut(auth); } catch {}
       return null;
     }
+  }
+
+  // SECURITY_AUTH_LIVE_PROFILE_GUARD_V1
+  // FORCE_LOGOUT_ON_ACCOUNT_BLOCK_V1
+  // Watch the verified non-admin profile document. Admin has no ordinary profile
+  // document and must not be signed out by this listener.
+  static watchAuthenticatedProfileSession(
+    currentUser: CurrentUser,
+    onInvalidSession: () => void
+  ): () => void {
+    const authUid = typeof currentUser?.authUid === 'string' ? currentUser.authUid.trim() : '';
+    const role = currentUser?.role;
+    const profileId = typeof currentUser?.profileId === 'string' ? currentUser.profileId.trim() : '';
+    const profileCollection =
+      typeof currentUser?.profileCollection === 'string' ? currentUser.profileCollection.trim() : '';
+
+    let closed = false;
+    let unsubscribeSnapshot: (() => void) | null = null;
+
+    const failClosed = () => {
+      if (closed) return;
+      closed = true;
+      try {
+        unsubscribeSnapshot?.();
+      } catch {
+        // ignore
+      }
+      unsubscribeSnapshot = null;
+      void firebaseSignOut(auth).catch(() => undefined);
+      try {
+        onInvalidSession();
+      } catch {
+        // ignore consumer errors after sign-out has been requested
+      }
+    };
+
+    if (!role || role === 'admin') {
+      return () => {
+        closed = true;
+      };
+    }
+
+    const expectedCollection = profileCollectionForRole(role);
+    if (!authUid || !profileId || !expectedCollection || profileCollection !== expectedCollection) {
+      failClosed();
+      return () => {
+        closed = true;
+      };
+    }
+
+    const profileRef = doc(db, profileCollection, profileId);
+    unsubscribeSnapshot = onSnapshot(
+      profileRef,
+      (snapshot) => {
+        if (closed) return;
+        if (!snapshot.exists()) {
+          failClosed();
+          return;
+        }
+        const profile = snapshot.data() as any;
+        if (profile?.authUid !== authUid) {
+          failClosed();
+          return;
+        }
+        if (isProfileBlockedOrSuspended(profile)) {
+          failClosed();
+        }
+      },
+      (_error) => {
+        // Permission/auth (and any other listener) errors mean the profile can
+        // no longer be verified safely — fail closed.
+        if (closed) return;
+        failClosed();
+      }
+    );
+
+    return () => {
+      closed = true;
+      try {
+        unsubscribeSnapshot?.();
+      } catch {
+        // ignore
+      }
+      unsubscribeSnapshot = null;
+    };
   }
 
   static async login(identifier: string, password: string, expectedRole?: UserRole | null): Promise<CurrentUser> {
