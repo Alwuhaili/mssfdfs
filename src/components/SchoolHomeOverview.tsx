@@ -726,40 +726,22 @@ export const SchoolHomeOverview: React.FC = () => {
     setTimeout(() => setSaveToast(null), 4500);
   };
 
-  // Faculty members are derived from the centrally synchronized teachers collection.
-  // Academic-achievement fields are stored on the teacher document itself so every device sees the same data.
+  // The homepage faculty section always uses the published public projection for every role.
+  // Internal teacher records remain separate and are used only by authorized management workflows.
   const facultyList = useMemo<FacultyMember[]>(() => {
-    if (isGuest) {
-      return publicFaculty.map((teacher) => ({
-        id: teacher.id,
-        name: teacher.name || '',
-        roleTitle: teacher.facultyRoleTitle || 'عضو الهيئة التدريسية',
-        subject: teacher.subject || '',
-        avatar: teacher.avatar || '',
-        degree: teacher.facultyDegree || '',
-        researchCount: teacher.researchCount || 0,
-        booksCount: teacher.booksCount || 0,
-        gamesCount: teacher.gamesCount || 0,
-        achievements: Array.isArray(teacher.facultyAchievements) ? teacher.facultyAchievements : [],
-      }));
-    }
-    return teachers.map((teacher: any) => ({
+    return publicFaculty.map((teacher) => ({
       id: teacher.id,
       name: teacher.name || '',
-      roleTitle: teacher.facultyRoleTitle || teacher.roleTitle || teacher.title || 'عضو الهيئة التدريسية',
+      roleTitle: teacher.facultyRoleTitle || 'عضو الهيئة التدريسية',
       subject: teacher.subject || '',
       avatar: teacher.avatar || '',
-      degree: teacher.facultyDegree || teacher.degree || teacher.qualification || '',
-      researchCount: Number(teacher.researchCount ?? teacher.facultyResearchCount ?? 0) || 0,
-      booksCount: Number(teacher.booksCount ?? teacher.facultyBooksCount ?? 0) || 0,
-      gamesCount: Number(teacher.gamesCount ?? teacher.facultyGamesCount ?? 0) || 0,
-      achievements: Array.isArray(teacher.facultyAchievements)
-        ? teacher.facultyAchievements
-        : Array.isArray(teacher.achievements)
-        ? teacher.achievements
-        : [],
+      degree: teacher.facultyDegree || '',
+      researchCount: teacher.researchCount || 0,
+      booksCount: teacher.booksCount || 0,
+      gamesCount: teacher.gamesCount || 0,
+      achievements: Array.isArray(teacher.facultyAchievements) ? teacher.facultyAchievements : [],
     }));
-  }, [isGuest, publicFaculty, teachers]);
+  }, [publicFaculty]);
 
   const [isFacultyModalOpen, setIsFacultyModalOpen] = useState(false);
   const [selectedFacultyIdToEdit, setSelectedFacultyIdToEdit] = useState<string | undefined>(undefined);
