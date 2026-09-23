@@ -8,6 +8,15 @@ import { centralSyncService, SCHOOL_ADMIN_DATA_SYNC_KEY } from '../services/sync
 import { publishPublicSchoolInfo, initializePublicSchoolInfoFromAuthoritative, initializePublicFacultyFromAuthoritative, initializePublicHonorBoardFromAuthoritative, publishPublicFaculty, publishPublicHonorBoard } from '../services/publicHomepageService';
 import { buildPublicHonorBoard, HONOR_ROLL_DEMO_NAMES } from '../utils/publicHomepageFacultyHonor';
 import { buildTimetableAcademicSnapshot, timetableAcademicSnapshotEquals } from '../utils/timetableSettings';
+import {
+  canRunParentStudentSelfHeal,
+  decideParentStudentSelfHealRun,
+  EMPTY_PARENT_SELF_HEAL_GUARD,
+  nextParentStudentSelfHealGuard,
+  parentStudentSelfHealUpdatesSignature,
+  planParentStudentSelfHeal,
+  type ParentSelfHealGuardState,
+} from '../utils/parentStudentLink';
 import { FirebaseAuthService } from '../services/firebaseAuthService';
 import {
   UserRole,
@@ -1201,7 +1210,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const authoritativeSchoolAdminReceivedRef = useRef(false);
   const authoritativeTeachersReceivedRef = useRef(false);
   const authoritativeStudentsReceivedRef = useRef(false);
+  const authoritativeParentsReceivedRef = useRef(false);
   const authoritativeGraduatesReceivedRef = useRef(false);
+  const parentSelfHealGuardRef = useRef<ParentSelfHealGuardState>(EMPTY_PARENT_SELF_HEAL_GUARD);
+  const parentSelfHealInFlightRef = useRef(false);
 
   const beginPendingSyncMutation = (key: string): number => {
     const token = pendingSyncMutationGenerationRef.current + 1;
@@ -1215,12 +1227,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [syncHydrationGeneration, setSyncHydrationGeneration] = useState(0);
   const [timetableAcademicSyncGeneration, setTimetableAcademicSyncGeneration] = useState(0);
+  const [parentStudentSelfHealGeneration, setParentStudentSelfHealGeneration] = useState(0);
 
   const settlePendingSyncMutation = (key: string, token: number) => {
     if (pendingSyncMutationsRef.current[key] === token) {
       delete pendingSyncMutationsRef.current[key];
       if (key === 'teachers' || key === 'students') {
         setTimetableAcademicSyncGeneration((n) => n + 1);
+      }
+      if (key === 'students' || key === 'parents') {
+        setParentStudentSelfHealGeneration((n) => n + 1);
       }
     }
   };
@@ -2626,11 +2642,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       authoritativeTeachersReceivedRef.current = true;
       if (!isSyncKeyPending('teachers')) setTeachers(remoteData.teachers);
     }
+    let receivedParentStudentSnapshot = false;
     if (Array.isArray(remoteData.students)) {
       authoritativeStudentsReceivedRef.current = true;
-      if (!isSyncKeyPending('students')) setStudents(remoteData.students);
+      if (!isSyncKeyPending('students')) {
+        setStudents(remoteData.students);
+        receivedParentStudentSnapshot = true;
+      }
     }
-    if (Array.isArray(remoteData.parents)) setParents(remoteData.parents);
+    if (Array.isArray(remoteData.parents)) {
+      authoritativeParentsReceivedRef.current = true;
+      if (!isSyncKeyPending('parents')) {
+        setParents(remoteData.parents);
+        receivedParentStudentSnapshot = true;
+      }
+    }
+    if (receivedParentStudentSnapshot) {
+      setParentStudentSelfHealGeneration((n) => n + 1);
+    }
     if (Array.isArray(remoteData.supervisors)) setSupervisors(remoteData.supervisors);
     if (Array.isArray(remoteData.graduates)) {
       authoritativeGraduatesReceivedRef.current = true;
@@ -2743,6 +2772,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       authoritativeSchoolAdminReceivedRef.current = false;
       authoritativeTeachersReceivedRef.current = false;
       authoritativeStudentsReceivedRef.current = false;
+      authoritativeParentsReceivedRef.current = false;
+      parentSelfHealGuardRef.current = EMPTY_PARENT_SELF_HEAL_GUARD;
+      parentSelfHealInFlightRef.current = false;
       authoritativeGraduatesReceivedRef.current = false;
       setSyncStatus('synced');
       centralSyncService.stopRealtimeStream();
@@ -4694,6 +4726,99 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return next;
     });
   };
+
+  useEffect(() => {
+    if (
+      !canRunParentStudentSelfHeal({
+        role,
+        currentUserRole: currentUser?.role,
+        hydrated: isInitialHydrationDone.current,
+        authoritativeParents: authoritativeParentsReceivedRef.current,
+        authoritativeStudents: authoritativeStudentsReceivedRef.current,
+        pendingParents: isSyncKeyPending('parents'),
+        pendingStudents: isSyncKeyPending('students'),
+      })
+    ) {
+      return;
+    }
+
+    const plan = planParentStudentSelfHeal(parents, students);
+    const signature = parentStudentSelfHealUpdatesSignature(plan);
+    const decision = decideParentStudentSelfHealRun({
+      updatesCount: plan.updates.length,
+      signature,
+      inFlight: parentSelfHealInFlightRef.current,
+      guard: parentSelfHealGuardRef.current,
+      currentGeneration: parentStudentSelfHealGeneration,
+    });
+
+    if (decision.action === 'commit-empty') {
+      parentSelfHealGuardRef.current = nextParentStudentSelfHealGuard(parentSelfHealGuardRef.current, {
+        type: 'empty-plan',
+        signature: decision.signature,
+      });
+      return;
+    }
+    if (decision.action === 'skip') return;
+
+    parentSelfHealInFlightRef.current = true;
+    const token = beginPendingSyncMutation('parents');
+    void (async () => {
+      let hadFailure = false;
+      try {
+        for (const item of plan.updates) {
+          const before = parents.find((parent) => parent.id === item.parentId);
+          if (!before) {
+            hadFailure = true;
+            continue;
+          }
+          const after = { ...before, ...item.patch };
+          if (JSON.stringify(before) === JSON.stringify(after)) continue;
+
+          let ok = false;
+          try {
+            ok = await persistCollectionDoc('parents', item.parentId, after, before);
+          } catch {
+            ok = false;
+          }
+
+          if (!ok) {
+            hadFailure = true;
+            continue;
+          }
+
+          setParents((prev) =>
+            prev.map((parent) => (parent.id === item.parentId ? { ...parent, ...item.patch } : parent))
+          );
+          addAuditLog({
+            action: 'parent_student_projection_self_heal',
+            actionType: 'update',
+            targetCategory: 'parents',
+            targetId: item.parentId,
+            details: `studentId=${item.studentId}; changedFields=${Object.keys(item.patch).sort().join(',')}`,
+            severity: 'info',
+          });
+        }
+      } catch {
+        hadFailure = true;
+      } finally {
+        if (hadFailure) {
+          parentSelfHealGuardRef.current = nextParentStudentSelfHealGuard(parentSelfHealGuardRef.current, {
+            type: 'attempt-failure',
+            signature,
+            currentGeneration: parentStudentSelfHealGeneration,
+          });
+        } else {
+          parentSelfHealGuardRef.current = nextParentStudentSelfHealGuard(parentSelfHealGuardRef.current, {
+            type: 'attempt-success',
+            signature,
+          });
+        }
+        parentSelfHealInFlightRef.current = false;
+        settlePendingSyncMutation('parents', token);
+      }
+    })();
+  }, [role, currentUser?.role, parents, students, parentStudentSelfHealGeneration]);
 
   const deleteParent = (id: string) => {
     setParents((prev) => prev.filter((p) => p.id !== id));
