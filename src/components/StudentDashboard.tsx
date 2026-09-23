@@ -3,7 +3,7 @@
  * مدرسة ثانوية ميسان للمتميزات
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { MessagingSystem } from './MessagingSystem';
 import { StudentCertificateManager } from './StudentCertificateManager';
@@ -56,6 +56,7 @@ import {
 } from 'lucide-react';
 import { DirectMessage, ALL_GRADES_LIST, OFFICIAL_SUBJECTS_LIST, GradeLevel } from '../types';
 import { isMessageDeletedForUser, isMessageTrashForUser } from '../utils/messageUtils';
+import { buildPeriodTimings, resolveTimetableSettings } from '../utils/timetableSettings';
 
 export const StudentDashboard: React.FC<{ activeTab: string }> = ({ activeTab }) => {
   const {
@@ -194,17 +195,9 @@ export const StudentDashboard: React.FC<{ activeTab: string }> = ({ activeTab })
     }
   }, [activeStudent]);
 
-  const STUDENT_TIMETABLE_PERIODS = [
-    { period: 1, label: 'الحصة الأولى', timeSlot: '08:00 - 08:45' },
-    { period: 2, label: 'الحصة الثانية', timeSlot: '08:50 - 09:35' },
-    { period: 3, label: 'الحصة الثالثة', timeSlot: '09:40 - 10:25' },
-    { period: 4, label: 'الحصة الرابعة', timeSlot: '10:30 - 11:15' },
-    { period: 5, label: 'الحصة الخامسة', timeSlot: '11:20 - 12:05' },
-    { period: 6, label: 'الحصة السادسة', timeSlot: '12:10 - 12:55' },
-    { period: 7, label: 'الحصة السابعة', timeSlot: '01:00 - 01:45' },
-  ];
-
-  const STUDENT_TIMETABLE_WEEKDAYS = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] as const;
+  const timetableSettings = useMemo(() => resolveTimetableSettings(schoolAdminData), [schoolAdminData]);
+  const STUDENT_TIMETABLE_PERIODS = useMemo(() => buildPeriodTimings(timetableSettings), [timetableSettings]);
+  const STUDENT_TIMETABLE_WEEKDAYS = timetableSettings.workingDays;
 
   const getStudentTabSlot = (day: string, period: number) => {
     return timetable.find(
@@ -430,7 +423,7 @@ export const StudentDashboard: React.FC<{ activeTab: string }> = ({ activeTab })
               <CalendarDays className="w-4 h-4 shrink-0 text-amber-400" />
               <span className="truncate">جدول الدروس الأسبوعي</span>
             </div>
-            <span className="text-[10px] bg-amber-950/60 text-amber-300 px-1.5 py-0.5 rounded-md font-extrabold">🗓️ 7 دروس</span>
+            <span className="text-[10px] bg-amber-950/60 text-amber-300 px-1.5 py-0.5 rounded-md font-extrabold">🗓️ {STUDENT_TIMETABLE_PERIODS.length} دروس</span>
           </button>
 
           {/* Quick Action 3: View Exams */}
@@ -684,7 +677,7 @@ export const StudentDashboard: React.FC<{ activeTab: string }> = ({ activeTab })
                 </span>
               </div>
               <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
-                جدول الحصص الأسبوعي الرسمي • من الأحد إلى الخميس • 7 دروس يومياً • 45 دقيقة لكل درس مع 5 دقائق استراحة بين الدروس
+                جدول الحصص الأسبوعي الرسمي • {STUDENT_TIMETABLE_WEEKDAYS.join('، ')} • {STUDENT_TIMETABLE_PERIODS.length} دروس يومياً
               </p>
             </div>
 
@@ -770,7 +763,7 @@ export const StudentDashboard: React.FC<{ activeTab: string }> = ({ activeTab })
                   {STUDENT_TIMETABLE_WEEKDAYS.map((day) => (
                     <th key={day} className="p-3 text-center border-r border-slate-800 min-w-[150px]">
                       <span className="block text-white font-extrabold text-sm">{day}</span>
-                      <span className="text-[10px] text-amber-400 font-mono font-normal">7 دروس متتالية</span>
+                      <span className="text-[10px] text-amber-400 font-mono font-normal">{STUDENT_TIMETABLE_PERIODS.length} دروس متتالية</span>
                     </th>
                   ))}
                 </tr>
@@ -789,7 +782,7 @@ export const StudentDashboard: React.FC<{ activeTab: string }> = ({ activeTab })
                         <div className="text-[9px] text-emerald-400 font-sans">45 دقيقة</div>
                       </td>
 
-                      {/* 5 Weekday Columns (الأحد إلى الخميس) */}
+                      {/* أعمدة أيام الدوام المعتمدة */}
                       {STUDENT_TIMETABLE_WEEKDAYS.map((day) => {
                         const slot = getStudentTabSlot(day, periodObj.period);
                         return (

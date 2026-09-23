@@ -58,6 +58,17 @@ import {
   hasEnrolledStudents,
   filterEmptySectionSlots,
 } from '../utils/timetableGenerator';
+import {
+  CALENDAR_WEEKDAYS,
+  buildPeriodTimings,
+  buildTimetableAcademicSnapshot,
+  calculateTimetableUtilization,
+  facultyAsTeacherList,
+  resolveActiveGradeSections,
+  canPersistTimetableWrites,
+  resolveTimetableFaculty,
+  resolveTimetableSettings,
+} from '../utils/timetableSettings';
 
 interface WeeklyTimetableModalProps {
   isOpen: boolean;
@@ -68,24 +79,6 @@ interface WeeklyTimetableModalProps {
   initialSection?: string;
   isStaff?: boolean;
 }
-
-export const WEEKDAY_LIST = [
-  'الأحد',
-  'الإثنين',
-  'الثلاثاء',
-  'الأربعاء',
-  'الخميس',
-] as const;
-
-export const PERIODS_TIMING = [
-  { period: 1 as const, timeSlot: '08:00 - 08:45', label: 'الحصة الأولى' },
-  { period: 2 as const, timeSlot: '08:50 - 09:35', label: 'الحصة الثانية' },
-  { period: 3 as const, timeSlot: '09:40 - 10:25', label: 'الحصة الثالثة' },
-  { period: 4 as const, timeSlot: '10:30 - 11:15', label: 'الحصة الرابعة' },
-  { period: 5 as const, timeSlot: '11:20 - 12:05', label: 'الحصة الخامسة' },
-  { period: 6 as const, timeSlot: '12:10 - 12:55', label: 'الحصة السادسة' },
-  { period: 7 as const, timeSlot: '13:00 - 13:45', label: 'الحصة السابعة' },
-];
 
 export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
   isOpen,
@@ -112,9 +105,27 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
     schoolAdminData,
     updateSchoolAdminData,
     role,
+    currentUser,
   } = useApp();
 
-  const canEdit = role === 'admin' || (role as string) === 'principal' || (role as string) === 'school_admin';
+  const canEdit = canPersistTimetableWrites(role, currentUser?.role);
+  const timetableSettings = useMemo(() => resolveTimetableSettings(schoolAdminData), [schoolAdminData]);
+  const academicFaculty = useMemo(
+    () => resolveTimetableFaculty(schoolAdminData, teachers, subjectQuotas),
+    [schoolAdminData, teachers, subjectQuotas]
+  );
+  const academicTeachers = useMemo(() => facultyAsTeacherList(academicFaculty), [academicFaculty]);
+  const activeGradeSections = useMemo(
+    () => resolveActiveGradeSections(schoolAdminData, students),
+    [schoolAdminData, students]
+  );
+  const WEEKDAY_LIST = timetableSettings.workingDays;
+  const PERIODS_TIMING = useMemo(() => buildPeriodTimings(timetableSettings), [timetableSettings]);
+  const timetablePdfWidthPx = Math.max(960, 180 + WEEKDAY_LIST.length * 170);
+  const utilization = useMemo(
+    () => calculateTimetableUtilization(timetable, activeGradeSections.length, timetableSettings),
+    [timetable, activeGradeSections.length, timetableSettings]
+  );
 
   const [activeTab, setActiveTab] = useState<'timetable' | 'teacher_schedules' | 'quotas'>(
     initialTab || 'timetable'
@@ -131,6 +142,10 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
 
   // Active enrolled sections for the currently selected grade
   const enrolledSectionsForSelectedGrade = useMemo(() => {
+    const fromProjection = activeGradeSections
+      .filter((item) => item.gradeLevel === selectedGrade)
+      .map((item) => item.section);
+    if (fromProjection.length > 0) return fromProjection;
     const secs = Array.from(
       new Set(
         students
@@ -139,7 +154,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
       )
     ).sort();
     return secs.length > 0 ? secs : ['أ'];
-  }, [students, selectedGrade]);
+  }, [students, selectedGrade, activeGradeSections]);
 
   const [selectedSection, setSelectedSection] = useState<string>(() => {
     if (initialSection) return initialSection;
@@ -163,7 +178,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
   }, [students, selectedGrade, selectedSection]);
 
   const [selectedTeacherForSchedule, setSelectedTeacherForSchedule] = useState<string>(
-    initialTeacherName || teachers[0]?.name || 'م. عمر خالد السعد'
+    initialTeacherName || academicFaculty[0]?.name || teachers[0]?.name || ''
   );
   const [teacherScheduleViewMode, setTeacherScheduleViewMode] = useState<'agenda' | 'matrix'>('agenda');
 
@@ -231,8 +246,8 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
   const [previewPageTab, setPreviewPageTab] = useState<'all' | 'page1' | 'page2'>('all');
 
   // Edit Timetable Slot Form State
-  const [editDay, setEditDay] = useState<typeof WEEKDAY_LIST[number]>('الأحد');
-  const [editPeriod, setEditPeriod] = useState<1 | 2 | 3 | 4 | 5 | 6 | 7>(1);
+  const [editDay, setEditDay] = useState<string>('الأحد');
+  const [editPeriod, setEditPeriod] = useState<number>(1);
   const [editSubject, setEditSubject] = useState<string>('الرياضيات');
   const [editTeacher, setEditTeacher] = useState<string>('');
   const [editRoom, setEditRoom] = useState<string>('قاعة المتميزات 1');
@@ -257,9 +272,9 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
   );
 
   const allTeachersList = useMemo(() => {
-    const list = teachers.map((t) => t.name).filter(Boolean);
-    return list.length > 0 ? list : ['م. عمر خالد السعد', 'د. رنا عبد الحسين العبيدي'];
-  }, [teachers]);
+    const list = academicFaculty.map((t) => t.name).filter(Boolean);
+    return list.length > 0 ? list : teachers.map((t) => t.name).filter(Boolean);
+  }, [academicFaculty, teachers]);
 
   if (!isOpen) return null;
 
@@ -271,7 +286,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
   );
 
   // Full school live conflict audit
-  const schoolAudit = auditSchoolTimetableConflicts(timetable, subjectQuotas, teachers);
+  const schoolAudit = auditSchoolTimetableConflicts(timetable, subjectQuotas, academicTeachers, timetableSettings);
 
   const getSlot = (day: string, period: number) => {
     return currentSlots.find((s) => s.day === day && s.period === period);
@@ -281,7 +296,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
     return currentSlots.filter((s) => s.subject === subjName).length;
   };
 
-  const handleOpenEditSlot = (day: typeof WEEKDAY_LIST[number], period: 1 | 2 | 3 | 4 | 5 | 6 | 7) => {
+  const handleOpenEditSlot = (day: string, period: number) => {
     if (!canEdit) {
       setShowSuccessToast('🔒 التعديل متاح حصراً لمديرة المدرسة وإدارتها');
       setTimeout(() => setShowSuccessToast(null), 3000);
@@ -421,7 +436,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
       return;
     }
 
-    const result = generateSmartTimetable(selectedGrade, selectedSection, subjectQuotas, timetable, teachers, students);
+    const result = generateSmartTimetable(selectedGrade, selectedSection, subjectQuotas, timetable, academicTeachers, students, timetableSettings);
     if (result.success) {
       saveFullTimetable(result.slots);
       setShowSuccessToast(result.message);
@@ -439,7 +454,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
       return;
     }
 
-    const result = generateSmartTimetable('ALL', 'ALL', subjectQuotas, timetable, teachers, students);
+    const result = generateSmartTimetable('ALL', 'ALL', subjectQuotas, timetable, academicTeachers, students, timetableSettings);
     if (result.success) {
       saveFullTimetable(result.slots);
       setShowSuccessToast(result.message);
@@ -456,7 +471,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
       setTimeout(() => setShowSuccessToast(null), 3000);
       return;
     }
-    const res = resolveAllTimetableConflicts(timetable, subjectQuotas, teachers);
+    const res = resolveAllTimetableConflicts(timetable, subjectQuotas, academicTeachers, timetableSettings);
     saveFullTimetable(res.resolvedTimetable);
     setShowSuccessToast(res.message);
     setTimeout(() => setShowSuccessToast(null), 5000);
@@ -698,7 +713,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
         </div>
         <div className="flex justify-between items-center text-[9.5px] text-slate-600 pt-0.5 border-t border-slate-200">
           <span className="font-bold font-arabic">الخطة الوزارية:</span>
-          <span className="font-mono font-bold text-slate-900">35 حصة أسبوعياً</span>
+          <span className="font-mono font-bold text-slate-900">{timetableSettings.workingDays.length * timetableSettings.periodsPerDay} حصة أسبوعياً لكل شعبة</span>
           <span className="px-1.5 py-0.2 bg-amber-100 text-amber-900 rounded font-bold text-[9px]">
             {pageBadge}
           </span>
@@ -740,8 +755,8 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
       className="bg-white text-slate-950 p-4 sm:p-5 font-arabic text-right space-y-2.5 rounded-2xl select-none"
       dir="rtl"
       style={{
-        width: isExportTarget ? '1120px' : '100%',
-        minWidth: isExportTarget ? '1120px' : '960px',
+        width: isExportTarget ? `${timetablePdfWidthPx}px` : '100%',
+        minWidth: isExportTarget ? `${timetablePdfWidthPx}px` : '960px',
         color: '#020617',
         backgroundColor: '#ffffff',
         fontFamily: "'Cairo', 'Tajawal', sans-serif",
@@ -831,8 +846,8 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
       className="bg-white text-slate-950 p-4 sm:p-5 font-arabic text-right space-y-2.5 rounded-2xl select-none"
       dir="rtl"
       style={{
-        width: isExportTarget ? '1120px' : '100%',
-        minWidth: isExportTarget ? '1120px' : '960px',
+        width: isExportTarget ? `${timetablePdfWidthPx}px` : '100%',
+        minWidth: isExportTarget ? `${timetablePdfWidthPx}px` : '960px',
         color: '#020617',
         backgroundColor: '#ffffff',
         fontFamily: "'Cairo', 'Tajawal', sans-serif",
@@ -864,9 +879,11 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
           <tbody className="divide-y divide-slate-300">
             {currentGradeQuotas.map((q, idx) => {
               const count = getScheduledCountForSubject(q.subjectName);
-              const daysList = getTeacherAvailableDays(q.teacherName, currentGradeQuotas, teachers);
-              const daysStr = daysList.length === 5
-                ? 'الأحد - الخميس (كامل الأسبوع)'
+              const daysList = getTeacherAvailableDays(q.teacherName, currentGradeQuotas, academicTeachers, timetableSettings);
+              const coversSchoolWeek =
+                daysList.length === WEEKDAY_LIST.length && WEEKDAY_LIST.every((day) => daysList.includes(day));
+              const daysStr = coversSchoolWeek
+                ? `كامل أيام الدوام (${WEEKDAY_LIST.join('، ')})`
                 : daysList.join('، ');
 
               return (
@@ -924,7 +941,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
         <div className="p-2 rounded-xl bg-slate-50 border border-slate-300 space-y-0.5">
           <p className="text-[10px] font-bold text-slate-600">إجمالي الحصص الموزعة:</p>
-          <p className="text-xs font-black text-slate-950">35 حصة أسبوعياً (100%)</p>
+            <p className="text-xs font-black text-slate-950">{timetableSettings.workingDays.length * timetableSettings.periodsPerDay} حصة أسبوعياً لكل شعبة</p>
         </div>
         <div className="p-2 rounded-xl bg-slate-50 border border-slate-300 space-y-0.5">
           <p className="text-[10px] font-bold text-slate-600">عدد المواد المقررة:</p>
@@ -947,18 +964,19 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
 
   /* Page: وثيقة جدول الحصص الأسبوعي الموحد للأستاذ (Teacher's Weekly Schedule Document) - ALL 7 PERIODS IN ONE PAGE */
   const renderTeacherScheduleOfficialDoc = (isExportTarget = false) => {
-    const teacherObj = teachers.find(
-      (t) => isSameTeacher(t.name, selectedTeacherForSchedule, teachers)
+    const teacherObj = academicFaculty.find(
+      (t) => isSameTeacher(t.name, selectedTeacherForSchedule, academicTeachers)
     );
     const teacherSchedule = getTeacherWeeklySchedule(
       timetable,
       selectedTeacherForSchedule,
       subjectQuotas,
-      teachers
+      academicTeachers,
+      timetableSettings
     );
     const allowedDays = teacherObj?.availableDays && teacherObj.availableDays.length > 0
-      ? teacherObj.availableDays
-      : ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'];
+      ? teacherObj.availableDays.filter((day) => WEEKDAY_LIST.includes(day as (typeof WEEKDAY_LIST)[number]))
+      : WEEKDAY_LIST;
 
     // Check teacher-specific collisions
     let teacherConflictCount = 0;
@@ -969,7 +987,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
             s.day === day &&
             s.period === p.period &&
             s.teacherName &&
-            isSameTeacher(s.teacherName, selectedTeacherForSchedule, teachers)
+            isSameTeacher(s.teacherName, selectedTeacherForSchedule, academicTeachers)
         );
         if (matchingSlots.length > 1) {
           teacherConflictCount += matchingSlots.length - 1;
@@ -982,9 +1000,9 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
         className="bg-white text-slate-950 p-3 sm:p-4 font-arabic text-right space-y-2 rounded-2xl select-none"
         dir="rtl"
         style={{
-          width: isExportTarget ? '1120px' : '100%',
-          minWidth: isExportTarget ? '1120px' : '100%',
-          maxWidth: isExportTarget ? '1120px' : '100%',
+          width: isExportTarget ? `${timetablePdfWidthPx}px` : '100%',
+          minWidth: isExportTarget ? `${timetablePdfWidthPx}px` : '100%',
+          maxWidth: isExportTarget ? `${timetablePdfWidthPx}px` : '100%',
           color: '#020617',
           backgroundColor: '#ffffff',
           fontFamily: "'Cairo', 'Tajawal', sans-serif",
@@ -1077,7 +1095,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
                   (s) =>
                     s.day === day &&
                     s.teacherName &&
-                    isSameTeacher(s.teacherName, selectedTeacherForSchedule, teachers)
+                    isSameTeacher(s.teacherName, selectedTeacherForSchedule, academicTeachers)
                 );
 
                 return (
@@ -1107,7 +1125,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
                           s.day === day &&
                           s.period === p.period &&
                           s.teacherName &&
-                          isSameTeacher(s.teacherName, selectedTeacherForSchedule, teachers)
+                          isSameTeacher(s.teacherName, selectedTeacherForSchedule, academicTeachers)
                       );
                       const hasCollision = matchingSlots.length > 1;
                       const isUnscheduledDay = matchingSlots.length > 0 && !isDayAvailable;
@@ -1641,7 +1659,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
             <div className="flex items-center gap-2">
               <CheckCheck className="w-3.5 h-3.5 text-emerald-400" />
               <span>
-                يتضمن جدول الأستاذ الموحد مصفوفة الحصص الأسبوعية (5 أيام × 7 حصص) مع فحص التضارب ومطابقة أيام الدوام والتفرغ والأنصبة المعتمدة.
+                يتضمن جدول الأستاذ الموحد مصفوفة الحصص الأسبوعية ({WEEKDAY_LIST.length} أيام × {PERIODS_TIMING.length} حصص) مع فحص التضارب ومطابقة أيام الدوام والتفرغ والأنصبة المعتمدة.
               </span>
             </div>
             <span className="text-[11px] text-teal-300 font-mono">
@@ -1831,7 +1849,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
                 )}
               </div>
               <p className="text-xs text-slate-400 mt-1">
-                ثانوية ميسان للمتميزات • من الأحد إلى الخميس • 7 دروس يومياً (45 دقيقة للحصة)
+                ثانوية ميسان للمتميزات • {WEEKDAY_LIST.join('، ')} • {PERIODS_TIMING.length} دروس يومياً
               </p>
             </div>
           </div>
@@ -1994,7 +2012,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
                 <div className="font-black text-rose-200 text-sm flex items-center gap-2">
                   <span>⚠️ تم رصد {schoolAudit.totalConflicts} تضارب في الجدول المدرسي</span>
                   <span className="text-[11px] font-normal text-rose-300">
-                    ({schoolAudit.conflicts.length} تضارب أوقات + {schoolAudit.availabilityViolations.length} مخالفة أيام دوام)
+                    ({schoolAudit.conflicts.length} تضارب أوقات + {schoolAudit.availabilityViolations.length} مخالفة دوام مدرس + {schoolAudit.schoolDayViolations.length} يوم عطلة مدرسية + {schoolAudit.periodRangeViolations.length} حصة خارج النطاق)
                   </span>
                 </div>
                 <p className="text-slate-300 text-xs leading-relaxed">
@@ -2058,7 +2076,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
             )}
 
             {/* Main Timetable Grid Container */}
-            <div id="timetable-printable-area" className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950 shadow-inner p-2">
+            <div id="timetable-printable-area" className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950 shadow-inner p-2 min-w-0">
               <table className="w-full text-right text-xs border-collapse">
                 <thead>
                   <tr className="bg-slate-900 text-indigo-200 font-black border-b border-slate-800">
@@ -2068,7 +2086,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
                     {WEEKDAY_LIST.map((day) => (
                       <th key={day} className="p-3 text-center border-r border-slate-800 min-w-[150px]">
                         <span className="block text-white font-extrabold text-sm">{day}</span>
-                        <span className="text-[10px] text-amber-400 font-mono font-normal">7 دروس متتالية</span>
+                        <span className="text-[10px] text-amber-400 font-mono font-normal">{PERIODS_TIMING.length} دروس متتالية</span>
                       </th>
                     ))}
                   </tr>
@@ -2242,7 +2260,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
                   onChange={(e) => setSelectedTeacherForSchedule(e.target.value)}
                   className="bg-slate-900 border border-teal-500/40 text-white text-xs font-bold rounded-xl px-3.5 py-2 focus:ring-2 focus:ring-teal-400 min-w-[200px]"
                 >
-                  {teachers.map((t) => (
+                  {academicFaculty.map((t) => (
                     <option key={t.id} value={t.name}>
                       {t.name} ({t.subject})
                     </option>
@@ -2253,24 +2271,26 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
 
             {/* Selected Teacher Details & Live Matrix */}
             {(() => {
-              const teacherObj = teachers.find(
-                (t) => isSameTeacher(t.name, selectedTeacherForSchedule, teachers)
+              const teacherObj = academicFaculty.find(
+                (t) => isSameTeacher(t.name, selectedTeacherForSchedule, academicTeachers)
               );
               const teacherSchedule = getTeacherWeeklySchedule(
                 timetable,
                 selectedTeacherForSchedule,
                 subjectQuotas,
-                teachers
+                academicTeachers,
+                timetableSettings
               );
               const chronologicalAgenda = getTeacherChronologicalAgenda(
                 timetable,
                 selectedTeacherForSchedule,
                 subjectQuotas,
-                teachers
+                academicTeachers,
+                timetableSettings
               );
               const allowedDays = teacherObj?.availableDays && teacherObj.availableDays.length > 0
-                ? teacherObj.availableDays
-                : ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'];
+                ? teacherObj.availableDays.filter((d) => WEEKDAY_LIST.includes(d as any))
+                : WEEKDAY_LIST;
 
               let teacherConflictCount = 0;
               WEEKDAY_LIST.forEach((day) => {
@@ -2280,7 +2300,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
                       s.day === day &&
                       s.period === p.period &&
                       s.teacherName &&
-                      isSameTeacher(s.teacherName, selectedTeacherForSchedule, teachers)
+                      isSameTeacher(s.teacherName, selectedTeacherForSchedule, academicTeachers)
                   );
                   if (matchingSlots.length > 1) {
                     teacherConflictCount += matchingSlots.length - 1;
@@ -2365,7 +2385,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
                           }`}
                         >
                           <Grid3X3 className="w-3.5 h-3.5" />
-                          <span>مصفوفة الجدول الأسبوعي (5 أيام × 7 حصص)</span>
+                          <span>مصفوفة الجدول الأسبوعي ({WEEKDAY_LIST.length} أيام × {PERIODS_TIMING.length} حصص)</span>
                         </button>
                       </div>
 
@@ -2516,7 +2536,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
                                       s.day === day &&
                                       s.period === p.period &&
                                       s.teacherName &&
-                                      isSameTeacher(s.teacherName, selectedTeacherForSchedule, teachers)
+                                      isSameTeacher(s.teacherName, selectedTeacherForSchedule, academicTeachers)
                                   );
                                   const hasCollision = matchingSlots.length > 1;
                                   const isUnscheduledDay = matchingSlots.length > 0 && !isDayAvailable;
@@ -2593,6 +2613,111 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
         {/* TAB 2: SUBJECT QUOTAS & TEACHER ASSIGNMENTS MANAGER */}
         {activeTab === 'quotas' && (
           <div className="space-y-4">
+            {canEdit && (
+              <div className="p-4 rounded-2xl border border-violet-500/30 bg-violet-950/20 space-y-3">
+                <h3 className="font-black text-violet-200 text-sm">إعدادات الأسبوع الدراسي</h3>
+                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+                  {CALENDAR_WEEKDAYS.map((day) => {
+                    const isWorking = WEEKDAY_LIST.includes(day);
+                    return (
+                      <button
+                        key={day}
+                        type="button"
+                        onClick={() => {
+                          const next = isWorking
+                            ? WEEKDAY_LIST.filter((item) => item !== day)
+                            : [...WEEKDAY_LIST, day];
+                          if (next.length === 0) return;
+                          const snapshot = buildTimetableAcademicSnapshot(teachers, students);
+                          updateSchoolAdminData({
+                            timetableSettings: {
+                              workingDays: next,
+                              periodsPerDay: timetableSettings.periodsPerDay,
+                              periodTimes: timetableSettings.periodTimes,
+                            },
+                            ...snapshot,
+                          });
+                        }}
+                        className={`rounded-xl border px-2 py-2 text-[11px] font-bold ${
+                          isWorking
+                            ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200'
+                            : 'border-slate-700 bg-slate-950 text-slate-500'
+                        }`}
+                      >
+                        {day}
+                        <span className="block text-[10px] font-normal">{isWorking ? 'دوام' : 'عطلة'}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <label className="block text-xs text-slate-300 font-bold">
+                  عدد الحصص اليومية
+                  <input
+                    type="number"
+                    min={1}
+                    className="mt-1 w-32 rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                    value={timetableSettings.periodsPerDay}
+                    onChange={(event) => {
+                      const value = Number(event.target.value);
+                      if (!Number.isInteger(value) || value < 1) return;
+                      const snapshot = buildTimetableAcademicSnapshot(teachers, students);
+                      updateSchoolAdminData({
+                        timetableSettings: {
+                          workingDays: timetableSettings.workingDays,
+                          periodsPerDay: value,
+                          periodTimes: timetableSettings.periodTimes,
+                        },
+                        ...snapshot,
+                      });
+                    }}
+                  />
+                </label>
+                <div className="grid gap-2 md:grid-cols-2">
+                  {PERIODS_TIMING.map((p) => (
+                    <div key={p.period} className="flex items-center gap-2 text-[11px] text-slate-300">
+                      <span className="w-24 font-bold">{p.label}</span>
+                      <input
+                        className="w-24 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1"
+                        value={timetableSettings.periodTimes.find((t) => t.period === p.period)?.startTime || ''}
+                        placeholder="بدون وقت"
+                        onChange={(event) => {
+                          const startTime = event.target.value;
+                          const periodTimes = timetableSettings.periodTimes.map((t) =>
+                            t.period === p.period ? { ...t, startTime } : t
+                          );
+                          updateSchoolAdminData({
+                            timetableSettings: {
+                              workingDays: timetableSettings.workingDays,
+                              periodsPerDay: timetableSettings.periodsPerDay,
+                              periodTimes,
+                            },
+                          });
+                        }}
+                      />
+                      <span>-</span>
+                      <input
+                        className="w-24 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1"
+                        value={timetableSettings.periodTimes.find((t) => t.period === p.period)?.endTime || ''}
+                        placeholder="بدون وقت"
+                        onChange={(event) => {
+                          const endTime = event.target.value;
+                          const periodTimes = timetableSettings.periodTimes.map((t) =>
+                            t.period === p.period ? { ...t, endTime } : t
+                          );
+                          updateSchoolAdminData({
+                            timetableSettings: {
+                              workingDays: timetableSettings.workingDays,
+                              periodsPerDay: timetableSettings.periodsPerDay,
+                              periodTimes,
+                            },
+                          });
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {/* Ministerial Standard Plan Verification Banner */}
             <div className="p-3.5 rounded-2xl bg-gradient-to-r from-slate-900 to-indigo-950/60 border border-indigo-500/30 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
               <div className="flex items-center gap-3">
@@ -2607,7 +2732,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
                     </span>
                   </div>
                   <p className="text-slate-300 text-xs">
-                    المعيار الوزاري لمدارس المتميزين: <strong>35 حصة أسبوعياً</strong> (7 حصص يومياً × 5 أيام دوام).
+                    السعة الأسبوعية للمدرسة: <strong>{utilization.weeklyCapacity} خانة</strong> ({activeGradeSections.length} شعبة × {WEEKDAY_LIST.length} أيام × {PERIODS_TIMING.length} حصص). الحصص المسندة: {utilization.assignedLessons}. الخانات المشغولة: {utilization.occupiedCells}. المتاحة: {utilization.emptyCells}.
                   </p>
                 </div>
               </div>
@@ -2617,14 +2742,14 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
                   <span className="text-[10.5px] text-slate-400 block">إجمالي الأنصبة:</span>
                   <span
                     className={`font-black text-sm ${
-                      totalWeeklyPeriodsForGrade === 35
+                      totalWeeklyPeriodsForGrade === WEEKDAY_LIST.length * PERIODS_TIMING.length
                         ? 'text-emerald-400'
-                        : totalWeeklyPeriodsForGrade > 35
+                        : totalWeeklyPeriodsForGrade > WEEKDAY_LIST.length * PERIODS_TIMING.length
                         ? 'text-amber-400'
                         : 'text-rose-400'
                     }`}
                   >
-                    {totalWeeklyPeriodsForGrade} / 35 حصة {totalWeeklyPeriodsForGrade === 35 ? '✓ (مطابق)' : ''}
+                    {totalWeeklyPeriodsForGrade} / {WEEKDAY_LIST.length * PERIODS_TIMING.length} حصة للصف الحالي {totalWeeklyPeriodsForGrade === WEEKDAY_LIST.length * PERIODS_TIMING.length ? '✓' : ''}
                   </span>
                 </div>
 
@@ -2752,10 +2877,10 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {teachers.map((t) => {
+                {academicFaculty.map((t) => {
                   const days = t.availableDays && t.availableDays.length > 0
                     ? t.availableDays
-                    : ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'];
+                    : WEEKDAY_LIST;
                   
                   const handleToggleTeacherDay = (day: string) => {
                     if (!canEdit) return;
@@ -2865,7 +2990,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
                       className="w-full bg-slate-900 border border-slate-700 text-white text-xs rounded-xl px-3.5 py-2 font-bold"
                     />
                     <datalist id="teachers-quota-list">
-                      {teachers.map((t) => (
+                      {academicFaculty.map((t) => (
                         <option key={t.id} value={t.name} />
                       ))}
                     </datalist>
@@ -2979,7 +3104,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
                   className="w-full bg-slate-900 border border-slate-700 text-white text-xs rounded-xl px-3.5 py-2 font-bold"
                 />
                 <datalist id="teachers-list">
-                  {teachers.map((t) => (
+                  {academicFaculty.map((t) => (
                     <option key={t.id} value={t.name} />
                   ))}
                 </datalist>
@@ -3003,7 +3128,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
                   editTeacher !== 'أستاذة المادة' &&
                   editTeacher !== 'مدرس المادة'
                 ) {
-                  const allowedDays = getTeacherAvailableDays(editTeacher, subjectQuotas, teachers);
+                  const allowedDays = getTeacherAvailableDays(editTeacher, subjectQuotas, academicTeachers, timetableSettings);
                   if (allowedDays.length > 0 && !allowedDays.includes(editDay)) {
                     return (
                       <div className="sm:col-span-2 lg:col-span-4 p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-200 text-xs flex items-center gap-2 font-bold">
@@ -3057,7 +3182,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
 
       {/* DEDICATED HIGH-PRECISION PRINT & PDF CAPTURE CONTAINERS (OFFICIAL TWO-PAGE DOCUMENT LAYOUT & TEACHER SCHEDULE) */}
       <div className="fixed -left-[9999px] top-0 pointer-events-none">
-        <div id="timetable-pdf-page-1" className="bg-white" style={{ width: "1120px", minWidth: "1120px", backgroundColor: "#ffffff" }} data-pdf-fidelity="TIMETABLE_PDF_PAGE1_FIDELITY_V1_2">
+        <div id="timetable-pdf-page-1" className="bg-white" style={{ width: `${timetablePdfWidthPx}px`, minWidth: `${timetablePdfWidthPx}px`, backgroundColor: "#ffffff" }} data-pdf-fidelity="TIMETABLE_PDF_PAGE1_FIDELITY_V1_2">
           {renderPage1Timetable(true)}
         </div>
         <div id="timetable-pdf-page-2">

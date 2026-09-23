@@ -7,6 +7,7 @@ import { assertUniqueIdentity, stableUsername, type IdentityRecord } from '../ut
 import { centralSyncService, SCHOOL_ADMIN_DATA_SYNC_KEY } from '../services/syncService';
 import { publishPublicSchoolInfo, initializePublicSchoolInfoFromAuthoritative, initializePublicFacultyFromAuthoritative, initializePublicHonorBoardFromAuthoritative, publishPublicFaculty, publishPublicHonorBoard } from '../services/publicHomepageService';
 import { buildPublicHonorBoard, HONOR_ROLL_DEMO_NAMES } from '../utils/publicHomepageFacultyHonor';
+import { buildTimetableAcademicSnapshot, timetableAcademicSnapshotEquals } from '../utils/timetableSettings';
 import { FirebaseAuthService } from '../services/firebaseAuthService';
 import {
   UserRole,
@@ -1078,7 +1079,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return cleanedRaw;
   });
   const [timetable, setTimetable] = useState<TimetableSlot[]>(() => {
-    if (initialStored?.timetable && Array.isArray(initialStored.timetable) && initialStored.timetable.length >= 210) {
+    if (initialStored?.timetable && Array.isArray(initialStored.timetable) && initialStored.timetable.length > 0) {
       return initialStored.timetable;
     }
     return INITIAL_TIMETABLE;
@@ -1212,12 +1213,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const isSyncKeyPending = (key: string): boolean =>
     pendingSyncMutationsRef.current[key] !== undefined;
 
+  const [syncHydrationGeneration, setSyncHydrationGeneration] = useState(0);
+  const [timetableAcademicSyncGeneration, setTimetableAcademicSyncGeneration] = useState(0);
+
   const settlePendingSyncMutation = (key: string, token: number) => {
     if (pendingSyncMutationsRef.current[key] === token) {
       delete pendingSyncMutationsRef.current[key];
+      if (key === 'teachers' || key === 'students') {
+        setTimetableAcademicSyncGeneration((n) => n + 1);
+      }
     }
   };
-  const [syncHydrationGeneration, setSyncHydrationGeneration] = useState(0);
 
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>(() => {
     return initialStored?.auditLogs || INITIAL_AUDIT_LOGS;
@@ -1812,6 +1818,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       cancelled = true;
     };
   }, [role, currentUser?.role, currentUser?.authUid, syncHydrationGeneration, teachers]);
+
+  useEffect(() => {
+    if (role !== 'admin' || currentUser?.role !== 'admin') return;
+    if (!isInitialHydrationDone.current) return;
+    if (!authoritativeTeachersReceivedRef.current || !authoritativeStudentsReceivedRef.current) return;
+    if (isSyncKeyPending('teachers') || isSyncKeyPending('students')) return;
+    const snapshot = buildTimetableAcademicSnapshot(teachers, students);
+    if (timetableAcademicSnapshotEquals(schoolAdminData, snapshot)) return;
+    updateSchoolAdminData({
+      timetableFaculty: snapshot.timetableFaculty,
+      timetableActiveSections: snapshot.timetableActiveSections,
+    });
+  }, [role, currentUser?.role, teachers, students, schoolAdminData.timetableFaculty, schoolAdminData.timetableActiveSections, timetableAcademicSyncGeneration]);
 
   useEffect(() => {
     if (!currentUser) return;

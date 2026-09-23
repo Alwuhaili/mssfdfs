@@ -6,6 +6,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { GradeLevel, ALL_GRADES_LIST } from '../types';
+import { resolveTimetableSettings } from '../utils/timetableSettings';
 import { X, UserPlus, GraduationCap, CheckCircle } from 'lucide-react';
 
 interface AddTeacherModalProps {
@@ -14,20 +15,15 @@ interface AddTeacherModalProps {
 }
 
 export const AddTeacherModal: React.FC<AddTeacherModalProps> = ({ isOpen, onClose }) => {
-  const { addTeacher, lang, t } = useApp();
+  const { addTeacher, lang, t, schoolAdminData } = useApp();
+  const weekdaysList = resolveTimetableSettings(schoolAdminData).workingDays;
 
   const [name, setName] = useState('');
   const [subject, setSubject] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [assignedGrades, setAssignedGrades] = useState<GradeLevel[]>(['الصف السادس العلمي']);
-  const [availableDays, setAvailableDays] = useState<string[]>([
-    'الأحد',
-    'الإثنين',
-    'الثلاثاء',
-    'الأربعاء',
-    'الخميس',
-  ]);
+  const [availableDays, setAvailableDays] = useState<string[]>(() => [...weekdaysList]);
 
   if (!isOpen) return null;
 
@@ -49,11 +45,10 @@ export const AddTeacherModal: React.FC<AddTeacherModalProps> = ({ isOpen, onClos
     setSubject('');
     setEmail('');
     setPhone('');
-    setAvailableDays(['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس']);
+    setAvailableDays([...weekdaysList]);
   };
 
   const allGrades: GradeLevel[] = ALL_GRADES_LIST;
-  const weekdaysList = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'];
 
   const toggleGrade = (g: GradeLevel) => {
     if (assignedGrades.includes(g)) {

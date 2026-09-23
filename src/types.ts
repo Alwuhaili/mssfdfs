@@ -545,13 +545,14 @@ export interface LectureResource {
 
 export interface TimetableSlot {
   id: string;
-  day: 'الأحد' | 'الإثنين' | 'الثلاثاء' | 'الأربعاء' | 'الخميس';
-  period: 1 | 2 | 3 | 4 | 5 | 6 | 7; // 7 دروس / حصص
+  day: string;
+  period: number;
   timeSlot: string; // e.g. "08:00 - 08:45" (45 دقيقة درس + 5 دقائق استراحة)
   gradeLevel: GradeLevel;
   section?: Section | string;
   subject: string;
   teacherName: string;
+  teacherId?: string;
   room?: string;
 }
 
@@ -956,6 +957,21 @@ export interface SchoolAdminData {
   // Timetable Signatures & Official Approvals
   timetableSupervisorName?: string;
   principalNameOnTimetable?: string;
+  timetableSettings?: {
+    workingDays?: string[];
+    periodsPerDay?: number;
+    periodTimes?: Array<{ period: number; startTime?: string; endTime?: string }>;
+  };
+  timetableFaculty?: Array<{
+    id: string;
+    name: string;
+    subject: string;
+    availableDays?: string[];
+  }>;
+  timetableActiveSections?: Array<{
+    gradeLevel: GradeLevel;
+    section: string;
+  }>;
   // Examination Control & Audit Committee (مسؤولة الكنترول والتدقيق ورصد الدرجات)
   examControlAuditorName?: string;
   examControlAuditorTitle?: string;

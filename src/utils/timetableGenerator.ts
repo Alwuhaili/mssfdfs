@@ -6,24 +6,26 @@ import {
   Student,
   ALL_GRADES_LIST,
 } from '../types';
+import {
+  DEFAULT_WORKING_DAYS,
+  DEFAULT_PERIOD_TIMES,
+  FREE_STUDY_SUBJECT,
+  formatPeriodTimeSlot,
+  getUniqueOccupiedTimetableCells,
+  intersectWorkingDays,
+  periodLabel,
+  resolveTimetableSettings,
+  type ResolvedTimetableSettings,
+} from './timetableSettings';
 
-export const WEEKDAY_LIST = [
-  'الأحد',
-  'الإثنين',
-  'الثلاثاء',
-  'الأربعاء',
-  'الخميس',
-] as const;
+/** @deprecated Default school working days only. Use resolveTimetableSettings().workingDays. */
+export const WEEKDAY_LIST = DEFAULT_WORKING_DAYS;
 
-export const PERIODS_TIMING = [
-  { period: 1 as const, timeSlot: '08:00 - 08:45', label: 'الحصة الأولى' },
-  { period: 2 as const, timeSlot: '08:50 - 09:35', label: 'الحصة الثانية' },
-  { period: 3 as const, timeSlot: '09:40 - 10:25', label: 'الحصة الثالثة' },
-  { period: 4 as const, timeSlot: '10:30 - 11:15', label: 'الحصة الرابعة' },
-  { period: 5 as const, timeSlot: '11:20 - 12:05', label: 'الحصة الخامسة' },
-  { period: 6 as const, timeSlot: '12:10 - 12:55', label: 'الحصة السادسة' },
-  { period: 7 as const, timeSlot: '13:00 - 13:45', label: 'الحصة السابعة' },
-];
+export const PERIODS_TIMING = DEFAULT_PERIOD_TIMES.map((entry) => ({
+  period: entry.period,
+  timeSlot: formatPeriodTimeSlot(entry),
+  label: periodLabel(entry.period),
+}));
 
 export interface GenerationResult {
   slots: TimetableSlot[];
@@ -157,19 +159,18 @@ export function isSameTeacher(
   );
   if (tObjA && tObjB && tObjA.id === tObjB.id) return true;
 
-  // Substring and token matching for compound names (e.g., "محمد نعمة كاظم" and "محمد نعمة كاظم كريدي الوحيلي")
-  if (normA.length >= 4 && normB.length >= 4) {
-    if (normA.includes(normB) || normB.includes(normA)) return true;
-
+  // Legacy compound-name compatibility: only when one full name contains the other
+  // and the shorter form has at least three tokens (avoids first-two-word false positives).
+  if (normA.length >= 8 && normB.length >= 8) {
     const wordsA = normA.split(' ').filter(Boolean);
     const wordsB = normB.split(' ').filter(Boolean);
-    if (wordsA.length >= 2 && wordsB.length >= 2) {
-      if (wordsA[0] === wordsB[0] && wordsA[1] === wordsB[1]) return true;
-      const minWords = wordsA.length < wordsB.length ? wordsA : wordsB;
-      const maxWords = wordsA.length < wordsB.length ? wordsB : wordsA;
-      if (minWords.length >= 2 && minWords.every((w) => maxWords.includes(w))) {
-        return true;
-      }
+    const shorter = wordsA.length <= wordsB.length ? wordsA : wordsB;
+    const longer = wordsA.length <= wordsB.length ? wordsB : wordsA;
+    if (shorter.length >= 3 && shorter.every((w) => longer.includes(w))) {
+      return true;
+    }
+    if (normA.includes(normB) || normB.includes(normA)) {
+      if (Math.min(wordsA.length, wordsB.length) >= 3) return true;
     }
   }
 
@@ -202,11 +203,13 @@ export function getTeacherChronologicalAgenda(
   allSlots: TimetableSlot[],
   teacherName: string,
   subjectQuotas: GradeSubjectQuota[] = [],
-  teachersList: Teacher[] = []
+  teachersList: Teacher[] = [],
+  settings?: ResolvedTimetableSettings
 ): TeacherAgendaDay[] {
-  const allowedDays = getTeacherAvailableDays(teacherName, subjectQuotas, teachersList);
+  const resolved = settings || resolveTimetableSettings();
+  const allowedDays = getTeacherAvailableDays(teacherName, subjectQuotas, teachersList, resolved);
 
-  return WEEKDAY_LIST.map((day) => {
+  return resolved.workingDays.map((day) => {
     const isWorkingDay = allowedDays.includes(day);
     const daySlots = allSlots.filter(
       (s) => s.day === day && isSameTeacher(s.teacherName, teacherName, teachersList)
@@ -215,12 +218,12 @@ export function getTeacherChronologicalAgenda(
     daySlots.sort((a, b) => a.period - b.period);
 
     const lessons: TeacherAgendaLesson[] = daySlots.map((slot) => {
-      const timing = PERIODS_TIMING.find((p) => p.period === slot.period);
+      const timeSlot = slot.timeSlot || getTimeSlotForPeriod(slot.period, resolved);
       const samePeriodSlots = daySlots.filter((s) => s.period === slot.period);
       return {
         period: slot.period,
-        label: timing?.label || `الحصة ${slot.period}`,
-        timeSlot: slot.timeSlot || timing?.timeSlot || '08:00 - 08:45',
+        label: periodLabel(slot.period),
+        timeSlot: timeSlot || `الحصة ${slot.period}`,
         gradeLevel: slot.gradeLevel,
         section: slot.section || 'أ',
         subject: slot.subject,
@@ -246,21 +249,22 @@ export function getTeacherChronologicalAgenda(
 export function getTeacherAvailableDays(
   teacherName: string,
   gradeQuotas: GradeSubjectQuota[] = [],
-  teachersList: Teacher[] = []
+  teachersList: Teacher[] = [],
+  settings?: ResolvedTimetableSettings
 ): string[] {
+  const resolved = settings || resolveTimetableSettings();
   if (
     !teacherName ||
     teacherName === 'إدارة المدرسة' ||
     teacherName === 'أستاذة المادة' ||
     teacherName === 'مدرس المادة'
   ) {
-    return [...WEEKDAY_LIST];
+    return [...resolved.workingDays];
   }
 
   const cleanName = teacherName.trim();
   const normalizedInput = normalizeTeacherName(cleanName);
 
-  // 1. Search in teachersList by exact name, normalized name, or ID
   const matchedTeacher = teachersList.find((t) => {
     if (t.id === teacherName || t.name.trim() === cleanName) return true;
     const normTName = normalizeTeacherName(t.name);
@@ -271,10 +275,9 @@ export function getTeacherAvailableDays(
   });
 
   if (matchedTeacher && matchedTeacher.availableDays && matchedTeacher.availableDays.length > 0) {
-    return matchedTeacher.availableDays;
+    return intersectWorkingDays(matchedTeacher.availableDays, resolved.workingDays);
   }
 
-  // 2. Search in gradeQuotas
   const matchedQuota = gradeQuotas.find((q) => {
     if (q.teacherName.trim() === cleanName) return true;
     const normQName = normalizeTeacherName(q.teacherName);
@@ -285,19 +288,19 @@ export function getTeacherAvailableDays(
   });
 
   if (matchedQuota && matchedQuota.availableDays && matchedQuota.availableDays.length > 0) {
-    return matchedQuota.availableDays;
+    return intersectWorkingDays(matchedQuota.availableDays, resolved.workingDays);
   }
 
-  // Default to all 5 weekdays
-  return [...WEEKDAY_LIST];
+  return [...resolved.workingDays];
 }
 
 /**
  * Returns time slot string for a period number (e.g., 1 -> "08:00 - 08:45")
  */
-export function getTimeSlotForPeriod(periodNumber: number): string {
-  const match = PERIODS_TIMING.find((p) => p.period === periodNumber);
-  return match ? match.timeSlot : '08:00 - 08:45';
+export function getTimeSlotForPeriod(periodNumber: number, settings?: ResolvedTimetableSettings): string {
+  const resolved = settings || resolveTimetableSettings();
+  const match = resolved.periodTimes.find((p) => p.period === periodNumber);
+  return formatPeriodTimeSlot(match) || PERIODS_TIMING.find((p) => p.period === periodNumber)?.timeSlot || '';
 }
 
 /**
@@ -363,41 +366,72 @@ export interface TimetableConflictItem {
 /**
  * Audits the complete school timetable for any teacher-period collisions or working day violations
  */
+export type SchoolDayViolation = {
+  slotId: string;
+  day: string;
+  period: number;
+  teacherName: string;
+  gradeLevel: string;
+  section: string;
+  subject: string;
+};
+
+export type PeriodRangeViolation = SchoolDayViolation;
+export type TeacherAvailabilityViolation = SchoolDayViolation & { allowedDays: string[] };
+
+/**
+ * Audits the complete school timetable for teacher collisions, school-day, period-range, and teacher-availability issues.
+ */
 export function auditSchoolTimetableConflicts(
   timetable: TimetableSlot[],
   subjectQuotas: GradeSubjectQuota[] = [],
-  teachersList: Teacher[] = []
+  teachersList: Teacher[] = [],
+  settings?: ResolvedTimetableSettings
 ): {
   hasConflicts: boolean;
   totalConflicts: number;
   conflicts: TimetableConflictItem[];
-  availabilityViolations: Array<{
-    slotId: string;
-    day: string;
-    period: number;
-    teacherName: string;
-    gradeLevel: string;
-    section: string;
-    subject: string;
-    allowedDays: string[];
-  }>;
+  timeConflicts: TimetableConflictItem[];
+  availabilityViolations: TeacherAvailabilityViolation[];
+  teacherAvailabilityViolations: TeacherAvailabilityViolation[];
+  schoolDayViolations: SchoolDayViolation[];
+  periodRangeViolations: PeriodRangeViolation[];
+  duplicateCells: Array<{ key: string; slotIds: string[] }>;
 } {
+  const resolved = settings || resolveTimetableSettings();
+  const schoolDays = new Set(resolved.workingDays);
   const conflicts: TimetableConflictItem[] = [];
-  const availabilityViolations: Array<{
-    slotId: string;
-    day: string;
-    period: number;
-    teacherName: string;
-    gradeLevel: string;
-    section: string;
-    subject: string;
-    allowedDays: string[];
-  }> = [];
-
+  const availabilityViolations: TeacherAvailabilityViolation[] = [];
+  const schoolDayViolations: SchoolDayViolation[] = [];
+  const periodRangeViolations: PeriodRangeViolation[] = [];
   const seenPairKeys = new Set<string>();
+
+  const duplicateCells = getUniqueOccupiedTimetableCells(timetable)
+    .filter((cell) => cell.slotIds.length > 1)
+    .map((cell) => ({
+      key: `${cell.gradeLevel}:::${cell.section}:::${cell.day}:::${cell.period}`,
+      slotIds: cell.slotIds,
+    }));
 
   for (let i = 0; i < timetable.length; i++) {
     const s1 = timetable[i];
+    const baseMeta = {
+      slotId: s1.id,
+      day: s1.day,
+      period: s1.period,
+      teacherName: s1.teacherName,
+      gradeLevel: s1.gradeLevel,
+      section: s1.section || 'أ',
+      subject: s1.subject,
+    };
+
+    if (!schoolDays.has(s1.day)) {
+      schoolDayViolations.push(baseMeta);
+    }
+    if (!Number.isInteger(s1.period) || s1.period < 1 || s1.period > resolved.periodsPerDay) {
+      periodRangeViolations.push(baseMeta);
+    }
+
     if (
       !s1.teacherName ||
       s1.teacherName === 'إدارة المدرسة' ||
@@ -407,32 +441,21 @@ export function auditSchoolTimetableConflicts(
       continue;
     }
 
-    // 1. Check working day violation
-    const allowedDays = getTeacherAvailableDays(s1.teacherName, subjectQuotas, teachersList);
-    if (!allowedDays.includes(s1.day)) {
-      availabilityViolations.push({
-        slotId: s1.id,
-        day: s1.day,
-        period: s1.period,
-        teacherName: s1.teacherName,
-        gradeLevel: s1.gradeLevel,
-        section: s1.section || 'أ',
-        subject: s1.subject,
-        allowedDays,
-      });
+    const allowedDays = getTeacherAvailableDays(s1.teacherName, subjectQuotas, teachersList, resolved);
+    if (schoolDays.has(s1.day) && !allowedDays.includes(s1.day)) {
+      availabilityViolations.push({ ...baseMeta, allowedDays });
     }
 
-    // 2. Check overlap with other slots
     for (let j = i + 1; j < timetable.length; j++) {
       const s2 = timetable[j];
       if (s1.day === s2.day && s1.period === s2.period) {
-        // Skip same class & section
         const isSameClass =
           s1.gradeLevel === s2.gradeLevel &&
           (s1.section === s2.section || (!s1.section && s2.section === 'أ') || (!s2.section && s1.section === 'أ'));
         if (isSameClass) continue;
 
-        if (isSameTeacher(s1.teacherName, s2.teacherName, teachersList)) {
+        const sameById = Boolean(s1.teacherId && s2.teacherId && s1.teacherId === s2.teacherId);
+        if (sameById || isSameTeacher(s1.teacherName, s2.teacherName, teachersList)) {
           const pairKey = [s1.id, s2.id].sort().join(':::');
           if (!seenPairKeys.has(pairKey)) {
             seenPairKeys.add(pairKey);
@@ -444,7 +467,7 @@ export function auditSchoolTimetableConflicts(
               slotId2: s2.id,
               day: s1.day,
               period: s1.period,
-              timeSlot: s1.timeSlot || getTimeSlotForPeriod(s1.period),
+              timeSlot: s1.timeSlot || getTimeSlotForPeriod(s1.period, resolved),
               teacherName: s1.teacherName,
               class1: class1Str,
               class2: class2Str,
@@ -458,11 +481,19 @@ export function auditSchoolTimetableConflicts(
     }
   }
 
+  const totalConflicts =
+    conflicts.length + availabilityViolations.length + schoolDayViolations.length + periodRangeViolations.length;
+
   return {
-    hasConflicts: conflicts.length > 0 || availabilityViolations.length > 0,
-    totalConflicts: conflicts.length + availabilityViolations.length,
+    hasConflicts: totalConflicts > 0,
+    totalConflicts,
     conflicts,
+    timeConflicts: conflicts,
     availabilityViolations,
+    teacherAvailabilityViolations: availabilityViolations,
+    schoolDayViolations,
+    periodRangeViolations,
+    duplicateCells,
   };
 }
 
@@ -490,15 +521,17 @@ export function getTeacherWeeklySchedule(
   allSlots: TimetableSlot[],
   teacherName: string,
   subjectQuotas: GradeSubjectQuota[] = [],
-  teachersList: Teacher[] = []
+  teachersList: Teacher[] = [],
+  settings?: ResolvedTimetableSettings
 ): TeacherWeeklyScheduleReport {
-  const allowedDays = getTeacherAvailableDays(teacherName, subjectQuotas, teachersList);
+  const resolved = settings || resolveTimetableSettings();
+  const allowedDays = getTeacherAvailableDays(teacherName, subjectQuotas, teachersList, resolved);
   const items: TeacherWeeklyScheduleReport['items'] = [];
   let totalSlots = 0;
 
-  for (const day of WEEKDAY_LIST) {
+  for (const day of resolved.workingDays) {
     const isAvail = allowedDays.includes(day);
-    for (let p = 1; p <= 7; p++) {
+    for (let p = 1; p <= resolved.periodsPerDay; p++) {
       const matchingSlots = allSlots.filter(
         (s) => s.day === day && s.period === p && isSameTeacher(s.teacherName, teacherName, teachersList)
       );
@@ -508,7 +541,7 @@ export function getTeacherWeeklySchedule(
       items.push({
         day,
         period: p,
-        timeSlot: getTimeSlotForPeriod(p),
+        timeSlot: getTimeSlotForPeriod(p, resolved),
         matchingSlots,
         isAvailableDay: isAvail,
         hasCollision: matchingSlots.length > 1,
@@ -526,7 +559,7 @@ export function getTeacherWeeklySchedule(
 
 /**
  * Generates an intelligent, 100% conflict-free weekly timetable according to all ministry & school constraints:
- * 1. Distributes subject periods across weekdays (الأحد - الخميس: 5 أيام).
+ * 1. Distributes subject periods across resolved school workingDays and periodsPerDay.
  * 2. Strict Teacher Available Days constraint (only schedules on working days).
  * 3. Strict Teacher Collision-Free constraint across all classes/sections in the entire school.
  * 4. Maximum 1 lesson per day per subject (unless weekly periods > available days).
@@ -538,9 +571,13 @@ export function generateSmartTimetable(
   allQuotas: GradeSubjectQuota[],
   existingTimetable: TimetableSlot[],
   teachersList: Teacher[] = [],
-  studentsList: Student[] = []
+  studentsList: Student[] = [],
+  settings?: ResolvedTimetableSettings
 ): GenerationResult {
-  // Always sanitize existing timetable so empty sections with 0 students are purged
+  const resolved = settings || resolveTimetableSettings();
+  const workingDays = resolved.workingDays;
+  const periodsPerDay = resolved.periodsPerDay;
+  const sectionCapacity = workingDays.length * periodsPerDay;
   const cleanedExisting = filterEmptySectionSlots(existingTimetable, studentsList);
 
   interface LessonUnit {
@@ -563,8 +600,8 @@ export function generateSmartTimetable(
 
     const basePool: LessonUnit[] = [];
     gradeQuotas.forEach((q) => {
-      const teacherDays = getTeacherAvailableDays(q.teacherName, gradeQuotas, teachersList);
-      const numDays = teacherDays.length || 5;
+      const teacherDays = getTeacherAvailableDays(q.teacherName, gradeQuotas, teachersList, resolved);
+      const numDays = teacherDays.length || workingDays.length;
       const maxDaily = q.weeklyPeriods <= numDays ? 1 : Math.ceil(q.weeklyPeriods / numDays);
       for (let i = 0; i < q.weeklyPeriods; i++) {
         basePool.push({
@@ -578,24 +615,23 @@ export function generateSmartTimetable(
       }
     });
 
-    while (basePool.length < 35) {
+    while (basePool.length < sectionCapacity) {
       basePool.push({
-        subject: 'دراسة حرة وتوجيه',
+        subject: FREE_STUDY_SUBJECT,
         teacher: 'إدارة المدرسة',
         room: 'المكتبة المركزية',
         weeklyTotal: 1,
-        maxPerDay: 7,
-        availableDays: [...WEEKDAY_LIST],
+        maxPerDay: periodsPerDay,
+        availableDays: [...workingDays],
       });
     }
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const grid: Record<string, LessonUnit> = {};
       const dayCounts: Record<string, Record<string, number>> = {};
-      for (const d of WEEKDAY_LIST) dayCounts[d] = {};
+      for (const d of workingDays) dayCounts[d] = {};
 
       const pool = [...basePool];
-      // Randomize and prioritize hard constraints (fewer available days)
       pool.sort(() => Math.random() - 0.5);
       pool.sort((a, b) => a.availableDays.length - b.availableDays.length);
 
@@ -605,9 +641,10 @@ export function generateSmartTimetable(
         const validPositions: Array<{ d: string; p: number; key: string }> = [];
 
         for (const d of item.availableDays) {
+          if (!workingDays.includes(d)) continue;
           if ((dayCounts[d][item.subject] || 0) >= item.maxPerDay) continue;
 
-          for (let p = 1; p <= 7; p++) {
+          for (let p = 1; p <= periodsPerDay; p++) {
             const key = `${d}_${p}`;
             if (grid[key]) continue;
 
@@ -637,17 +674,17 @@ export function generateSmartTimetable(
         dayCounts[chosen.d][item.subject] = (dayCounts[chosen.d][item.subject] || 0) + 1;
       }
 
-      if (placedAll && Object.keys(grid).length === 35) {
+      if (placedAll && Object.keys(grid).length === sectionCapacity) {
         const sectionSlots: TimetableSlot[] = [];
-        for (const d of WEEKDAY_LIST) {
-          for (let p = 1; p <= 7; p++) {
+        for (const d of workingDays) {
+          for (let p = 1; p <= periodsPerDay; p++) {
             const l = grid[`${d}_${p}`];
             if (l) {
               sectionSlots.push({
                 id: `sch-${grade}-${section}-${d}-${p}-${Math.random().toString(36).substr(2, 4)}`,
-                day: d as any,
-                period: p as any,
-                timeSlot: getTimeSlotForPeriod(p),
+                day: d,
+                period: p,
+                timeSlot: getTimeSlotForPeriod(p, resolved),
                 gradeLevel: grade,
                 section,
                 subject: l.subject,
@@ -689,7 +726,7 @@ export function generateSmartTimetable(
         runningTimetable = [...runningTimetable, ...generated];
       }
 
-      const audit = auditSchoolTimetableConflicts(runningTimetable, allQuotas, teachersList);
+      const audit = auditSchoolTimetableConflicts(runningTimetable, allQuotas, teachersList, resolved);
       return {
         slots: runningTimetable,
         success: true,
@@ -723,7 +760,7 @@ export function generateSmartTimetable(
     }
 
     const fullResultSlots = [...otherGradeSlots, ...generated];
-    const audit = auditSchoolTimetableConflicts(fullResultSlots, allQuotas, teachersList);
+    const audit = auditSchoolTimetableConflicts(fullResultSlots, allQuotas, teachersList, resolved);
 
     return {
       slots: fullResultSlots,
@@ -767,8 +804,8 @@ export function generateSmartTimetable(
       }
     }
 
-    if (allSolved && globalSchedule.length === targets.length * 35) {
-      const audit = auditSchoolTimetableConflicts(globalSchedule, allQuotas, teachersList);
+    if (allSolved && globalSchedule.length === targets.length * sectionCapacity) {
+      const audit = auditSchoolTimetableConflicts(globalSchedule, allQuotas, teachersList, resolved);
       return {
         slots: globalSchedule,
         success: true,
@@ -791,13 +828,15 @@ export function generateSmartTimetable(
 export function resolveAllTimetableConflicts(
   timetable: TimetableSlot[],
   subjectQuotas: GradeSubjectQuota[] = [],
-  teachersList: Teacher[] = []
+  teachersList: Teacher[] = [],
+  settings?: ResolvedTimetableSettings
 ): { resolvedTimetable: TimetableSlot[]; fixedCount: number; message: string } {
+  const resolved = settings || resolveTimetableSettings();
   let slots = [...timetable];
   let fixedCount = 0;
 
   for (let pass = 0; pass < 10; pass++) {
-    const audit = auditSchoolTimetableConflicts(slots, subjectQuotas, teachersList);
+    const audit = auditSchoolTimetableConflicts(slots, subjectQuotas, teachersList, resolved);
     if (!audit.hasConflicts) break;
 
     // 1. Fix working day violations
@@ -816,7 +855,7 @@ export function resolveAllTimetableConflicts(
           candidate.id !== targetSlot.id &&
           v.allowedDays.includes(candidate.day)
         ) {
-          const candidateTeacherDays = getTeacherAvailableDays(candidate.teacherName, subjectQuotas, teachersList);
+          const candidateTeacherDays = getTeacherAvailableDays(candidate.teacherName, subjectQuotas, teachersList, resolved);
           if (candidateTeacherDays.includes(targetSlot.day)) {
             // Check non-collision for both
             const busyTargetOnCand = isTeacherBusyAtSlot(
@@ -873,7 +912,7 @@ export function resolveAllTimetableConflicts(
       const s2Index = slots.findIndex((s) => s.id === conf.slotId2);
       if (s2Index === -1) continue;
       const s2 = slots[s2Index];
-      const s2AllowedDays = getTeacherAvailableDays(s2.teacherName, subjectQuotas, teachersList);
+      const s2AllowedDays = getTeacherAvailableDays(s2.teacherName, subjectQuotas, teachersList, resolved);
 
       let swapped = false;
       for (let i = 0; i < slots.length; i++) {
@@ -884,7 +923,7 @@ export function resolveAllTimetableConflicts(
           candidate.id !== s2.id &&
           s2AllowedDays.includes(candidate.day)
         ) {
-          const candAllowedDays = getTeacherAvailableDays(candidate.teacherName, subjectQuotas, teachersList);
+          const candAllowedDays = getTeacherAvailableDays(candidate.teacherName, subjectQuotas, teachersList, resolved);
           if (candAllowedDays.includes(s2.day)) {
             const busyS2OnCand = isTeacherBusyAtSlot(
               s2.teacherName,
@@ -935,7 +974,7 @@ export function resolveAllTimetableConflicts(
     }
   }
 
-  const finalAudit = auditSchoolTimetableConflicts(slots, subjectQuotas, teachersList);
+  const finalAudit = auditSchoolTimetableConflicts(slots, subjectQuotas, teachersList, resolved);
   return {
     resolvedTimetable: slots,
     fixedCount,

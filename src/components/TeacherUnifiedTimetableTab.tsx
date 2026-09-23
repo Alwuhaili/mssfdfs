@@ -8,13 +8,16 @@ import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { Teacher, TimetableSlot } from '../types';
 import {
-  WEEKDAY_LIST,
-  PERIODS_TIMING,
-  normalizeTeacherName,
   isSameTeacher,
   getTeacherWeeklySchedule,
   getTeacherChronologicalAgenda,
 } from '../utils/timetableGenerator';
+import {
+  buildPeriodTimings,
+  facultyAsTeacherList,
+  resolveTimetableFaculty,
+  resolveTimetableSettings,
+} from '../utils/timetableSettings';
 import {
   CalendarDays,
   Clock,
@@ -56,14 +59,24 @@ export const TeacherUnifiedTimetableTab: React.FC<TeacherUnifiedTimetableTabProp
     updateTeacher,
     subjectQuotas,
     role,
+    schoolAdminData,
   } = useApp();
+
+  const timetableSettings = useMemo(() => resolveTimetableSettings(schoolAdminData), [schoolAdminData]);
+  const academicFaculty = useMemo(
+    () => resolveTimetableFaculty(schoolAdminData, teachers, subjectQuotas),
+    [schoolAdminData, teachers, subjectQuotas]
+  );
+  const academicTeachers = useMemo(() => facultyAsTeacherList(academicFaculty), [academicFaculty]);
+  const WEEKDAY_LIST = timetableSettings.workingDays;
+  const PERIODS_TIMING = useMemo(() => buildPeriodTimings(timetableSettings), [timetableSettings]);
 
   const isManagement = role === 'admin' || (role as string) === 'principal' || (role as string) === 'school_admin';
 
   // Selected teacher state: default to active logged-in teacher or first in list
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>(() => {
     if (activeTeacher?.id) return activeTeacher.id;
-    return teachers[0]?.id || '';
+    return academicFaculty[0]?.id || '';
   });
 
   const [teacherSearchQuery, setTeacherSearchQuery] = useState<string>('');
@@ -77,42 +90,43 @@ export const TeacherUnifiedTimetableTab: React.FC<TeacherUnifiedTimetableTabProp
   // Find the selected teacher object
   const currentTeacher = useMemo(() => {
     return (
-      teachers.find((t) => t.id === selectedTeacherId) ||
-      teachers.find((t) => isSameTeacher(t.name, activeTeacher?.name, teachers)) ||
+      academicFaculty.find((t) => t.id === selectedTeacherId) ||
+      academicFaculty.find((t) => isSameTeacher(t.name, activeTeacher?.name, academicTeachers)) ||
+      academicTeachers.find((t) => t.id === selectedTeacherId) ||
       activeTeacher ||
-      teachers[0]
+      academicFaculty[0]
     );
-  }, [teachers, selectedTeacherId, activeTeacher]);
+  }, [academicFaculty, academicTeachers, selectedTeacherId, activeTeacher]);
 
   const teacherName = currentTeacher?.name || 'الأستاذة';
 
   // Filter teachers list by search query
   const filteredTeachers = useMemo(() => {
-    if (!teacherSearchQuery.trim()) return teachers;
+    if (!teacherSearchQuery.trim()) return academicFaculty;
     const q = teacherSearchQuery.trim().toLowerCase();
-    return teachers.filter(
+    return academicFaculty.filter(
       (t) =>
         t.name.toLowerCase().includes(q) ||
         (t.subject && t.subject.toLowerCase().includes(q))
     );
-  }, [teachers, teacherSearchQuery]);
+  }, [academicFaculty, teacherSearchQuery]);
 
   // Teacher available/working days
   const workingDays = useMemo(() => {
     if (currentTeacher?.availableDays && currentTeacher.availableDays.length > 0) {
-      return currentTeacher.availableDays;
+      return currentTeacher.availableDays.filter((day) => WEEKDAY_LIST.includes(day));
     }
-    return ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'];
-  }, [currentTeacher]);
+    return WEEKDAY_LIST;
+  }, [currentTeacher, WEEKDAY_LIST]);
 
   // Compute full weekly schedule matrix & agenda for the selected teacher
   const scheduleReport = useMemo(() => {
-    return getTeacherWeeklySchedule(timetable, teacherName, subjectQuotas, teachers);
-  }, [timetable, teacherName, subjectQuotas, teachers]);
+    return getTeacherWeeklySchedule(timetable, teacherName, subjectQuotas, academicTeachers, timetableSettings);
+  }, [timetable, teacherName, subjectQuotas, academicTeachers, timetableSettings]);
 
   const chronologicalAgenda = useMemo(() => {
-    return getTeacherChronologicalAgenda(timetable, teacherName, subjectQuotas, teachers);
-  }, [timetable, teacherName, subjectQuotas, teachers]);
+    return getTeacherChronologicalAgenda(timetable, teacherName, subjectQuotas, academicTeachers, timetableSettings);
+  }, [timetable, teacherName, subjectQuotas, academicTeachers, timetableSettings]);
 
   // Gather stats
   const totalWeeklyPeriods = scheduleReport.totalSlots;
@@ -123,7 +137,7 @@ export const TeacherUnifiedTimetableTab: React.FC<TeacherUnifiedTimetableTabProp
     timetable.forEach((slot) => {
       if (
         slot.teacherName &&
-        isSameTeacher(slot.teacherName, teacherName, teachers)
+        isSameTeacher(slot.teacherName, teacherName, academicTeachers)
       ) {
         if (!map.has(slot.gradeLevel)) {
           map.set(slot.gradeLevel, new Set());
@@ -137,7 +151,7 @@ export const TeacherUnifiedTimetableTab: React.FC<TeacherUnifiedTimetableTabProp
       grade,
       sections: Array.from(sections).sort(),
     }));
-  }, [timetable, teacherName, teachers]);
+  }, [timetable, teacherName, academicTeachers]);
 
   // Daily distribution count
   const dailyBreakdown = useMemo(() => {
@@ -147,7 +161,7 @@ export const TeacherUnifiedTimetableTab: React.FC<TeacherUnifiedTimetableTabProp
         (s) =>
           s.day === day &&
           s.teacherName &&
-          isSameTeacher(s.teacherName, teacherName, teachers)
+          isSameTeacher(s.teacherName, teacherName, academicTeachers)
       );
       return {
         day,
@@ -156,7 +170,7 @@ export const TeacherUnifiedTimetableTab: React.FC<TeacherUnifiedTimetableTabProp
         slots,
       };
     });
-  }, [timetable, teacherName, workingDays, teachers]);
+  }, [timetable, teacherName, workingDays, WEEKDAY_LIST, academicTeachers]);
 
   // Detect off-day lessons or collisions
   const scheduleIssues = useMemo(() => {
@@ -170,7 +184,7 @@ export const TeacherUnifiedTimetableTab: React.FC<TeacherUnifiedTimetableTabProp
             s.day === day &&
             s.period === p.period &&
             s.teacherName &&
-            isSameTeacher(s.teacherName, teacherName, teachers)
+            isSameTeacher(s.teacherName, teacherName, academicTeachers)
         );
 
         if (matching.length > 1) {
@@ -196,11 +210,15 @@ export const TeacherUnifiedTimetableTab: React.FC<TeacherUnifiedTimetableTabProp
     });
 
     return issues;
-  }, [timetable, teacherName, workingDays, teachers]);
+  }, [timetable, teacherName, workingDays, WEEKDAY_LIST, PERIODS_TIMING, academicTeachers]);
 
   // Handle opening working days editor
   const handleOpenDaysEditor = () => {
-    setTempWorkingDays([...workingDays]);
+    const stored =
+      currentTeacher?.availableDays && currentTeacher.availableDays.length > 0
+        ? currentTeacher.availableDays
+        : [...WEEKDAY_LIST];
+    setTempWorkingDays([...stored]);
     setIsEditingWorkingDays(true);
   };
 
@@ -216,14 +234,16 @@ export const TeacherUnifiedTimetableTab: React.FC<TeacherUnifiedTimetableTabProp
 
   // Save working days
   const handleSaveWorkingDays = () => {
-    if (currentTeacher?.id) {
-      updateTeacher(currentTeacher.id, {
-        availableDays: tempWorkingDays,
-      });
-      setIsEditingWorkingDays(false);
-      setShowSaveDaysFeedback(true);
-      setTimeout(() => setShowSaveDaysFeedback(false), 3000);
-    }
+    if (!currentTeacher?.id || String(currentTeacher.id).startsWith('quota:')) return;
+    const preservedOffCalendar = (currentTeacher.availableDays || []).filter(
+      (day) => !WEEKDAY_LIST.includes(day as (typeof WEEKDAY_LIST)[number])
+    );
+    updateTeacher(currentTeacher.id, {
+      availableDays: [...new Set([...preservedOffCalendar, ...tempWorkingDays])],
+    });
+    setIsEditingWorkingDays(false);
+    setShowSaveDaysFeedback(true);
+    setTimeout(() => setShowSaveDaysFeedback(false), 3000);
   };
 
   // Subject color badge helper
@@ -318,7 +338,7 @@ export const TeacherUnifiedTimetableTab: React.FC<TeacherUnifiedTimetableTabProp
               >
                 {filteredTeachers.map((t) => {
                   const teacherSlotCount = timetable.filter((s) =>
-                    isSameTeacher(s.teacherName, t.name, teachers)
+                    isSameTeacher(s.teacherName, t.name, academicTeachers)
                   ).length;
                   return (
                     <option key={t.id} value={t.id}>
@@ -469,7 +489,7 @@ export const TeacherUnifiedTimetableTab: React.FC<TeacherUnifiedTimetableTabProp
             </div>
             <div className="text-xl font-black text-indigo-300 font-mono flex items-baseline gap-1.5">
               <span>{workingDays.length}</span>
-              <span className="text-xs text-slate-400 font-sans font-normal">من 5 أيام</span>
+              <span className="text-xs text-slate-400 font-sans font-normal">من {WEEKDAY_LIST.length} أيام دوام</span>
             </div>
           </div>
 
@@ -522,7 +542,7 @@ export const TeacherUnifiedTimetableTab: React.FC<TeacherUnifiedTimetableTabProp
             }`}
           >
             <Grid3X3 className="w-3.5 h-3.5" />
-            <span>مصفوفة الجدول الأسبوعي (5 أيام × 7 حصص)</span>
+            <span>مصفوفة الجدول الأسبوعي ({WEEKDAY_LIST.length} أيام × {PERIODS_TIMING.length} حصص)</span>
           </button>
         </div>
 
@@ -726,7 +746,7 @@ export const TeacherUnifiedTimetableTab: React.FC<TeacherUnifiedTimetableTabProp
                   (s) =>
                     s.day === day &&
                     s.teacherName &&
-                    isSameTeacher(s.teacherName, teacherName, teachers)
+                    isSameTeacher(s.teacherName, teacherName, academicTeachers)
                 );
 
                 return (

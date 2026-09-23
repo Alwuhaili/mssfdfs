@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext';
 import { Teacher, Student, Parent, GradeLevel, ALL_GRADES_LIST } from '../types';
 import { PRESET_SHIELDS_AND_BADGES } from '../data/shieldsData';
 import { isMaleTeacher, getTeacherAccountLabel } from '../utils/teacherUtils';
+import { resolveTimetableSettings, DEFAULT_WORKING_DAYS } from '../utils/timetableSettings';
 import {
   X,
   UserCheck,
@@ -46,6 +47,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
     updateTeacher,
     updateStudent,
     updateParent,
+    schoolAdminData,
     getUserPasscode,
     adminUpdateUserPasscode,
   } = useApp();
@@ -66,13 +68,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
   const [subject, setSubject] = useState('');
   const [assignedGrades, setAssignedGrades] = useState<GradeLevel[]>([]);
   const [teacherStatus, setTeacherStatus] = useState<Teacher['status']>('نشط');
-  const [availableDays, setAvailableDays] = useState<string[]>([
-    'الأحد',
-    'الإثنين',
-    'الثلاثاء',
-    'الأربعاء',
-    'الخميس',
-  ]);
+  const [availableDays, setAvailableDays] = useState<string[]>([...DEFAULT_WORKING_DAYS]);
 
   // Student fields
   const [nationalId, setNationalId] = useState('');
@@ -107,7 +103,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
       setAvailableDays(
         t.availableDays && t.availableDays.length > 0
           ? t.availableDays
-          : ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس']
+          : [...resolveTimetableSettings(schoolAdminData).workingDays]
       );
     } else if (userType === 'student') {
       const s = userData as Student;
@@ -580,7 +576,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                   {lang === 'ar' ? 'أيام الحصص والدوام الدراسي الأسبوعية:' : 'Teaching Days Schedule:'}
                 </label>
                 <div className="flex flex-wrap gap-2 pt-1">
-                  {['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'].map((day) => {
+                  {resolveTimetableSettings(schoolAdminData).workingDays.map((day) => {
                     const isSelected = availableDays.includes(day);
                     return (
                       <button

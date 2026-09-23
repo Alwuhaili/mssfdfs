@@ -1186,7 +1186,7 @@ export const TeacherDashboard: React.FC<{ activeTab: string }> = ({
                 className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs shadow-md flex items-center gap-2 transition-all shrink-0"
               >
                 <CalendarDays className="w-4 h-4 text-slate-950" />
-                <span>عرض والتعديل على الجدول الأسبوعي الشامل (7 دروس) 🗓️</span>
+                <span>عرض الجدول الأسبوعي الشامل 🗓️</span>
               </button>
             </div>
 
