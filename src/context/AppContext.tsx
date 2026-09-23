@@ -4053,6 +4053,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       studentId: newStudent.id,
       studentName: newStudent.name,
       gradeLevel: newStudent.gradeLevel,
+      studentSection: newStudent.section,
     };
     setParents((prev) => [newParent, ...prev]);
     void persistCollectionDoc('parents', parentId, newParent);
@@ -4206,6 +4207,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 email: targetStudent.parentEmail,
                 studentName: targetStudent.name,
                 gradeLevel: targetStudent.gradeLevel,
+                studentSection: targetStudent.section,
             };
         }
         return p;
@@ -4222,6 +4224,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             studentId: targetStudent.id,
             studentName: targetStudent.name,
             gradeLevel: targetStudent.gradeLevel,
+            studentSection: targetStudent.section,
         };
         updatedParents = [newParent as any, ...updatedParents];
         targetStudent.parentId = newParentId;

@@ -182,6 +182,7 @@ export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab 
     { id: 'attendance', label: t.navAttendance, icon: CalendarCheck },
     { id: 'exams', label: t.navExams, icon: FileCheck2 },
     { id: 'financial', label: t.navFinancial, icon: CircleDollarSign },
+    { id: 'timetable', label: t.navTimetable, icon: CalendarDays },
   ];
 
   const supervisorTabs = [

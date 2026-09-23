@@ -294,6 +294,7 @@ export interface Parent {
   studentId: string;
   studentName: string;
   gradeLevel: GradeLevel;
+  studentSection?: string;
   status?: 'نشط' | 'محظور' | 'مقيد الوصول';
 }
 
