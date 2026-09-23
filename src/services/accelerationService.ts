@@ -10,6 +10,7 @@ import {
   type AccelerationExamResult,
   type AccelerationPolicy,
   type AccelerationPolicySnapshot,
+  type AccelerationSubjectGradeRule,
   type AcademicEnrollment,
   type EnrollmentFinalResult,
   type SubjectGradeSource,
@@ -32,6 +33,7 @@ export interface ResolvedPolicyThresholds {
   achievementPassingScore?: number;
   ministerialPassingGrade?: number;
   subjectGradeSource?: SubjectGradeSource;
+  subjectGradeRule?: AccelerationSubjectGradeRule;
   requiredExams: AccelerationExamKind[];
   ministerialExamSubjects: string[];
 }
@@ -57,6 +59,7 @@ export function capturePolicySnapshot(policy: AccelerationPolicy): AccelerationP
     requiredFinalAverage: policy.requiredFinalAverage,
     minSubjectGrade: policy.minSubjectGrade,
     subjectGradeSource: policy.subjectGradeSource,
+    subjectGradeRule: cloneSubjectGradeRule(policy.subjectGradeRule),
     aptitudePassingScore: policy.aptitudePassingScore,
     achievementPassingScore: policy.achievementPassingScore,
     ministerialPassingGrade: policy.ministerialPassingGrade,
@@ -70,12 +73,135 @@ function numericOrUndefined(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+export function cloneSubjectGradeRule(
+  rule: AccelerationSubjectGradeRule | undefined
+): AccelerationSubjectGradeRule | undefined {
+  if (!hasSubjectGradeRulePayload(rule)) return undefined;
+  return {
+    baselineMinimum: rule?.baselineMinimum,
+    exceptionMinimum: rule?.exceptionMinimum,
+    maxExceptionSubjects: rule?.maxExceptionSubjects,
+  };
+}
+
+export function hasSubjectGradeRulePayload(rule: unknown): boolean {
+  if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return false;
+  const record = rule as Record<string, unknown>;
+  return ['baselineMinimum', 'exceptionMinimum', 'maxExceptionSubjects'].some((key) => {
+    const value = record[key];
+    return value !== undefined && value !== null && value !== '';
+  });
+}
+
+export function validateAccelerationSubjectGradeRule(
+  rule: unknown
+):
+  | { ok: true; rule: AccelerationSubjectGradeRule }
+  | { ok: false; code: string; reason: string } {
+  if (!hasSubjectGradeRulePayload(rule)) {
+    return {
+      ok: false,
+      code: ACADEMIC_ERROR.POLICY_CONFIGURATION_INCOMPLETE,
+      reason: 'قاعدة درجات المواد المركبة فارغة أو غير مكتملة.',
+    };
+  }
+  const record = rule as AccelerationSubjectGradeRule;
+  const baseline = numericOrUndefined(record.baselineMinimum);
+  const exception = numericOrUndefined(record.exceptionMinimum);
+  const maxExceptions = numericOrUndefined(record.maxExceptionSubjects);
+  if (baseline === undefined || exception === undefined || maxExceptions === undefined) {
+    return {
+      ok: false,
+      code: ACADEMIC_ERROR.POLICY_CONFIGURATION_INCOMPLETE,
+      reason: 'قاعدة درجات المواد المركبة تتطلب الحد الطبيعي وحد الاستثناء وعدد الاستثناءات.',
+    };
+  }
+  if (baseline < 0 || baseline > 100 || exception < 0 || exception > 100) {
+    return {
+      ok: false,
+      code: ACADEMIC_ERROR.POLICY_CONFIGURATION_INCOMPLETE,
+      reason: 'درجات قاعدة المواد يجب أن تكون ضمن المجال 0..100.',
+    };
+  }
+  if (!Number.isInteger(maxExceptions) || maxExceptions < 0) {
+    return {
+      ok: false,
+      code: ACADEMIC_ERROR.POLICY_CONFIGURATION_INCOMPLETE,
+      reason: 'أقصى عدد للمواد المستثناة يجب أن يكون عدداً صحيحاً أكبر من أو يساوي صفر.',
+    };
+  }
+  if (exception > baseline) {
+    return {
+      ok: false,
+      code: ACADEMIC_ERROR.POLICY_RULE_CONFLICT,
+      reason: 'حد الاستثناء لا يجوز أن يتجاوز الحد الطبيعي لكل مادة.',
+    };
+  }
+  return {
+    ok: true,
+    rule: {
+      baselineMinimum: baseline,
+      exceptionMinimum: exception,
+      maxExceptionSubjects: maxExceptions,
+    },
+  };
+}
+
+export type SubjectGradeRuleEvaluation =
+  | { status: 'passed'; exceptionCount: number }
+  | { status: 'incomplete'; reason: string }
+  | { status: 'failed'; reason: string; code: 'below_exception_minimum' | 'too_many_exception_subjects' };
+
+export function evaluateSubjectGradesAgainstRule(
+  grades: Array<{ name?: string; value: unknown }>,
+  rule: AccelerationSubjectGradeRule
+): SubjectGradeRuleEvaluation {
+  const validated = validateAccelerationSubjectGradeRule(rule);
+  if (validated.ok === false) {
+    return { status: 'incomplete', reason: validated.reason };
+  }
+  if (grades.length === 0) {
+    return {
+      status: 'incomplete',
+      reason: 'لا توجد درجات مواد متاحة في المصدر المحدد.',
+    };
+  }
+  const { baselineMinimum, exceptionMinimum, maxExceptionSubjects } = validated.rule;
+  let exceptionCount = 0;
+  for (const item of grades) {
+    if (!isEnteredGrade(item.value)) {
+      return {
+        status: 'incomplete',
+        reason: `درجة المادة (${item.name || 'غير مسماة'}) غير مكتملة في المصدر المحدد.`,
+      };
+    }
+    if (item.value >= baselineMinimum!) continue;
+    if (item.value < exceptionMinimum!) {
+      return {
+        status: 'failed',
+        reason: `المادة (${item.name || 'غير مسماة'}) أقل من حد الاستثناء.`,
+        code: 'below_exception_minimum',
+      };
+    }
+    exceptionCount += 1;
+  }
+  if (exceptionCount > maxExceptionSubjects!) {
+    return {
+      status: 'failed',
+      reason: 'عدد المواد المستثناة يتجاوز الحد المسموح في السياسة.',
+      code: 'too_many_exception_subjects',
+    };
+  }
+  return { status: 'passed', exceptionCount };
+}
+
 export function resolvePolicyThresholds(
   policy: Pick<
     AccelerationPolicy,
     | 'requiredFinalAverage'
     | 'minSubjectGrade'
     | 'subjectGradeSource'
+    | 'subjectGradeRule'
     | 'aptitudePassingScore'
     | 'achievementPassingScore'
     | 'ministerialPassingGrade'
@@ -103,6 +229,29 @@ export function resolvePolicyThresholds(
     }
     const resolved = canonical !== undefined ? canonical : fromLegacy;
     if (resolved !== undefined) thresholds[key] = resolved;
+  }
+
+  if (hasSubjectGradeRulePayload(policy.subjectGradeRule)) {
+    const composite = validateAccelerationSubjectGradeRule(policy.subjectGradeRule);
+    if (composite.ok === false) return composite;
+    if (
+      thresholds.minSubjectGrade !== undefined &&
+      thresholds.minSubjectGrade !== composite.rule.baselineMinimum
+    ) {
+      return {
+        ok: false,
+        code: ACADEMIC_ERROR.POLICY_RULE_CONFLICT,
+        reason: 'minSubjectGrade يتعارض مع baselineMinimum في القاعدة المركبة.',
+      };
+    }
+    thresholds.subjectGradeRule = composite.rule;
+    if (!thresholds.subjectGradeSource) {
+      return {
+        ok: false,
+        code: ACADEMIC_ERROR.POLICY_CONFIGURATION_INCOMPLETE,
+        reason: 'تم ضبط قاعدة درجات المواد دون تحديد مصدر الدرجة (subjectGradeSource).',
+      };
+    }
   }
 
   if (thresholds.minSubjectGrade !== undefined && !thresholds.subjectGradeSource) {
@@ -147,7 +296,7 @@ export function evaluateAccelerationEligibility(
   }
   const { thresholds } = resolved;
 
-  if (thresholds.minSubjectGrade !== undefined || thresholds.requiredFinalAverage !== undefined) {
+  if (thresholds.minSubjectGrade !== undefined || thresholds.requiredFinalAverage !== undefined || thresholds.subjectGradeRule) {
     if (!certificate) {
       return {
         eligible: false,
@@ -171,7 +320,21 @@ export function evaluateAccelerationEligibility(
     }
   }
 
-  if (thresholds.minSubjectGrade !== undefined && thresholds.subjectGradeSource && certificate) {
+  if (thresholds.subjectGradeRule && thresholds.subjectGradeSource && certificate) {
+    const composite = evaluateSubjectGradesAgainstRule(
+      (certificate.subjects || []).map((subject) => ({
+        name: subject.subjectName,
+        value: readSubjectGradeBySource(subject, thresholds.subjectGradeSource!),
+      })),
+      thresholds.subjectGradeRule
+    );
+    if (composite.status === 'incomplete') {
+      return { eligible: false, incomplete: true, reasons: [...reasons, composite.reason] };
+    }
+    if (composite.status === 'failed') {
+      reasons.push(composite.reason);
+    }
+  } else if (thresholds.minSubjectGrade !== undefined && thresholds.subjectGradeSource && certificate) {
     for (const subject of certificate.subjects || []) {
       const value = readSubjectGradeBySource(subject, thresholds.subjectGradeSource);
       if (!isEnteredGrade(value)) {
@@ -258,6 +421,7 @@ function snapshotAsPolicy(snapshot: AccelerationPolicySnapshot): AccelerationPol
     requiredFinalAverage: snapshot.requiredFinalAverage,
     minSubjectGrade: snapshot.minSubjectGrade,
     subjectGradeSource: snapshot.subjectGradeSource,
+    subjectGradeRule: cloneSubjectGradeRule(snapshot.subjectGradeRule),
     aptitudePassingScore: snapshot.aptitudePassingScore,
     achievementPassingScore: snapshot.achievementPassingScore,
     ministerialPassingGrade: snapshot.ministerialPassingGrade,
@@ -372,6 +536,7 @@ export function buildCanonicalPolicyRecord(input: {
   requiredFinalAverage?: number;
   minSubjectGrade?: number;
   subjectGradeSource?: SubjectGradeSource;
+  subjectGradeRule?: AccelerationSubjectGradeRule;
   aptitudePassingScore?: number;
   achievementPassingScore?: number;
   ministerialPassingGrade?: number;
@@ -400,6 +565,13 @@ export function buildCanonicalPolicyRecord(input: {
   };
   if (input.requiredFinalAverage !== undefined) policy.requiredFinalAverage = input.requiredFinalAverage;
   if (input.minSubjectGrade !== undefined) policy.minSubjectGrade = input.minSubjectGrade;
+  if (input.subjectGradeRule !== undefined) {
+    const composite = validateAccelerationSubjectGradeRule(input.subjectGradeRule);
+    if (composite.ok === false) {
+      throw new AcademicDomainError(composite.code as typeof ACADEMIC_ERROR.POLICY_RULE_CONFLICT, composite.reason);
+    }
+    policy.subjectGradeRule = composite.rule;
+  }
   if (input.aptitudePassingScore !== undefined) policy.aptitudePassingScore = input.aptitudePassingScore;
   if (input.achievementPassingScore !== undefined) policy.achievementPassingScore = input.achievementPassingScore;
   if (input.ministerialPassingGrade !== undefined) policy.ministerialPassingGrade = input.ministerialPassingGrade;

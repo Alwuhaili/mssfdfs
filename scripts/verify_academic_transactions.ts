@@ -23,10 +23,13 @@ import {
   assertAttemptDeletable,
   assertPolicyDeletable,
   calculateAccelerationResult,
+  capturePolicySnapshot,
   createAccelerationAttempt,
   evaluateAccelerationEligibility,
+  evaluateSubjectGradesAgainstRule,
   resolvePolicyThresholds,
   validateAccelerationGradeSemantics,
+  validateAccelerationSubjectGradeRule,
 } from '../src/services/accelerationService.ts';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -422,6 +425,134 @@ test('eligible + passed acceleration plans a fresh transition', () => {
   ok(planned.kind === 'acceleration_promotion', 'planned');
   ok(planned.nextEnrollment.gradeLevel === 'الصف السادس العلمي', 'uses resulting not exam grade');
   ok(planned.nextEnrollment.gradeLevel !== attempt.targetExamGradeLevel, 'exam grade is distinct');
+});
+
+const compositeRule = { baselineMinimum: 96, exceptionMinimum: 93, maxExceptionSubjects: 2 };
+
+test('A composite subject rule all at or above baseline passes', () => {
+  const result = evaluateSubjectGradesAgainstRule(
+    [96, 97, 100].map((value, index) => ({ name: `s${index}`, value })),
+    compositeRule
+  );
+  ok(result.status === 'passed', 'A pass');
+});
+
+test('B composite subject rule two exceptions passes', () => {
+  const result = evaluateSubjectGradesAgainstRule(
+    [93, 95, 96, 100].map((value, index) => ({ name: `s${index}`, value })),
+    compositeRule
+  );
+  ok(result.status === 'passed', 'B pass');
+});
+
+test('C composite subject rule three exceptions fails', () => {
+  const result = evaluateSubjectGradesAgainstRule(
+    [93, 94, 95, 96].map((value, index) => ({ name: `s${index}`, value })),
+    compositeRule
+  );
+  ok(result.status === 'failed' && 'code' in result && result.code === 'too_many_exception_subjects', 'C fail');
+});
+
+test('D composite subject rule below exception minimum fails', () => {
+  const result = evaluateSubjectGradesAgainstRule(
+    [92, 100, 100].map((value, index) => ({ name: `s${index}`, value })),
+    compositeRule
+  );
+  ok(result.status === 'failed' && 'code' in result && result.code === 'below_exception_minimum', 'D fail');
+});
+
+test('E unentered zero grade is incomplete not academic fail', () => {
+  const result = evaluateSubjectGradesAgainstRule(
+    [{ name: 'math', value: 0 }, { name: 'ar', value: 100 }],
+    compositeRule
+  );
+  ok(result.status === 'incomplete', 'E incomplete');
+});
+
+test('empty subject list is incomplete under a valid composite rule', () => {
+  const result = evaluateSubjectGradesAgainstRule([], compositeRule);
+  ok(result.status === 'incomplete', 'empty grades incomplete');
+});
+
+test('F legacy minSubjectGrade-only policy keeps previous semantics', () => {
+  const legacyPolicy = policy({ minSubjectGrade: 97, subjectGradeSource: 'finalGrade' });
+  const cert = {
+    id: 'c-legacy',
+    studentId: 'std-1',
+    studentName: 'A',
+    nationalId: 'n',
+    gradeLevel: 'الصف الرابع العلمي' as const,
+    section: 'أ',
+    academicYear: '2025-2026',
+    subjects: [
+      {
+        id: 's1',
+        subjectName: 'الرياضيات',
+        firstTermAvg: 0,
+        midYearGrade: 0,
+        secondTermAvg: 0,
+        annualSaeiAvg: 99,
+        finalExamGrade: 0,
+        finalGrade: 96,
+      },
+    ],
+    overallFirstTermAvg: 0,
+    overallMidYearGrade: 0,
+    overallSecondTermAvg: 0,
+    overallAnnualSaeiAvg: 99,
+    overallFinalExamGrade: 0,
+    overallFinalGrade: 96,
+    status: 'ناجحة' as const,
+    appreciation: '',
+    issueDate: '',
+  };
+  const evaluation = evaluateAccelerationEligibility(legacyPolicy, cert, enrollment());
+  ok(evaluation.eligible === false && evaluation.incomplete === false, '96 < 97 still fails uniformly');
+  cert.subjects[0].finalGrade = 97;
+  cert.overallFinalGrade = 97;
+  const passed = evaluateAccelerationEligibility(legacyPolicy, cert, enrollment());
+  ok(passed.eligible === true, '97 meets minSubjectGrade');
+});
+
+test('G snapshot clones subjectGradeRule independently', () => {
+  const live = policy({
+    subjectGradeRule: { baselineMinimum: 96, exceptionMinimum: 93, maxExceptionSubjects: 2 },
+    subjectGradeSource: 'finalGrade',
+  });
+  const snapshot = capturePolicySnapshot(live);
+  ok(snapshot.subjectGradeRule?.baselineMinimum === 96, 'captured');
+  live.subjectGradeRule!.baselineMinimum = 80;
+  live.subjectGradeRule!.maxExceptionSubjects = 9;
+  ok(snapshot.subjectGradeRule?.baselineMinimum === 96, 'snapshot baseline unchanged');
+  ok(snapshot.subjectGradeRule?.maxExceptionSubjects === 2, 'snapshot exceptions unchanged');
+  ok(snapshot.subjectGradeRule !== live.subjectGradeRule, 'different object');
+});
+
+test('H exceptionMinimum above baseline is a policy conflict', () => {
+  const result = validateAccelerationSubjectGradeRule({
+    baselineMinimum: 93,
+    exceptionMinimum: 96,
+    maxExceptionSubjects: 2,
+  });
+  ok(result.ok === false, 'invalid');
+  if (result.ok === false) {
+    ok(result.code === ACADEMIC_ERROR.POLICY_RULE_CONFLICT, 'H conflict');
+  }
+});
+
+test('I negative or fractional maxExceptionSubjects is invalid', () => {
+  const negative = validateAccelerationSubjectGradeRule({
+    baselineMinimum: 96,
+    exceptionMinimum: 93,
+    maxExceptionSubjects: -1,
+  });
+  ok(negative.ok === false, 'negative invalid');
+  const fractional = validateAccelerationSubjectGradeRule({
+    baselineMinimum: 96,
+    exceptionMinimum: 93,
+    maxExceptionSubjects: 1.5,
+  });
+  ok(fractional.ok === false, 'fractional invalid');
 });
 
 console.log(`\n${pass}/${total} passed`);

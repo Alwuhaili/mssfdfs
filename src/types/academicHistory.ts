@@ -85,6 +85,12 @@ export interface AccelerationEligibilityRulesLegacy {
   ministerialPassingGrade?: number;
 }
 
+export interface AccelerationSubjectGradeRule {
+  baselineMinimum?: number;
+  exceptionMinimum?: number;
+  maxExceptionSubjects?: number;
+}
+
 export interface AccelerationPolicy {
   id: string;
   name: string;
@@ -97,6 +103,7 @@ export interface AccelerationPolicy {
   requiredFinalAverage?: number;
   minSubjectGrade?: number;
   subjectGradeSource?: SubjectGradeSource;
+  subjectGradeRule?: AccelerationSubjectGradeRule;
   aptitudePassingScore?: number;
   achievementPassingScore?: number;
   ministerialPassingGrade?: number;
@@ -124,6 +131,7 @@ export interface AccelerationPolicySnapshot {
   requiredFinalAverage?: number;
   minSubjectGrade?: number;
   subjectGradeSource?: SubjectGradeSource;
+  subjectGradeRule?: AccelerationSubjectGradeRule;
   aptitudePassingScore?: number;
   achievementPassingScore?: number;
   ministerialPassingGrade?: number;

@@ -26,6 +26,10 @@ const EMPTY_FORM = {
   resultingGradeLevel: '' as GradeLevel | '',
   requiredFinalAverage: '',
   minSubjectGrade: '',
+  subjectGradeMode: '' as '' | 'uniform' | 'composite',
+  baselineMinimum: '',
+  exceptionMinimum: '',
+  maxExceptionSubjects: '',
   subjectGradeSource: '' as SubjectGradeSource | '',
   aptitudePassingScore: '',
   achievementPassingScore: '',
@@ -71,8 +75,25 @@ export const AccelerationPoliciesModal: React.FC<AccelerationPoliciesModalProps>
         setMessage('الاسم وصف المصدر وصف الامتحان وصف الناتج مطلوبة صراحة.');
         return;
       }
-      const minSubjectGrade = parseOptionalNumber(form.minSubjectGrade);
+      const minSubjectGrade =
+        form.subjectGradeMode === 'uniform' ? parseOptionalNumber(form.minSubjectGrade) : undefined;
       const requiredFinalAverage = parseOptionalNumber(form.requiredFinalAverage);
+      const subjectGradeRule =
+        form.subjectGradeMode === 'composite'
+          ? (() => {
+              const baselineMinimum = parseOptionalNumber(form.baselineMinimum);
+              const exceptionMinimum = parseOptionalNumber(form.exceptionMinimum);
+              const maxExceptionSubjects = parseOptionalNumber(form.maxExceptionSubjects);
+              if (
+                baselineMinimum === undefined &&
+                exceptionMinimum === undefined &&
+                maxExceptionSubjects === undefined
+              ) {
+                return undefined;
+              }
+              return { baselineMinimum, exceptionMinimum, maxExceptionSubjects };
+            })()
+          : undefined;
       const policy = buildCanonicalPolicyRecord({
         id: `pol-${Date.now()}`,
         name: form.name,
@@ -82,6 +103,7 @@ export const AccelerationPoliciesModal: React.FC<AccelerationPoliciesModalProps>
         resultingGradeLevel: form.resultingGradeLevel,
         requiredFinalAverage,
         minSubjectGrade,
+        subjectGradeRule,
         subjectGradeSource: form.subjectGradeSource || undefined,
         aptitudePassingScore: parseOptionalNumber(form.aptitudePassingScore),
         achievementPassingScore: parseOptionalNumber(form.achievementPassingScore),
@@ -193,14 +215,6 @@ export const AccelerationPoliciesModal: React.FC<AccelerationPoliciesModalProps>
               />
             </label>
             <label>
-              <span className="mb-1 block font-bold">الحد الأدنى لدرجة المادة</span>
-              <input
-                className="w-full rounded-xl border border-slate-200 px-3 py-2"
-                value={form.minSubjectGrade}
-                onChange={(event) => setForm({ ...form, minSubjectGrade: event.target.value })}
-              />
-            </label>
-            <label>
               <span className="mb-1 block font-bold">مصدر درجة المادة/المعدل</span>
               <select
                 className="w-full rounded-xl border border-slate-200 px-3 py-2"
@@ -221,6 +235,71 @@ export const AccelerationPoliciesModal: React.FC<AccelerationPoliciesModalProps>
               />
             </label>
           </div>
+
+          <fieldset className="rounded-2xl border border-slate-200 p-3 space-y-3">
+            <legend className="px-1 font-bold">قاعدة درجات المواد</legend>
+            <select
+              className="w-full rounded-xl border border-slate-200 px-3 py-2"
+              value={form.subjectGradeMode}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  subjectGradeMode: event.target.value as '' | 'uniform' | 'composite',
+                  minSubjectGrade: '',
+                  baselineMinimum: '',
+                  exceptionMinimum: '',
+                  maxExceptionSubjects: '',
+                })
+              }
+            >
+              <option value="">غير محددة</option>
+              <option value="uniform">حد أدنى موحد لكل مادة</option>
+              <option value="composite">قاعدة مركبة مع استثناءات</option>
+            </select>
+            {form.subjectGradeMode === 'uniform' && (
+              <label className="block">
+                <span className="mb-1 block font-bold">الحد الأدنى لدرجة المادة</span>
+                <input
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2"
+                  value={form.minSubjectGrade}
+                  onChange={(event) => setForm({ ...form, minSubjectGrade: event.target.value })}
+                />
+              </label>
+            )}
+            {form.subjectGradeMode === 'composite' && (
+              <div className="space-y-3">
+                <p className="text-xs text-slate-500">
+                  مثال: إذا كان الحد الطبيعي 96، وحد الاستثناء 93، وعدد الاستثناءات 2، فيسمح لمادتين كحد أقصى بدرجات من 93 إلى أقل من 96.
+                </p>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <label>
+                    <span className="mb-1 block font-bold">الحد الطبيعي لكل مادة</span>
+                    <input
+                      className="w-full rounded-xl border border-slate-200 px-3 py-2"
+                      value={form.baselineMinimum}
+                      onChange={(event) => setForm({ ...form, baselineMinimum: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    <span className="mb-1 block font-bold">أدنى درجة مسموحة للاستثناء</span>
+                    <input
+                      className="w-full rounded-xl border border-slate-200 px-3 py-2"
+                      value={form.exceptionMinimum}
+                      onChange={(event) => setForm({ ...form, exceptionMinimum: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    <span className="mb-1 block font-bold">أقصى عدد للمواد المستثناة</span>
+                    <input
+                      className="w-full rounded-xl border border-slate-200 px-3 py-2"
+                      value={form.maxExceptionSubjects}
+                      onChange={(event) => setForm({ ...form, maxExceptionSubjects: event.target.value })}
+                    />
+                  </label>
+                </div>
+              </div>
+            )}
+          </fieldset>
 
           <div className="grid gap-3 md:grid-cols-3">
             <label>
