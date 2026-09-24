@@ -42,7 +42,7 @@ export const Header: React.FC<{
   onOpenNotifications: () => void;
   onOpenMessages: () => void;
 }> = ({ onOpenNotifications, onOpenMessages }) => {
-  const { role, setRole, currentUser, setCurrentUser, lang, setLang, colorTheme, isDarkMode, toggleDarkMode, t, notifications, getUserNotifications, messages, teachers, students, parents, schoolAdminData, syncStatus, syncVersion } = useApp();
+  const { role, setRole, currentUser, setCurrentUser, completeAuthenticatedLogout, lang, setLang, colorTheme, isDarkMode, toggleDarkMode, t, notifications, getUserNotifications, messages, teachers, students, parents, schoolAdminData, syncStatus, syncVersion } = useApp();
   const [showRoleMenu, setShowRoleMenu] = useState(false);
   const [targetAuthRole, setTargetAuthRole] = useState<UserRole | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
@@ -384,13 +384,10 @@ export const Header: React.FC<{
                   <div className="pt-2 mt-2 border-t border-slate-100 dark:border-slate-800 space-y-1">
 
                     <button
+                      type="button"
                       onClick={async () => {
                         setShowRoleMenu(false);
-                        try { await FirebaseAuthService.logout(); } catch { /* already signed out */ }
-                        setCurrentUser(null);
-                        localStorage.removeItem('maysan_current_user_v1');
-                        localStorage.removeItem('maysan_current_role');
-                        window.location.reload();
+                        await completeAuthenticatedLogout();
                       }}
                       className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 text-rose-900 dark:text-rose-200 text-xs font-bold transition-all border border-rose-200/70 dark:border-rose-800"
                     >

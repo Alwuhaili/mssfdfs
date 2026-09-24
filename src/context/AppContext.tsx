@@ -9,6 +9,16 @@ import { publishPublicSchoolInfo, initializePublicSchoolInfoFromAuthoritative, i
 import { buildPublicHonorBoard, HONOR_ROLL_DEMO_NAMES } from '../utils/publicHomepageFacultyHonor';
 import { buildTimetableAcademicSnapshot, timetableAcademicSnapshotEquals } from '../utils/timetableSettings';
 import {
+  activePersistenceWriteCount,
+  admitAuthenticatedLogout,
+  applyCanonicalGuestMemoryPurge,
+  armLogoutUnloadBypass,
+  createSessionAdmissionGate,
+  endActivePersistenceWrite,
+  shouldWarnOnBeforeUnload,
+  tryBeginPersistenceWrite,
+} from '../utils/sessionUnloadSafety';
+import {
   canRunParentStudentSelfHeal,
   decideParentStudentSelfHealRun,
   EMPTY_PARENT_SELF_HEAL_GUARD,
@@ -134,6 +144,7 @@ interface AppContextType {
   setRole: (role: UserRole) => void;
   currentUser: CurrentUser | null;
   setCurrentUser: (user: CurrentUser | null) => void;
+  completeAuthenticatedLogout: () => Promise<void>;
   lang: Language;
   setLang: (lang: Language) => void;
   colorTheme: ColorThemeId;
@@ -1214,6 +1225,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const authoritativeGraduatesReceivedRef = useRef(false);
   const parentSelfHealGuardRef = useRef<ParentSelfHealGuardState>(EMPTY_PARENT_SELF_HEAL_GUARD);
   const parentSelfHealInFlightRef = useRef(false);
+  const sessionAdmissionRef = useRef(createSessionAdmissionGate());
+
+  const runTrackedPersistenceWrite = async <T,>(
+    operation: () => Promise<T>,
+    blockedValue: T
+  ): Promise<T> => {
+    if (!tryBeginPersistenceWrite(sessionAdmissionRef.current)) {
+      return blockedValue;
+    }
+    try {
+      return await operation();
+    } finally {
+      endActivePersistenceWrite(sessionAdmissionRef.current.writes);
+    }
+  };
+
+  const blockedSyncResult = { success: false, message: 'logout-in-progress' };
 
   const beginPendingSyncMutation = (key: string): number => {
     const token = pendingSyncMutationGenerationRef.current + 1;
@@ -1663,7 +1691,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setAuditLogs((prev) => {
       const updated = [newLog, ...prev];
-      centralSyncService.directArrayMutation('auditLogs', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      void runTrackedPersistenceWrite(
+        () =>
+          centralSyncService.directArrayMutation('auditLogs', updated, {
+            id: currentUser?.id || role,
+            name: currentUser?.name || role,
+            role,
+          }),
+        false
+      );
       return updated;
     });
   };
@@ -1671,14 +1707,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const deleteAuditLog = (id: string) => {
     setAuditLogs((prev) => {
       const updated = prev.filter((log) => log.id !== id);
-      centralSyncService.directArrayMutation('auditLogs', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      void runTrackedPersistenceWrite(
+        () =>
+          centralSyncService.directArrayMutation('auditLogs', updated, {
+            id: currentUser?.id || role,
+            name: currentUser?.name || role,
+            role,
+          }),
+        false
+      );
       return updated;
     });
   };
 
   const clearAuditLogs = () => {
     setAuditLogs([]);
-    centralSyncService.directArrayMutation('auditLogs', [], { id: currentUser?.id || role, name: currentUser?.name || role, role });
+    void runTrackedPersistenceWrite(
+      () =>
+        centralSyncService.directArrayMutation('auditLogs', [], {
+          id: currentUser?.id || role,
+          name: currentUser?.name || role,
+          role,
+        }),
+      false
+    );
   };
 
   const exportAuditLogsJSON = () => {
@@ -1740,8 +1792,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const mutationToken = beginPendingSyncMutation(SCHOOL_ADMIN_DATA_SYNC_KEY);
     const nextPublicSource = { ...schoolAdminData, ...updated };
     setSchoolAdminData((prev) => ({ ...prev, ...updated }));
-    void centralSyncService
-      .directObjectMutation(SCHOOL_ADMIN_DATA_SYNC_KEY, updated, sourceUser)
+    void runTrackedPersistenceWrite(
+      () => centralSyncService.directObjectMutation(SCHOOL_ADMIN_DATA_SYNC_KEY, updated, sourceUser),
+      false
+    )
       .then((ok) => {
         if (ok) {
           void publishPublicSchoolInfo(nextPublicSource);
@@ -1888,6 +1942,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     return INITIAL_EXAM_SCHEDULES;
   });
+
+  useEffect(() => {
+    if (currentUser) return;
+    purgeAuthenticatedSessionMemory();
+  }, [currentUser]);
 
   const checkExamScheduleAdminPermission = (actionName: string): boolean => {
     const isAuthorized = role === 'admin' || currentUser?.role === 'admin';
@@ -2602,18 +2661,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
 
-  // Prevent data loss on accidental refresh before sync completes
+  // Warn only when a real persistence write has already started.
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (syncStatus === 'syncing') {
-        e.preventDefault();
-        e.returnValue = 'جاري حفظ البيانات في قاعدة البيانات... يرجى الانتظار للحظات لتجنب فقدان البيانات.';
-        return e.returnValue;
+      if (
+        !shouldWarnOnBeforeUnload({
+          activePersistenceWrites: activePersistenceWriteCount(sessionAdmissionRef.current.writes),
+          logoutUnloadBypass: sessionAdmissionRef.current.logoutUnloadBypass,
+        })
+      ) {
+        return;
       }
+      e.preventDefault();
+      e.returnValue = '';
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [syncStatus]);
+  }, []);
 
   // Apply remote data securely to React state
   const overlayCurrentUserMessageStates = (remoteMessages: any[]) => {
@@ -2823,7 +2887,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             name: currentUser?.name || (role === 'admin' ? 'المديرة العامة' : role),
             role: role,
           };
-          const pushRes = await centralSyncService.pushUpdates(payload, sourceUser, 1);
+          const pushRes = await runTrackedPersistenceWrite(
+            () => centralSyncService.pushUpdates(payload, sourceUser, 1),
+            blockedSyncResult
+          );
           if (pushRes.success && pushRes.version) {
             setSyncVersion(pushRes.version);
             setLastSyncedAt(new Date());
@@ -2965,6 +3032,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Visitors opened from a public URL / QR are strictly read-only.
     // A central write is allowed only after explicit successful authentication.
     if (!currentUser) return;
+    if (sessionAdmissionRef.current.logoutInProgress) return;
     if (isApplyingRemoteUpdate.current) return;
     if (!isInitialHydrationDone.current) return;
 
@@ -2972,14 +3040,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       clearTimeout(pushDebounceTimer.current);
     }
 
-    setSyncStatus('syncing');
-
-    // Administration changes sync ultra-fast (250ms) to ensure immediate school-wide propagation
     const debounceDelay = 100;
 
     pushDebounceTimer.current = setTimeout(async () => {
         pushDebounceTimer.current = null;
+      if (sessionAdmissionRef.current.logoutInProgress || !currentUser) return;
       try {
+        setSyncStatus('syncing');
         const payload = getFullPayload();
         
         // Legacy-only offline fallback. Security mode never persists private school data in localStorage.
@@ -2997,7 +3064,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           role: role,
         };
 
-        const res = await centralSyncService.pushUpdates(payload, sourceUser, syncVersionRef.current);
+        const res = await runTrackedPersistenceWrite(
+          () => centralSyncService.pushUpdates(payload, sourceUser, syncVersionRef.current),
+          blockedSyncResult
+        );
         if (res.success && res.version) {
           setSyncVersion(res.version);
           setLastSyncedAt(new Date());
@@ -3058,7 +3128,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           name: currentUser?.name || 'المديرة العامة',
           role: 'admin',
         };
-        const pushRes = await centralSyncService.pushUpdates(payload, sourceUser);
+        const pushRes = await runTrackedPersistenceWrite(
+          () => centralSyncService.pushUpdates(payload, sourceUser),
+          blockedSyncResult
+        );
         if (pushRes.success && pushRes.version) {
           setSyncVersion(pushRes.version);
           setLastSyncedAt(new Date());
@@ -3087,7 +3160,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           name: currentUser?.name || role,
           role: role,
         };
-        const pushRes = await centralSyncService.pushUpdates(payload, sourceUser);
+        const pushRes = await runTrackedPersistenceWrite(
+          () => centralSyncService.pushUpdates(payload, sourceUser),
+          blockedSyncResult
+        );
         if (pushRes.success && pushRes.version) {
           setSyncVersion(pushRes.version);
           setLastSyncedAt(new Date());
@@ -3109,7 +3185,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const resetCentralDatabase = async (): Promise<boolean> => {
     setSyncStatus('syncing');
     try {
-      const resetRes = await centralSyncService.resetServerDatabase();
+      const resetRes = await runTrackedPersistenceWrite(
+        () => centralSyncService.resetServerDatabase(),
+        blockedSyncResult
+      );
       if (resetRes.success) {
         resetToDefaultData();
         setSyncVersion(resetRes.version || 1);
@@ -3129,7 +3208,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDecisionSettings((prev) => {
       const next = { ...prev, ...updated };
       setCertificates((certs) => certs.map((c) => computeCertificateStats(c, next)));
-      centralSyncService.directObjectMutation('decisionSettings', next, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      void runTrackedPersistenceWrite(
+        () =>
+          centralSyncService.directObjectMutation('decisionSettings', next, {
+            id: currentUser?.id || role,
+            name: currentUser?.name || role,
+            role,
+          }),
+        false
+      );
       return next;
     });
   };
@@ -3803,7 +3890,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDisciplinarySettings((prev) => {
       const newVal = { ...prev, ...updated };
       finalSettings = newVal;
-      centralSyncService.directObjectMutation('disciplinarySettings', newVal, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      void runTrackedPersistenceWrite(
+        () =>
+          centralSyncService.directObjectMutation('disciplinarySettings', newVal, {
+            id: currentUser?.id || role,
+            name: currentUser?.name || role,
+            role,
+          }),
+        false
+      );
       return newVal;
     });
     // Give state time to settle or pass explicit config
@@ -3839,13 +3934,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const isAdminActor = () => role === 'admin' && currentUser?.role === 'admin';
 
   const persistCollectionDoc = async (key: string, id: string, item: any, baseItem?: any): Promise<boolean> => {
-    const res = await centralSyncService.upsertCollectionDocument(key, id, item, baseItem, syncSourceUser());
-    return res.success;
+    return runTrackedPersistenceWrite(async () => {
+      const res = await centralSyncService.upsertCollectionDocument(key, id, item, baseItem, syncSourceUser());
+      return res.success === true;
+    }, false);
   };
 
   const deleteCollectionDoc = async (key: string, id: string): Promise<boolean> => {
-    const res = await centralSyncService.deleteCollectionDocument(key, id, syncSourceUser());
-    return res.success;
+    return runTrackedPersistenceWrite(async () => {
+      const res = await centralSyncService.deleteCollectionDocument(key, id, syncSourceUser());
+      return res.success === true;
+    }, false);
   };
 
   const persistChangedCollectionDocs = (key: string, previous: Array<{ id: string }>, next: Array<{ id: string }>) => {
@@ -4104,7 +4203,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setFinancial((prev) => {
       const updated = [fin, ...prev];
-      centralSyncService.directArrayMutation('financial', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      void runTrackedPersistenceWrite(
+        () =>
+          centralSyncService.directArrayMutation('financial', updated, {
+            id: currentUser?.id || role,
+            name: currentUser?.name || role,
+            role,
+          }),
+        false
+      );
       return updated;
     });
 
@@ -4302,7 +4409,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (!hasFin) {
         setFinancial(updatedFin);
-        void centralSyncService.directArrayMutation('financial', updatedFin, syncSourceUser());
+        void runTrackedPersistenceWrite(
+          () => centralSyncService.directArrayMutation('financial', updatedFin, syncSourceUser()),
+          false
+        );
       }
 
       await publishHonorFromLists(updatedStudents, graduatesRef.current);
@@ -4379,7 +4489,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     setFinancial((prev) => {
       const updated = prev.filter((f) => f.studentId !== id);
-      centralSyncService.directArrayMutation('financial', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+      void runTrackedPersistenceWrite(
+        () =>
+          centralSyncService.directArrayMutation('financial', updated, {
+            id: currentUser?.id || role,
+            name: currentUser?.name || role,
+            role,
+          }),
+        false
+      );
       return updated;
     });
 
@@ -6503,7 +6621,15 @@ ${defaultReason}
     if (role === 'admin' && currentUser?.role === 'admin' && currentUser?.authUid) {
       setMessages((prev) => {
         const updated = prev.filter((m) => m.id !== id);
-        void centralSyncService.directArrayMutation('messages', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+        void runTrackedPersistenceWrite(
+          () =>
+            centralSyncService.directArrayMutation('messages', updated, {
+              id: currentUser?.id || role,
+              name: currentUser?.name || role,
+              role,
+            }),
+          false
+        );
         return updated;
       });
       return;
@@ -6782,7 +6908,15 @@ ${defaultReason}
     if (role === 'admin' || currentUser?.role === 'admin') {
       setNotifications(prev => {
         const updated = prev.filter(n => n.id !== id);
-        centralSyncService.directArrayMutation('notifications', updated, { id: currentUser?.id || role, name: currentUser?.name || role, role });
+        void runTrackedPersistenceWrite(
+          () =>
+            centralSyncService.directArrayMutation('notifications', updated, {
+              id: currentUser?.id || role,
+              name: currentUser?.name || role,
+              role,
+            }),
+          false
+        );
         return updated;
       });
       return;
@@ -7488,6 +7622,107 @@ ${defaultReason}
     localStorage.removeItem(LOCAL_STORAGE_KEY);
   };
 
+  const purgeAuthenticatedSessionMemory = () => {
+    const next = applyCanonicalGuestMemoryPurge({
+      teachers,
+      students,
+      parents,
+      supervisors,
+      graduates,
+      exams,
+      submissions,
+      attendance,
+      announcements,
+      messages,
+      lectures,
+      timetable,
+      subjectQuotas,
+      financial,
+      notifications,
+      certificates,
+      academicEnrollments,
+      accelerationPolicies,
+      accelerationAttempts,
+      calendarEvents,
+      customFolders,
+      auditLogs,
+      annualPlans,
+      dailyLessonPlans,
+      examSchedules,
+      challenges,
+      deletedLectureIds,
+      deletedChallengeIds,
+      userPasscodes,
+      notificationUserStates,
+      schoolAdminData,
+      activeTakingExam,
+    });
+    setTeachers(next.teachers);
+    setStudents(next.students);
+    setParents(next.parents);
+    setSupervisors(next.supervisors);
+    setGraduates(next.graduates);
+    setExams(next.exams);
+    setSubmissions(next.submissions);
+    setAttendance(next.attendance);
+    setAnnouncements(next.announcements);
+    setMessages(next.messages);
+    setLectures(next.lectures);
+    setTimetable(next.timetable);
+    setSubjectQuotas(next.subjectQuotas);
+    setFinancial(next.financial);
+    setNotifications(next.notifications);
+    setCertificates(next.certificates);
+    setAcademicEnrollments(next.academicEnrollments);
+    setAccelerationPolicies(next.accelerationPolicies);
+    setAccelerationAttempts(next.accelerationAttempts);
+    setCalendarEvents(next.calendarEvents);
+    setCustomFolders(next.customFolders);
+    setAuditLogs(next.auditLogs);
+    setAnnualPlans(next.annualPlans);
+    setDailyLessonPlans(next.dailyLessonPlans);
+    setExamSchedules(next.examSchedules);
+    setChallenges(next.challenges);
+    setDeletedLectureIds(next.deletedLectureIds);
+    setDeletedChallengeIds(next.deletedChallengeIds);
+    setUserPasscodes(next.userPasscodes);
+    setNotificationUserStates(next.notificationUserStates);
+    setActiveTakingExam(next.activeTakingExam);
+    teachersRef.current = next.teachers;
+    studentsRef.current = next.students;
+    graduatesRef.current = next.graduates;
+    messageUserStateCacheRef.current = {};
+    messageUserStateOperationRef.current = {};
+    clearMailboxPendingRuntime();
+  };
+
+  const completeAuthenticatedLogout = async () => {
+    const admission = admitAuthenticatedLogout(sessionAdmissionRef.current);
+    if (!admission.admitted) {
+      return;
+    }
+    if (pushDebounceTimer.current) {
+      clearTimeout(pushDebounceTimer.current);
+      pushDebounceTimer.current = null;
+    }
+    try {
+      await FirebaseAuthService.logout();
+    } catch {
+      // Fail-closed guest transition: Auth already gone or unavailable.
+      // Admission stays closed so no new persistence write can start.
+    }
+    purgeAuthenticatedSessionMemory();
+    setCurrentUser(null);
+    try {
+      localStorage.removeItem('maysan_current_user_v1');
+      localStorage.removeItem('maysan_current_role');
+    } catch {
+      // ignore storage access failures
+    }
+    armLogoutUnloadBypass(sessionAdmissionRef.current);
+    window.location.replace(`${window.location.origin}/`);
+  };
+
   return (
     <AppContext.Provider
       value={{
@@ -7495,6 +7730,7 @@ ${defaultReason}
         setRole,
         currentUser,
         setCurrentUser,
+        completeAuthenticatedLogout,
         lang,
         setLang,
         colorTheme,
