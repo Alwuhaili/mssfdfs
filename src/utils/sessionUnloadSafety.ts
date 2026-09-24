@@ -42,14 +42,11 @@ export function createSessionAdmissionGate(): SessionAdmissionGate {
 
 export type LogoutAdmissionResult =
   | { admitted: true }
-  | { admitted: false; reason: 'already-in-progress' | 'active-write' };
+  | { admitted: false; reason: 'already-in-progress' };
 
 export function admitAuthenticatedLogout(gate: SessionAdmissionGate): LogoutAdmissionResult {
   if (gate.logoutInProgress) {
     return { admitted: false, reason: 'already-in-progress' };
-  }
-  if (activePersistenceWriteCount(gate.writes) > 0) {
-    return { admitted: false, reason: 'active-write' };
   }
   gate.logoutInProgress = true;
   return { admitted: true };
@@ -64,17 +61,15 @@ export function tryBeginPersistenceWrite(gate: SessionAdmissionGate): boolean {
 
 export function armLogoutUnloadBypass(gate: SessionAdmissionGate): boolean {
   if (!gate.logoutInProgress) return false;
-  if (activePersistenceWriteCount(gate.writes) > 0) return false;
   gate.logoutUnloadBypass = true;
   return true;
 }
 
-/** Bypass is armed only after logout is allowed to navigate (no in-flight write). */
+/** Bypass is for intentional logout navigation after logout has begun. */
 export function shouldArmLogoutUnloadBypass(input: {
   logoutNavigationAllowed: boolean;
-  activePersistenceWrites: number;
 }): boolean {
-  return input.logoutNavigationAllowed && input.activePersistenceWrites <= 0;
+  return input.logoutNavigationAllowed === true;
 }
 
 export const GUEST_PRIVATE_ARRAY_KEYS = [

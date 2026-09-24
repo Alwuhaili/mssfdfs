@@ -66,7 +66,7 @@ const CANONICAL_SAMPLE = {
   activeTakingExam: { id: 'exam-live' },
 };
 
-test('A logout admission succeeds only at zero active writes', () => {
+test('A logout admission succeeds with zero active writes', () => {
   const gate = createSessionAdmissionGate();
   const result = admitAuthenticatedLogout(gate);
   assert(result.admitted === true, 'admitted');
@@ -74,33 +74,16 @@ test('A logout admission succeeds only at zero active writes', () => {
   assert(activePersistenceWriteCount(gate.writes) === 0, 'still zero');
 });
 
-test('B logout admission rejected while write active', () => {
+test('B logout admission succeeds while a write is already active', () => {
   const gate = createSessionAdmissionGate();
   assert(tryBeginPersistenceWrite(gate) === true, 'write started');
   const result = admitAuthenticatedLogout(gate);
-  assert(result.admitted === false, 'rejected');
-  if (!result.admitted) assert(result.reason === 'active-write', 'reason');
-  assert(gate.logoutInProgress === false, 'not closed');
-  assert(gate.logoutUnloadBypass === false, 'no bypass');
+  assert(result.admitted === true, 'admitted despite active write');
+  assert(gate.logoutInProgress === true, 'closed');
+  assert(activePersistenceWriteCount(gate.writes) === 1, 'existing write unchanged');
 });
 
-test('C once logout admitted, new write admission is rejected', () => {
-  const gate = createSessionAdmissionGate();
-  assert(admitAuthenticatedLogout(gate).admitted === true, 'logout');
-  assert(tryBeginPersistenceWrite(gate) === false, 'write refused');
-  assert(activePersistenceWriteCount(gate.writes) === 0, 'not incremented');
-});
-
-test('D no active write can appear between logout admission and navigation', () => {
-  const gate = createSessionAdmissionGate();
-  admitAuthenticatedLogout(gate);
-  tryBeginPersistenceWrite(gate);
-  tryBeginPersistenceWrite(gate);
-  assert(activePersistenceWriteCount(gate.writes) === 0, 'count stays 0');
-  assert(armLogoutUnloadBypass(gate) === true, 'bypass after zero writes');
-});
-
-test('E repeated logout is idempotent', () => {
+test('C repeated logout admission is already-in-progress', () => {
   const gate = createSessionAdmissionGate();
   assert(admitAuthenticatedLogout(gate).admitted === true, 'first');
   const second = admitAuthenticatedLogout(gate);
@@ -108,43 +91,80 @@ test('E repeated logout is idempotent', () => {
   if (!second.admitted) assert(second.reason === 'already-in-progress', 'reason');
 });
 
-test('F rejected logout does not arm unload bypass', () => {
+test('D once logout begins, new writes are rejected', () => {
   const gate = createSessionAdmissionGate();
-  tryBeginPersistenceWrite(gate);
-  admitAuthenticatedLogout(gate);
-  assert(armLogoutUnloadBypass(gate) === false, 'cannot arm');
-  assert(gate.logoutUnloadBypass === false, 'unset');
-  assert(
-    shouldWarnOnBeforeUnload({
-      activePersistenceWrites: activePersistenceWriteCount(gate.writes),
-      logoutUnloadBypass: gate.logoutUnloadBypass,
-    }) === true,
-    'write still protected'
-  );
+  assert(admitAuthenticatedLogout(gate).admitted === true, 'logout');
+  assert(tryBeginPersistenceWrite(gate) === false, 'write refused');
+  assert(activePersistenceWriteCount(gate.writes) === 0, 'not incremented');
+});
+
+test('E already-started write can decrement after logout begins', () => {
+  const gate = createSessionAdmissionGate();
+  assert(tryBeginPersistenceWrite(gate) === true, 'write started');
+  assert(admitAuthenticatedLogout(gate).admitted === true, 'logout');
+  assert(tryBeginPersistenceWrite(gate) === false, 'no new write');
+  assert(activePersistenceWriteCount(gate.writes) === 1, 'started write remains');
   endActivePersistenceWrite(gate.writes);
+  assert(activePersistenceWriteCount(gate.writes) === 0, 'settled');
 });
 
-test('G accepted safe logout can arm bypass', () => {
-  const gate = createSessionAdmissionGate();
-  admitAuthenticatedLogout(gate);
-  assert(armLogoutUnloadBypass(gate) === true, 'armed');
-  assert(
-    shouldWarnOnBeforeUnload({
-      activePersistenceWrites: 0,
-      logoutUnloadBypass: gate.logoutUnloadBypass,
-    }) === false,
-    'no warn'
-  );
-});
-
-test('H counter still cannot become negative', () => {
+test('F active write counter never becomes negative', () => {
   const gate = createSessionAdmissionGate();
   endActivePersistenceWrite(gate.writes);
   endActivePersistenceWrite(gate.writes);
   assert(activePersistenceWriteCount(gate.writes) === 0, 'not negative');
 });
 
-test('I canonical guest purge remains idempotent/preserves schoolAdminData', () => {
+test('G beforeunload warns when count > 0 and bypass is unset', () => {
+  assert(
+    shouldWarnOnBeforeUnload({
+      activePersistenceWrites: 1,
+      logoutUnloadBypass: false,
+    }) === true,
+    'warn'
+  );
+});
+
+test('H beforeunload does not warn when count === 0', () => {
+  assert(
+    shouldWarnOnBeforeUnload({
+      activePersistenceWrites: 0,
+      logoutUnloadBypass: false,
+    }) === false,
+    'no warn'
+  );
+});
+
+test('I intentional bypass can be armed after logout even when a write remains', () => {
+  const gate = createSessionAdmissionGate();
+  assert(tryBeginPersistenceWrite(gate) === true, 'write started');
+  assert(admitAuthenticatedLogout(gate).admitted === true, 'logout');
+  assert(armLogoutUnloadBypass(gate) === true, 'armed');
+  assert(gate.logoutUnloadBypass === true, 'flag');
+  assert(activePersistenceWriteCount(gate.writes) === 1, 'write still settling');
+});
+
+test('J armed intentional bypass suppresses beforeunload warning', () => {
+  const gate = createSessionAdmissionGate();
+  tryBeginPersistenceWrite(gate);
+  admitAuthenticatedLogout(gate);
+  armLogoutUnloadBypass(gate);
+  assert(
+    shouldWarnOnBeforeUnload({
+      activePersistenceWrites: activePersistenceWriteCount(gate.writes),
+      logoutUnloadBypass: gate.logoutUnloadBypass,
+    }) === false,
+    'no warn'
+  );
+});
+
+test('K bypass cannot be armed before logout begins', () => {
+  const gate = createSessionAdmissionGate();
+  assert(armLogoutUnloadBypass(gate) === false, 'blocked');
+  assert(gate.logoutUnloadBypass === false, 'unset');
+});
+
+test('L canonical guest purge clears private state, preserves schoolAdminData, is idempotent', () => {
   const first = applyCanonicalGuestMemoryPurge(CANONICAL_SAMPLE);
   const second = applyCanonicalGuestMemoryPurge(first);
   for (const key of GUEST_PRIVATE_ARRAY_KEYS) {
