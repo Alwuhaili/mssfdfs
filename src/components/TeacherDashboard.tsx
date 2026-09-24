@@ -25,6 +25,7 @@ import { UploadPdfModal } from "./UploadPdfModal";
 import { DigitalLibraryReaderModal } from "./DigitalLibraryReaderModal";
 import { DigitalLibraryHub } from "./DigitalLibraryHub";
 import { ExamManagementHub } from "./ExamManagementHub";
+import { StudentCertificateManager } from "./StudentCertificateManager";
 import { AttendanceHistoryReviewPanel } from "./AttendanceHistoryReviewPanel";
 import { LessonPlanningHub } from "./LessonPlanningHub";
 import {
@@ -847,6 +848,8 @@ export const TeacherDashboard: React.FC<{ activeTab: string }> = ({
 
         {/* Graduates Tab */}
         {activeTab === "graduates" && <GraduatesView />}
+
+        {activeTab === "certificates" && <StudentCertificateManager />}
 
         {/* Overview Tab */}
         {activeTab === "overview" && <SchoolHomeOverview />}

@@ -6,6 +6,14 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { StudentCertificate, SubjectGrade, ALL_GRADES_LIST, GradeLevel, CertificateModelType, CERTIFICATE_MODELS, MinistryDecisionSettings } from '../types';
+import {
+  listPersistedCertificatesForRole,
+  pickSelectedPersistedCertificate,
+  resolveParentViewerStudentId,
+  resolveStudentViewerStudentId,
+  resolveTeacherCertificateScope,
+  uniqueCertificateAcademicYears,
+} from '../utils/certificateCanonicalLookup';
 import { EditCertificateHeaderModal } from './EditCertificateHeaderModal';
 import { MinistryDecisionSettingsModal } from './MinistryDecisionSettingsModal';
 import { OfficialCertificateA4Template } from './OfficialCertificateA4Template';
@@ -294,147 +302,60 @@ export const StudentCertificateManager: React.FC = () => {
     lang,
   } = useApp();
 
-  // Active student object derived dynamically from logged-in user
-  const activeStudent = useMemo(() => {
-    if (role !== 'student' && role !== 'parent') return null;
-    if (role === 'student') {
-      const found = students.find(
-        (s) =>
-          (currentUser?.id && s.id === currentUser.id) ||
-          (currentUser?.email && s.email?.toLowerCase() === currentUser.email.toLowerCase()) ||
-          (currentUser?.phone && (s.phone === currentUser.phone || s.parentPhone === currentUser.phone)) ||
-          (currentUser?.name && (s.name.toLowerCase() === currentUser.name.toLowerCase() || currentUser.name.toLowerCase().includes(s.name.toLowerCase()) || s.name.toLowerCase().includes(currentUser.name.toLowerCase()))) ||
-          (currentUser?.studentObj?.id && s.id === currentUser.studentObj.id)
-      );
-      if (found) return found;
-      if (currentUser?.studentObj) return currentUser.studentObj;
-      if (currentUser?.name) {
-        return {
-          id: currentUser.id || 'std-current',
-          name: currentUser.name,
-          nationalId: '1099887766',
-          gradeLevel: currentUser.gradeLevel || 'الصف السادس العلمي',
-          section: 'أ',
-          parentName: '',
-          parentPhone: '',
-          parentEmail: '',
-          gpa: 99.6,
-          status: 'منتظمة',
-          enrollmentYear: '2022',
-        };
-      }
-      return students[0];
-    }
-    if (role === 'parent') {
-      const parentObj =
-        parents.find(
-          (p) =>
-            (currentUser?.id && p.id === currentUser.id) ||
-            (currentUser?.email && p.email.toLowerCase() === currentUser.email.toLowerCase()) ||
-            (currentUser?.phone && p.phone === currentUser.phone)
-        ) || currentUser?.parentObj;
-
-      return (
-        students.find(
-          (s) =>
-            (parentObj && s.parentEmail.toLowerCase() === parentObj.email.toLowerCase()) ||
-            (parentObj && s.parentPhone === parentObj.phone) ||
-            (parentObj && s.parentName === parentObj.name) ||
-            (currentUser?.studentObj && s.id === currentUser.studentObj.id)
-        ) || students[0]
-      );
-    }
+  const viewerStudentId = useMemo(() => {
+    if (role === 'student') return resolveStudentViewerStudentId(currentUser, students);
+    if (role === 'parent') return resolveParentViewerStudentId(currentUser, parents, students);
     return null;
   }, [role, currentUser, students, parents]);
 
-  // Active teacher info when role === 'teacher'
-  const activeTeacher = useMemo(() => {
-    if (role !== 'teacher') return null;
-    return (
-      currentUser?.teacherObj ||
-      teachers.find(
-        (t) =>
-          (currentUser?.id && t.id === currentUser.id) ||
-          (currentUser?.email && t.email?.toLowerCase() === currentUser.email.toLowerCase()) ||
-          (currentUser?.name && t.name.toLowerCase() === currentUser.name.toLowerCase())
-      ) ||
-      teachers[0]
-    );
-  }, [role, currentUser, teachers]);
+  const activeStudent = useMemo(() => {
+    if (!viewerStudentId) return null;
+    return students.find((student) => student.id === viewerStudentId) || null;
+  }, [students, viewerStudentId]);
 
-  const teacherSubject = useMemo(() => {
-    return activeTeacher?.subject || currentUser?.subject || 'الفيزياء المتقدمة';
-  }, [activeTeacher, currentUser]);
+  const teacherScope = useMemo(
+    () => (role === 'teacher' ? resolveTeacherCertificateScope(currentUser, teachers) : { teacher: null, assignedGrades: [] }),
+    [role, currentUser, teachers]
+  );
+  const activeTeacher = teacherScope.teacher;
+  const teacherSubject = activeTeacher?.subject || '';
+  const teacherAssignedGrades = teacherScope.assignedGrades;
 
-  const teacherAssignedGrades = useMemo(() => {
-    if (activeTeacher?.assignedGrades && activeTeacher.assignedGrades.length > 0) {
-      return activeTeacher.assignedGrades;
-    }
-    return ALL_GRADES_LIST;
-  }, [activeTeacher]);
+  const [academicYearFilter, setAcademicYearFilter] = useState<string>('all');
 
-  // Base list of certificates filtered by user role:
-  // - Students and parents ONLY see their own single certificate.
-  // - Teachers see student certificates for their assigned grade levels.
-  // - Admins see all certificates.
+  const ownedCertificates = useMemo(
+    () =>
+      listPersistedCertificatesForRole({
+        role,
+        certificates,
+        students,
+        parents,
+        teachers,
+        currentUser,
+        viewerStudentId,
+      }),
+    [role, certificates, students, parents, teachers, currentUser, viewerStudentId]
+  );
+
+  const availableAcademicYears = useMemo(
+    () => uniqueCertificateAcademicYears(ownedCertificates),
+    [ownedCertificates]
+  );
+
   const userRoleCertificates: StudentCertificate[] = useMemo(() => {
-    if ((role === 'student' || role === 'parent') && activeStudent) {
-      const matched = certificates.filter(
-        (c) =>
-          c.studentId === activeStudent.id ||
-          c.studentName.toLowerCase() === activeStudent.name.toLowerCase() ||
-          (activeStudent.nationalId && c.nationalId === activeStudent.nationalId) ||
-          (currentUser?.name && c.studentName.toLowerCase().includes(currentUser.name.toLowerCase()))
-      );
-      if (matched.length > 0) return matched;
-
-      // Dynamic fallback certificate generated for logged in student
-      return [{
-        id: `cert-${activeStudent.id}`,
-        studentId: activeStudent.id,
-        studentName: activeStudent.name,
-        nationalId: activeStudent.nationalId || '1099887766',
-        gradeLevel: activeStudent.gradeLevel || 'الصف السادس العلمي',
-        section: activeStudent.section || 'أ',
-        academicYear: '2026 - 2027',
-        issueDate: '2027-06-25',
-        status: 'ناجحة' as const,
-        certificateModel: 'model3_final_round1' as CertificateModelType,
-        appreciation: 'امتياز مرتفع جداً',
-        notes: `الشهادة الرسمية الموثقة للطالبة المتميزة (${activeStudent.name})`,
-        overallFirstTermAvg: activeStudent.gpa || 99.6,
-        overallMidYearGrade: activeStudent.gpa || 99.6,
-        overallSecondTermAvg: activeStudent.gpa || 99.6,
-        overallAnnualSaeiAvg: activeStudent.gpa || 99.6,
-        overallFinalExamGrade: activeStudent.gpa || 99.6,
-        overallFinalGrade: activeStudent.gpa || 99.6,
-        overallPostResitAvg: activeStudent.gpa || 99.6,
-        subjects: [
-          { id: 'sub-d1', subjectName: 'التربية الإسلامية', firstTermAvg: 100, midYearGrade: 100, secondTermAvg: 100, annualSaeiAvg: 100, finalExamGrade: 100, finalGrade: 100, resitGrade: null, postResitGrade: 100 },
-          { id: 'sub-d2', subjectName: 'اللغة العربية', firstTermAvg: 99, midYearGrade: 99, secondTermAvg: 99, annualSaeiAvg: 99, finalExamGrade: 100, finalGrade: 100, resitGrade: null, postResitGrade: 100 },
-          { id: 'sub-d3', subjectName: 'اللغة الإنجليزية', firstTermAvg: 100, midYearGrade: 100, secondTermAvg: 99, annualSaeiAvg: 100, finalExamGrade: 100, finalGrade: 100, resitGrade: null, postResitGrade: 100 },
-          { id: 'sub-d4', subjectName: 'الرياضيات', firstTermAvg: 100, midYearGrade: 100, secondTermAvg: 100, annualSaeiAvg: 100, finalExamGrade: 100, finalGrade: 100, resitGrade: null, postResitGrade: 100 },
-          { id: 'sub-d5', subjectName: 'الحاسوب والذكاء الاصطناعي', firstTermAvg: 100, midYearGrade: 100, secondTermAvg: 100, annualSaeiAvg: 100, finalExamGrade: 100, finalGrade: 100, resitGrade: null, postResitGrade: 100 },
-          { id: 'sub-d6', subjectName: 'الفيزياء', firstTermAvg: 100, midYearGrade: 100, secondTermAvg: 99, annualSaeiAvg: 100, finalExamGrade: 100, finalGrade: 100, resitGrade: null, postResitGrade: 100 },
-          { id: 'sub-d7', subjectName: 'الكيمياء', firstTermAvg: 100, midYearGrade: 100, secondTermAvg: 100, annualSaeiAvg: 100, finalExamGrade: 100, finalGrade: 100, resitGrade: null, postResitGrade: 100 },
-          { id: 'sub-d8', subjectName: 'علم الأحياء', firstTermAvg: 99, midYearGrade: 100, secondTermAvg: 99, annualSaeiAvg: 99, finalExamGrade: 100, finalGrade: 100, resitGrade: null, postResitGrade: 100 },
-        ]
-      }];
-    }
-
-    let list: StudentCertificate[] = [];
-    if (role === 'teacher') {
-      // Filter student certificates matching teacher's assigned grades
-      list = certificates.filter((c) =>
-        teacherAssignedGrades.includes(c.gradeLevel)
-      );
-    } else {
-      list = certificates;
-    }
-
-    // Default alphabetical sorting for all student certificates
+    const year = academicYearFilter === 'all' ? null : academicYearFilter;
+    const list = listPersistedCertificatesForRole({
+      role,
+      certificates,
+      students,
+      parents,
+      teachers,
+      currentUser,
+      viewerStudentId,
+      academicYear: year,
+    });
     return [...list].sort((a, b) => a.studentName.localeCompare(b.studentName, 'ar', { sensitivity: 'base' }));
-  }, [certificates, role, activeStudent, currentUser, teacherAssignedGrades]);
+  }, [role, certificates, students, parents, teachers, currentUser, viewerStudentId, academicYearFilter]);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [gradeFilter, setGradeFilter] = useState<string>('all');
@@ -446,7 +367,7 @@ export const StudentCertificateManager: React.FC = () => {
   const [currentExportModel, setCurrentExportModel] = useState<CertificateModelType | null>(null);
   const [selectedShareModel, setSelectedShareModel] = useState<CertificateModelType | undefined>(undefined);
   const [selectedCertId, setSelectedCertId] = useState<string | null>(
-    userRoleCertificates[0]?.id || certificates[0]?.id || null
+    userRoleCertificates[0]?.id || null
   );
   const [viewMode, setViewMode] = useState<'matrix' | 'official_print'>(() => {
     return role === 'student' || role === 'parent' ? 'official_print' : 'matrix';
@@ -455,7 +376,7 @@ export const StudentCertificateManager: React.FC = () => {
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [exportProgressText, setExportProgressText] = useState('');
   const [expandedCertId, setExpandedCertId] = useState<string | null>(
-    userRoleCertificates[0]?.id || certificates[0]?.id || null
+    userRoleCertificates[0]?.id || null
   );
   const [editingSubject, setEditingSubject] = useState<{
     certId: string;
@@ -629,8 +550,11 @@ export const StudentCertificateManager: React.FC = () => {
 
   // Selected Certificate for Printing / Detailed View
   const selectedCert = useMemo(() => {
-    return userRoleCertificates.find((c) => c.id === selectedCertId) || filteredCertificates[0] || userRoleCertificates[0] || certificates[0];
-  }, [certificates, userRoleCertificates, selectedCertId, filteredCertificates]);
+    return (
+      pickSelectedPersistedCertificate(filteredCertificates, selectedCertId) ||
+      pickSelectedPersistedCertificate(userRoleCertificates, selectedCertId)
+    );
+  }, [userRoleCertificates, selectedCertId, filteredCertificates]);
 
   // KPIs
   const kpis = useMemo(() => {
@@ -977,8 +901,8 @@ export const StudentCertificateManager: React.FC = () => {
                 <span>نظام الشهادات والنتائج المدرسية الرسمية</span>
               </div>
               <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
-                {(role === 'student' || role === 'parent') && activeStudent
-                  ? `شهادة ونتائج الطالبة: ${activeStudent.name}`
+                {(role === 'student' || role === 'parent') && (activeStudent?.name || ownedCertificates[0]?.studentName)
+                  ? `شهادة ونتائج الطالبة: ${activeStudent?.name || ownedCertificates[0]?.studentName}`
                   : 'إصدار وسجل الشهادات المدرسية للطالبات'}
               </h1>
               <p className="text-slate-300 text-xs sm:text-sm max-w-2xl leading-relaxed">
@@ -1194,6 +1118,27 @@ export const StudentCertificateManager: React.FC = () => {
               <div className="text-2xl font-bold text-purple-700">{kpis.avgScore}%</div>
               <div className="text-[11px] text-purple-600 mt-1">معدل التميز الدراسي</div>
             </div>
+          </div>
+        )}
+
+        {(role === 'student' || role === 'parent') && availableAcademicYears.length > 1 && (
+          <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex flex-wrap items-center gap-3">
+            <span className="text-xs font-bold text-slate-700">السنة الدراسية:</span>
+            <select
+              value={academicYearFilter}
+              onChange={(e) => {
+                setAcademicYearFilter(e.target.value);
+                setSelectedCertId(null);
+              }}
+              className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-bold bg-slate-50"
+            >
+              <option value="all">جميع السنوات المتاحة</option>
+              {availableAcademicYears.map((year) => (
+                <option key={year} value={year}>
+                  {year}
+                </option>
+              ))}
+            </select>
           </div>
         )}
 
@@ -1464,8 +1409,14 @@ export const StudentCertificateManager: React.FC = () => {
           {filteredCertificates.length === 0 ? (
             <div className="bg-white p-12 text-center rounded-2xl border border-slate-200 space-y-3">
               <Award className="w-12 h-12 text-slate-300 mx-auto" />
-              <h3 className="text-base font-bold text-slate-700">لا توجد شهادات مطابقة للبحث</h3>
-              <p className="text-xs text-slate-500">جرب تصفية مختلفة أو قم بإصدار شهادة جديدة لطالبة.</p>
+              <h3 className="text-base font-bold text-slate-700">
+                {userRoleCertificates.length === 0 ? 'لا توجد نتائج متاحة' : 'لا توجد شهادات مطابقة للبحث'}
+              </h3>
+              <p className="text-xs text-slate-500">
+                {userRoleCertificates.length === 0
+                  ? 'لا توجد شهادة أو نتيجة محفوظة لهذه الطالبة والسنة الدراسية.'
+                  : 'جرب تصفية مختلفة أو قم بإصدار شهادة جديدة لطالبة.'}
+              </p>
             </div>
           ) : (
             filteredCertificates.map((cert) => {
@@ -2285,7 +2236,7 @@ export const StudentCertificateManager: React.FC = () => {
                     >
                       {userRoleCertificates.map((c) => (
                         <option key={c.id} value={c.id}>
-                          {c.studentName} ({c.gradeLevel} - {c.status})
+                          {c.studentName} ({c.academicYear} — {c.gradeLevel} - {c.status})
                         </option>
                       ))}
                     </select>
@@ -2354,7 +2305,11 @@ export const StudentCertificateManager: React.FC = () => {
           {/* Actual Printable Page(s) */}
           <div id="a4-certificates-export-container">
             {printScope === 'selected' ? (
-              selectedCert && (
+              !selectedCert ? (
+                <div className="bg-white p-10 text-center rounded-2xl border border-slate-200">
+                  <h3 className="text-base font-bold text-slate-700">لا توجد نتائج متاحة</h3>
+                </div>
+              ) : (
                 <OfficialCertificateA4Template
                   cert={selectedCert}
                   modelType={

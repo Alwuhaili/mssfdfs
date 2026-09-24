@@ -154,6 +154,7 @@ export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab 
     { id: 'attendance', label: t.navAttendance, icon: CalendarCheck },
 { id: 'lectures', label: t.navLectures, icon: BookOpen },
     { id: 'timetable', label: t.navTimetable, icon: CalendarDays },
+    certTab,
   ];
 
   const studentTabs = [
