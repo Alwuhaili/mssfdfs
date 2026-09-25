@@ -951,42 +951,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Entities
   const [teachers, setTeachers] = useState<Teacher[]>(() => {
     const stored = initialStored?.teachers;
-    const baseList = INITIAL_TEACHERS.filter((t) => !isTeacherBlacklisted(t.name));
-    if (!stored || !Array.isArray(stored) || stored.length === 0) {
-      return baseList;
-    }
+    if (!stored || !Array.isArray(stored)) return [];
 
-    // Filter out any legacy mock teachers that might have been cached in localStorage from old versions
+    // Keep only persisted teacher records; never inject bundled/default faculty.
     const legacyMockTeacherIds = ['tech-1', 'tech-2', 'tech-3', 'tech-4', 'tech-5', 'tech-6', 'tech-7', 'tech-8', 'tech-9', 'tech-10', 'tech-11', 'tech-12', 'tech-13', 'tech-14'];
-    let filtered = stored.filter((t) => 
+    const filtered = stored.filter((t) =>
       !legacyMockTeacherIds.includes(t.id) &&
-      !/^tech-[a-z]+-\d+$/.test(t.id) && // this removes tech-math-1, tech-chem-2, etc.
+      !/^tech-[a-z]+-\d+$/.test(t.id) &&
       !isTeacherBlacklisted(t.name)
     );
 
-    // Merge baseList teachers so we don't lose the full school faculty if stored was incomplete
-    const merged = [...filtered];
-    baseList.forEach((bt) => {
-      if (!merged.some((t) => t.id === bt.id || t.name === bt.name)) {
-        merged.push(bt);
-      }
-    });
-
-    // Ensure official teacher 'محمد نعمة كاظم كريدي الوحيلي' is included
-    const mohammedTeacher = INITIAL_TEACHERS.find(t => t.id === 'tech-cs-mohammed');
-    if (mohammedTeacher && !merged.some(t => t.name === 'محمد نعمة كاظم كريدي الوحيلي' || t.id === 'tech-cs-mohammed')) {
-      merged.unshift(mohammedTeacher);
-    }
-
-    // Deduplicate by name
     const seenNames = new Set<string>();
-    const result = merged.filter(t => {
-      if (seenNames.has(t.name)) return false;
+    return filtered.filter((t) => {
+      if (!t?.name || seenNames.has(t.name)) return false;
       seenNames.add(t.name);
       return true;
     });
-
-    return result.length > 0 ? result : baseList;
   });
   const [students, setStudents] = useState<Student[]>(() => {
     const raw = (initialStored?.students || INITIAL_STUDENTS).filter(
@@ -1192,9 +1172,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
   const [schoolAdminData, setSchoolAdminData] = useState<SchoolAdminData>(() => {
     let data = initialStored?.schoolAdminData || INITIAL_SCHOOL_ADMIN_DATA;
-    if (!data.schoolNameEn || data.schoolNameEn === 'Maysan High School for Gifted Girls') {
-      data = { ...data, schoolNameEn: 'Maysan Secondary School For Distinguished Female Students' };
-    }
     if (!data.principalName || data.principalName.includes('هناء')) {
       data = {
         ...data,
@@ -7352,13 +7329,21 @@ ${defaultReason}
     );
   };
 
-  // Timetable Handlers — explicit persistence: write first, then expose success to the UI.
+  // Timetable is stored as the appSettings/timetable setting by the migrated Firestore schema.
+  // Persist the complete array through the setting-aware sync path; never address timetable as a collection.
+  const persistTimetableSetting = async (slots: TimetableSlot[]): Promise<boolean> =>
+    runTrackedPersistenceWrite(
+      () => centralSyncService.directArrayMutation('timetable', slots, syncSourceUser()),
+      false
+    );
+
   const updateTimetableSlot = async (id: string, updated: Partial<TimetableSlot>): Promise<boolean> => {
     const before = timetable.find((slot) => slot.id === id);
     if (!before) return false;
     const after = { ...before, ...updated };
-    const ok = await persistCollectionDoc('timetable', id, after, before);
-    if (ok) setTimetable((prev) => prev.map((slot) => (slot.id === id ? after : slot)));
+    const next = timetable.map((slot) => (slot.id === id ? after : slot));
+    const ok = await persistTimetableSetting(next);
+    if (ok) setTimetable(next);
     return ok;
   };
 
@@ -7367,19 +7352,21 @@ ${defaultReason}
       ...slotData,
       id: `time-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
     };
-    const ok = await persistCollectionDoc('timetable', newSlot.id, newSlot);
-    if (ok) setTimetable((prev) => [...prev, newSlot]);
+    const next = [...timetable, newSlot];
+    const ok = await persistTimetableSetting(next);
+    if (ok) setTimetable(next);
     return ok;
   };
 
   const deleteTimetableSlot = async (id: string): Promise<boolean> => {
-    const ok = await deleteCollectionDoc('timetable', id);
-    if (ok) setTimetable((prev) => prev.filter((slot) => slot.id !== id));
+    const next = timetable.filter((slot) => slot.id !== id);
+    const ok = await persistTimetableSetting(next);
+    if (ok) setTimetable(next);
     return ok;
   };
 
   const saveFullTimetable = async (slots: TimetableSlot[]): Promise<boolean> => {
-    const ok = await persistChangedCollectionDocs('timetable', timetable, slots, true);
+    const ok = await persistTimetableSetting(slots);
     if (ok) setTimetable(slots);
     return ok;
   };
