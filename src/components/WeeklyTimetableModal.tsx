@@ -808,7 +808,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
                         <div className="space-y-0.5">
                           <div className="font-black text-slate-950 text-xs leading-tight">{slot.subject}</div>
                           <div className="text-[10px] font-extrabold text-indigo-900 flex items-center justify-center gap-1 leading-tight">
-                            <span>{slot.teacherName || 'أستاذة المادة'}</span>
+                            <span>{slot.teacherName || 'غير معيّن'}</span>
                           </div>
                           <div className="text-[9px] text-slate-600 font-mono leading-tight">
                             {slot.room || 'قاعة 1'}
@@ -2133,7 +2133,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
 
                                   <div className="flex items-center gap-1 text-[11px] text-indigo-200 font-bold">
                                     <UserCheck className="w-3 h-3 text-emerald-400 shrink-0" />
-                                    <span className="truncate">{slot.teacherName || 'أستاذة المادة'}</span>
+                                    <span className="truncate">{slot.teacherName || 'غير معيّن'}</span>
                                   </div>
 
                                   <div className="flex items-center gap-1 text-[10px] text-slate-400 font-mono">
