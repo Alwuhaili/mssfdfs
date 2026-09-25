@@ -89,6 +89,9 @@ export const INITIAL_LIBRARY_FOLDERS: LibraryFolder[] = [];
 // Library content is created by authorized users; no operational resources are bundled.
 export const INITIAL_LECTURES: LectureResource[] = [];
 
+/** Security Hardening V1: private academic data (including answer keys/schedules) is never bundled into the client. */
+export const RAW_INITIAL_TIMETABLE: TimetableSlot[] = [];
+
 export const INITIAL_TIMETABLE: TimetableSlot[] = RAW_INITIAL_TIMETABLE.filter((slot) => {
   const sec = slot.section || 'أ';
   return INITIAL_STUDENTS.some(
@@ -208,68 +211,9 @@ export const INITIAL_SCHOOL_ADMIN_DATA: SchoolAdminData = {
   examControlAuditorTitle: 'مسؤولة الكنترول والتدقيق - لجنة فحص الدفاتر الامتحانية',
 };
 
-export const INITIAL_SUBJECT_QUOTAS: GradeSubjectQuota[] = [
-  // الصف السادس العلمي
-  { id: 'q-6sci-1', gradeLevel: 'الصف السادس العلمي', subjectName: 'الرياضيات والتفاضل', weeklyPeriods: 5, teacherName: 'أ. مروة كمال الساعدي', classroom: 'قاعة المتميزات 1', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-6sci-2', gradeLevel: 'الصف السادس العلمي', subjectName: 'الفيزياء المتقدمة', weeklyPeriods: 5, teacherName: 'أ.د. رغد نصير البهادلي', classroom: 'مختبر الفيزياء', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-6sci-3', gradeLevel: 'الصف السادس العلمي', subjectName: 'الكيمياء العضوية', weeklyPeriods: 5, teacherName: 'د. زينب عبد الحسين الموسوي', classroom: 'مختبر الكيمياء', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-6sci-4', gradeLevel: 'الصف السادس العلمي', subjectName: 'علم الأحياء والوراثة', weeklyPeriods: 5, teacherName: 'أ. سارة جليل المحمداوي', classroom: 'قاعة الأحياء', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-6sci-5', gradeLevel: 'الصف السادس العلمي', subjectName: 'اللغة العربية والقواعد', weeklyPeriods: 5, teacherName: 'أ. فاطمة مرتضى الشمري', classroom: 'قاعة المتميزات 1', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-6sci-6', gradeLevel: 'الصف السادس العلمي', subjectName: 'اللغة الإنجليزية', weeklyPeriods: 5, teacherName: 'أ. رنا ضياء الزيدي', classroom: 'قاعة اللغات', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-6sci-7', gradeLevel: 'الصف السادس العلمي', subjectName: 'التربية الإسلامية', weeklyPeriods: 3, teacherName: 'أ. خديجة عبد الرزاق البديري', classroom: 'قاعة المتميزات 1', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-6sci-8', gradeLevel: 'الصف السادس العلمي', subjectName: 'الحاسوب والذكاء الاصطناعي', weeklyPeriods: 2, teacherName: 'محمد نعمة كاظم كريدي الوحيلي', classroom: 'مختبر الحاسوب الذكي', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-
-  // الصف الخامس العلمي
-  { id: 'q-5sci-1', gradeLevel: 'الصف الخامس العلمي', subjectName: 'الرياضيات', weeklyPeriods: 5, teacherName: 'أ. مروة كمال الساعدي', classroom: 'قاعة 5 علمي', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-5sci-2', gradeLevel: 'الصف الخامس العلمي', subjectName: 'الفيزياء', weeklyPeriods: 5, teacherName: 'أ.د. رغد نصير البهادلي', classroom: 'مختبر الفيزياء', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-5sci-3', gradeLevel: 'الصف الخامس العلمي', subjectName: 'الكيمياء', weeklyPeriods: 5, teacherName: 'د. زينب عبد الحسين الموسوي', classroom: 'مختبر الكيمياء', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-5sci-4', gradeLevel: 'الصف الخامس العلمي', subjectName: 'علم الأحياء', weeklyPeriods: 5, teacherName: 'أ. سارة جليل المحمداوي', classroom: 'قاعة الأحياء', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-5sci-5', gradeLevel: 'الصف الخامس العلمي', subjectName: 'اللغة العربية', weeklyPeriods: 5, teacherName: 'أ. فاطمة مرتضى الشمري', classroom: 'قاعة 5 علمي', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-5sci-6', gradeLevel: 'الصف الخامس العلمي', subjectName: 'اللغة الإنجليزية', weeklyPeriods: 4, teacherName: 'أ. رنا ضياء الزيدي', classroom: 'قاعة اللغات', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-5sci-7', gradeLevel: 'الصف الخامس العلمي', subjectName: 'التربية الإسلامية', weeklyPeriods: 3, teacherName: 'أ. خديجة عبد الرزاق البديري', classroom: 'قاعة 5 علمي', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-5sci-8', gradeLevel: 'الصف الخامس العلمي', subjectName: 'الحاسوب والبرمجة', weeklyPeriods: 3, teacherName: 'محمد نعمة كاظم كريدي الوحيلي', classroom: 'مختبر الحاسوب', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-
-  // الصف الرابع العلمي
-  { id: 'q-4sci-1', gradeLevel: 'الصف الرابع العلمي', subjectName: 'الرياضيات', weeklyPeriods: 5, teacherName: 'أ. علي كريم الربيعي', classroom: 'قاعة 4 علمي', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء'] },
-  { id: 'q-4sci-2', gradeLevel: 'الصف الرابع العلمي', subjectName: 'الفيزياء', weeklyPeriods: 5, teacherName: 'أ. حيدر صباح اللامي', classroom: 'مختبر الفيزياء', availableDays: ['الأحد', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-4sci-3', gradeLevel: 'الصف الرابع العلمي', subjectName: 'الكيمياء', weeklyPeriods: 5, teacherName: 'أ. وسام جاسم التميمي', classroom: 'مختبر الكيمياء', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الخميس'] },
-  { id: 'q-4sci-4', gradeLevel: 'الصف الرابع العلمي', subjectName: 'علم الأحياء', weeklyPeriods: 5, teacherName: 'أ. هند كاظم الذهبي', classroom: 'قاعة الأحياء', availableDays: ['الأحد', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-4sci-5', gradeLevel: 'الصف الرابع العلمي', subjectName: 'اللغة العربية', weeklyPeriods: 5, teacherName: 'أ. فاطمة مرتضى الشمري', classroom: 'قاعة 4 علمي', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-4sci-6', gradeLevel: 'الصف الرابع العلمي', subjectName: 'اللغة الإنجليزية', weeklyPeriods: 4, teacherName: 'أ. رنا ضياء الزيدي', classroom: 'قاعة اللغات', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-4sci-7', gradeLevel: 'الصف الرابع العلمي', subjectName: 'التربية الإسلامية', weeklyPeriods: 3, teacherName: 'أ. خديجة عبد الرزاق البديري', classroom: 'قاعة 4 علمي', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-4sci-8', gradeLevel: 'الصف الرابع العلمي', subjectName: 'الحاسوب', weeklyPeriods: 3, teacherName: 'أ. مريم عماد الكعبي', classroom: 'مختبر الحاسوب', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-
-  // الصف الثالث المتوسط
-  { id: 'q-3m-1', gradeLevel: 'الصف الثالث المتوسط', subjectName: 'الرياضيات', weeklyPeriods: 5, teacherName: 'أ. علي كريم الربيعي', classroom: 'قاعة 3 متوسط', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء'] },
-  { id: 'q-3m-2', gradeLevel: 'الصف الثالث المتوسط', subjectName: 'الفيزياء', weeklyPeriods: 4, teacherName: 'أ. حيدر صباح اللامي', classroom: 'مختبر العلوم', availableDays: ['الأحد', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-3m-3', gradeLevel: 'الصف الثالث المتوسط', subjectName: 'الكيمياء', weeklyPeriods: 4, teacherName: 'أ. وسام جاسم التميمي', classroom: 'مختبر العلوم', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الخميس'] },
-  { id: 'q-3m-4', gradeLevel: 'الصف الثالث المتوسط', subjectName: 'الأحياء', weeklyPeriods: 4, teacherName: 'أ. هند كاظم الذهبي', classroom: 'قاعة 3 متوسط', availableDays: ['الأحد', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-3m-5', gradeLevel: 'الصف الثالث المتوسط', subjectName: 'اللغة العربية', weeklyPeriods: 5, teacherName: 'أ. مصطفى حميد الغراوي', classroom: 'قاعة 3 متوسط', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء'] },
-  { id: 'q-3m-6', gradeLevel: 'الصف الثالث المتوسط', subjectName: 'اللغة الإنجليزية', weeklyPeriods: 4, teacherName: 'أ. أحمد صادق المياحي', classroom: 'قاعة اللغات', availableDays: ['الأحد', 'الإثنين', 'الأربعاء', 'الخميس'] },
-  { id: 'q-3m-7', gradeLevel: 'الصف الثالث المتوسط', subjectName: 'الاجتماعيات', weeklyPeriods: 4, teacherName: 'أ. نداء فاضل البياتي', classroom: 'قاعة 3 متوسط', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء'] },
-  { id: 'q-3m-8', gradeLevel: 'الصف الثالث المتوسط', subjectName: 'التربية الإسلامية', weeklyPeriods: 3, teacherName: 'أ. حسين شاكر العيداني', classroom: 'قاعة 3 متوسط', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الخميس'] },
-  { id: 'q-3m-9', gradeLevel: 'الصف الثالث المتوسط', subjectName: 'الحاسوب', weeklyPeriods: 2, teacherName: 'أ. عمر خالد السعد', classroom: 'مختبر الحاسوب', availableDays: ['الأحد', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-
-  // الصف الثاني المتوسط
-  { id: 'q-2m-1', gradeLevel: 'الصف الثاني المتوسط', subjectName: 'الرياضيات', weeklyPeriods: 5, teacherName: 'أ. رشا فائق الدراجي', classroom: 'قاعة 2 متوسط', availableDays: ['الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-2m-2', gradeLevel: 'الصف الثاني المتوسط', subjectName: 'العلوم العامة', weeklyPeriods: 6, teacherName: 'أ. مروة سلام الفرطوسي', classroom: 'مختبر العلوم', availableDays: ['الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-2m-3', gradeLevel: 'الصف الثاني المتوسط', subjectName: 'اللغة العربية', weeklyPeriods: 5, teacherName: 'أ. مصطفى حميد الغراوي', classroom: 'قاعة 2 متوسط', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء'] },
-  { id: 'q-2m-4', gradeLevel: 'الصف الثاني المتوسط', subjectName: 'اللغة الإنجليزية', weeklyPeriods: 5, teacherName: 'أ. أحمد صادق المياحي', classroom: 'قاعة اللغات', availableDays: ['الأحد', 'الإثنين', 'الأربعاء', 'الخميس'] },
-  { id: 'q-2m-5', gradeLevel: 'الصف الثاني المتوسط', subjectName: 'الاجتماعيات', weeklyPeriods: 4, teacherName: 'أ. قاسم مهدي العتابي', classroom: 'قاعة 2 متوسط', availableDays: ['الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-2m-6', gradeLevel: 'الصف الثاني المتوسط', subjectName: 'التربية الإسلامية', weeklyPeriods: 4, teacherName: 'أ. حسين شاكر العيداني', classroom: 'قاعة 2 متوسط', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الخميس'] },
-  { id: 'q-2m-7', gradeLevel: 'الصف الثاني المتوسط', subjectName: 'الحاسوب والبرمجة', weeklyPeriods: 3, teacherName: 'أ. عمر خالد السعد', classroom: 'مختبر الحاسوب', availableDays: ['الأحد', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-2m-8', gradeLevel: 'الصف الثاني المتوسط', subjectName: 'التربية الفنية والرياضية', weeklyPeriods: 3, teacherName: 'أ. بشرى عبد الأمير', classroom: 'القاعة الرياضية', availableDays: ['الأحد', 'الثلاثاء', 'الخميس'] },
-
-  // الصف الأول المتوسط
-  { id: 'q-1m-1', gradeLevel: 'الصف الأول المتوسط', subjectName: 'الرياضيات', weeklyPeriods: 5, teacherName: 'أ. رشا فائق الدراجي', classroom: 'قاعة 1 متوسط', availableDays: ['الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-1m-2', gradeLevel: 'الصف الأول المتوسط', subjectName: 'العلوم العامة', weeklyPeriods: 6, teacherName: 'أ. هبة عادل الساعدي', classroom: 'مختبر العلوم', availableDays: ['الأحد', 'الإثنين', 'الأربعاء', 'الخميس'] },
-  { id: 'q-1m-3', gradeLevel: 'الصف الأول المتوسط', subjectName: 'اللغة العربية', weeklyPeriods: 5, teacherName: 'أ. مصطفى حميد الغراوي', classroom: 'قاعة 1 متوسط', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء'] },
-  { id: 'q-1m-4', gradeLevel: 'الصف الأول المتوسط', subjectName: 'اللغة الإنجليزية', weeklyPeriods: 5, teacherName: 'أ. أحمد صادق المياحي', classroom: 'قاعة اللغات', availableDays: ['الأحد', 'الإثنين', 'الأربعاء', 'الخميس'] },
-  { id: 'q-1m-5', gradeLevel: 'الصف الأول المتوسط', subjectName: 'الاجتماعيات', weeklyPeriods: 4, teacherName: 'أ. قاسم مهدي العتابي', classroom: 'قاعة 1 متوسط', availableDays: ['الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-1m-6', gradeLevel: 'الصف الأول المتوسط', subjectName: 'التربية الإسلامية', weeklyPeriods: 4, teacherName: 'أ. حسين شاكر العيداني', classroom: 'قاعة 1 متوسط', availableDays: ['الأحد', 'الإثنين', 'الثلاثاء', 'الخميس'] },
-  { id: 'q-1m-7', gradeLevel: 'الصف الأول المتوسط', subjectName: 'الحاسوب', weeklyPeriods: 3, teacherName: 'أ. عمر خالد السعد', classroom: 'مختبر الحاسوب', availableDays: ['الأحد', 'الثلاثاء', 'الأربعاء', 'الخميس'] },
-  { id: 'q-1m-8', gradeLevel: 'الصف الأول المتوسط', subjectName: 'التربية الفنية والرياضية', weeklyPeriods: 3, teacherName: 'أ. أطياف حسن الخزاعي', classroom: 'القاعة الرياضية', availableDays: ['الإثنين', 'الثلاثاء', 'الأربعاء'] },
-];
+// Subject quotas are operational data managed by authorized users and persisted in Firestore.
+// No teacher names or subject assignments are bundled in the client.
+export const INITIAL_SUBJECT_QUOTAS: GradeSubjectQuota[] = [];
 
 /** Security Hardening V1: private identity data is never bundled into the public web application.
  * Load real records only after authenticated Firestore access. */
