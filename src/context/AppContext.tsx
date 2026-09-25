@@ -1192,9 +1192,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
   const [schoolAdminData, setSchoolAdminData] = useState<SchoolAdminData>(() => {
     let data = initialStored?.schoolAdminData || INITIAL_SCHOOL_ADMIN_DATA;
-    if (!data.schoolNameEn || data.schoolNameEn === 'Maysan High School for Gifted Girls') {
-      data = { ...data, schoolNameEn: 'Maysan Secondary School For Distinguished Female Students' };
-    }
     if (!data.principalName || data.principalName.includes('هناء')) {
       data = {
         ...data,
