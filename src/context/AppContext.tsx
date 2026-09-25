@@ -7329,13 +7329,21 @@ ${defaultReason}
     );
   };
 
-  // Timetable Handlers — explicit persistence: write first, then expose success to the UI.
+  // Timetable is stored as the appSettings/timetable setting by the migrated Firestore schema.
+  // Persist the complete array through the setting-aware sync path; never address timetable as a collection.
+  const persistTimetableSetting = async (slots: TimetableSlot[]): Promise<boolean> =>
+    runTrackedPersistenceWrite(
+      () => centralSyncService.directArrayMutation('timetable', slots, syncSourceUser()),
+      false
+    );
+
   const updateTimetableSlot = async (id: string, updated: Partial<TimetableSlot>): Promise<boolean> => {
     const before = timetable.find((slot) => slot.id === id);
     if (!before) return false;
     const after = { ...before, ...updated };
-    const ok = await persistCollectionDoc('timetable', id, after, before);
-    if (ok) setTimetable((prev) => prev.map((slot) => (slot.id === id ? after : slot)));
+    const next = timetable.map((slot) => (slot.id === id ? after : slot));
+    const ok = await persistTimetableSetting(next);
+    if (ok) setTimetable(next);
     return ok;
   };
 
@@ -7344,19 +7352,21 @@ ${defaultReason}
       ...slotData,
       id: `time-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
     };
-    const ok = await persistCollectionDoc('timetable', newSlot.id, newSlot);
-    if (ok) setTimetable((prev) => [...prev, newSlot]);
+    const next = [...timetable, newSlot];
+    const ok = await persistTimetableSetting(next);
+    if (ok) setTimetable(next);
     return ok;
   };
 
   const deleteTimetableSlot = async (id: string): Promise<boolean> => {
-    const ok = await deleteCollectionDoc('timetable', id);
-    if (ok) setTimetable((prev) => prev.filter((slot) => slot.id !== id));
+    const next = timetable.filter((slot) => slot.id !== id);
+    const ok = await persistTimetableSetting(next);
+    if (ok) setTimetable(next);
     return ok;
   };
 
   const saveFullTimetable = async (slots: TimetableSlot[]): Promise<boolean> => {
-    const ok = await persistChangedCollectionDocs('timetable', timetable, slots, true);
+    const ok = await persistTimetableSetting(slots);
     if (ok) setTimetable(slots);
     return ok;
   };
