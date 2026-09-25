@@ -320,7 +320,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
     }
   };
 
-  const handleSaveSlotForm = (e: React.FormEvent) => {
+  const handleSaveSlotForm = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canEdit) return;
 
@@ -328,7 +328,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
     const timeSlotStr = periodTimingObj ? periodTimingObj.timeSlot : '08:00 - 08:45';
 
     if (activeEditingSlot) {
-      updateTimetableSlot(activeEditingSlot.id, {
+      const ok = await updateTimetableSlot(activeEditingSlot.id, {
         day: editDay,
         period: editPeriod,
         timeSlot: timeSlotStr,
@@ -338,9 +338,9 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
         teacherName: editTeacher,
         room: editRoom,
       });
-      setShowSuccessToast('تم تحديث الحصة الدراسية بنجاح ⚡');
+      setShowSuccessToast(ok ? 'تم تحديث الحصة الدراسية بنجاح ⚡' : 'تعذر حفظ تعديل الحصة في قاعدة البيانات');
     } else {
-      addTimetableSlot({
+      const ok = await addTimetableSlot({
         day: editDay,
         period: editPeriod,
         timeSlot: timeSlotStr,
@@ -350,18 +350,18 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
         teacherName: editTeacher,
         room: editRoom,
       });
-      setShowSuccessToast('تم إضافة الحصة الدراسية إلى الجدول بنجاح ✨');
+      setShowSuccessToast(ok ? 'تم إضافة الحصة الدراسية إلى الجدول بنجاح ✨' : 'تعذر إضافة الحصة إلى قاعدة البيانات');
     }
 
     setActiveEditingSlot(null);
     setTimeout(() => setShowSuccessToast(null), 3000);
   };
 
-  const handleDeleteSlot = (id: string) => {
+  const handleDeleteSlot = async (id: string) => {
     if (!canEdit) return;
-    deleteTimetableSlot(id);
-    setActiveEditingSlot(null);
-    setShowSuccessToast('تم حذف الحصة الدراسية من الجدول');
+    const ok = await deleteTimetableSlot(id);
+    if (ok) setActiveEditingSlot(null);
+    setShowSuccessToast(ok ? 'تم حذف الحصة الدراسية من الجدول' : 'تعذر حذف الحصة من قاعدة البيانات');
     setTimeout(() => setShowSuccessToast(null), 3000);
   };
 
@@ -384,28 +384,28 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
     setShowQuotaForm(true);
   };
 
-  const handleSaveQuotaForm = (e: React.FormEvent) => {
+  const handleSaveQuotaForm = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canEdit) return;
 
     if (activeEditingQuota) {
-      updateSubjectQuota(activeEditingQuota.id, {
+      const ok = await updateSubjectQuota(activeEditingQuota.id, {
         gradeLevel: selectedGrade,
         subjectName: quotaSubjectName,
         weeklyPeriods: Number(quotaWeeklyPeriods),
         teacherName: quotaTeacherName,
         classroom: quotaClassroom,
       });
-      setShowSuccessToast('تم تحديث حصص المادة ومدرستها بنجاح ✨');
+      setShowSuccessToast(ok ? 'تم تحديث حصص المادة ومدرستها بنجاح ✨' : 'تعذر حفظ خطة الحصص في قاعدة البيانات');
     } else {
-      addSubjectQuota({
+      const ok = await addSubjectQuota({
         gradeLevel: selectedGrade,
         subjectName: quotaSubjectName,
         weeklyPeriods: Number(quotaWeeklyPeriods),
         teacherName: quotaTeacherName,
         classroom: quotaClassroom,
       });
-      setShowSuccessToast('تم إضافة خطة المادة والحصص بنجاح 🌟');
+      setShowSuccessToast(ok ? 'تم إضافة خطة المادة والحصص بنجاح 🌟' : 'تعذر إضافة خطة الحصص إلى قاعدة البيانات');
     }
 
     setShowQuotaForm(false);
@@ -413,17 +413,19 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
     setTimeout(() => setShowSuccessToast(null), 3000);
   };
 
-  const handleDeleteQuota = (id: string) => {
+  const handleDeleteQuota = async (id: string) => {
     if (!canEdit) return;
-    deleteSubjectQuota(id);
-    setShowQuotaForm(false);
-    setActiveEditingQuota(null);
-    setShowSuccessToast('تم حذف المادة من خطة الحصص');
+    const ok = await deleteSubjectQuota(id);
+    if (ok) {
+      setShowQuotaForm(false);
+      setActiveEditingQuota(null);
+    }
+    setShowSuccessToast(ok ? 'تم حذف المادة من خطة الحصص' : 'تعذر حذف خطة الحصص من قاعدة البيانات');
     setTimeout(() => setShowSuccessToast(null), 3000);
   };
 
   // Auto-generate smart weekly schedule for selected grade and section
-  const handleAutoGenerateFromQuotas = () => {
+  const handleAutoGenerateFromQuotas = async () => {
     if (!canEdit) {
       setShowSuccessToast('🔒 الصلاحية محصورة بالمديرة والإدارة لتوليد وإعادة ضبط الجدول');
       setTimeout(() => setShowSuccessToast(null), 3000);
@@ -438,8 +440,8 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
 
     const result = generateSmartTimetable(selectedGrade, selectedSection, subjectQuotas, timetable, academicTeachers, students, timetableSettings);
     if (result.success) {
-      saveFullTimetable(result.slots);
-      setShowSuccessToast(result.message);
+      const ok = await saveFullTimetable(result.slots);
+      setShowSuccessToast(ok ? result.message : 'تعذر حفظ الجدول المولد في قاعدة البيانات');
     } else {
       setShowSuccessToast(result.message);
     }
@@ -447,7 +449,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
   };
 
   // Auto-generate Master School-wide Timetable across ALL grades and sections with 0 teacher conflicts
-  const handleAutoGenerateSchoolMaster = () => {
+  const handleAutoGenerateSchoolMaster = async () => {
     if (!canEdit) {
       setShowSuccessToast('🔒 الصلاحية محصورة بالمديرة والإدارة لتوليد الجدول الشامل');
       setTimeout(() => setShowSuccessToast(null), 3000);
@@ -456,8 +458,8 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
 
     const result = generateSmartTimetable('ALL', 'ALL', subjectQuotas, timetable, academicTeachers, students, timetableSettings);
     if (result.success) {
-      saveFullTimetable(result.slots);
-      setShowSuccessToast(result.message);
+      const ok = await saveFullTimetable(result.slots);
+      setShowSuccessToast(ok ? result.message : 'تعذر حفظ الجدول الشامل في قاعدة البيانات');
     } else {
       setShowSuccessToast(result.message);
     }
@@ -465,15 +467,15 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
   };
 
   // 1-Click Master Conflict Resolver
-  const handleResolveConflicts = () => {
+  const handleResolveConflicts = async () => {
     if (!canEdit) {
       setShowSuccessToast('🔒 الصلاحية محصورة بالمديرة والإدارة لتعديل وإصلاح الجدول');
       setTimeout(() => setShowSuccessToast(null), 3000);
       return;
     }
     const res = resolveAllTimetableConflicts(timetable, subjectQuotas, academicTeachers, timetableSettings);
-    saveFullTimetable(res.resolvedTimetable);
-    setShowSuccessToast(res.message);
+    const ok = await saveFullTimetable(res.resolvedTimetable);
+    setShowSuccessToast(ok ? res.message : 'تعذر حفظ معالجة التعارضات في قاعدة البيانات');
     setTimeout(() => setShowSuccessToast(null), 5000);
   };
 
@@ -550,7 +552,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
   };
 
   // Restore Official Ministerial Standard Quotas for Selected Grade Level
-  const handleRestoreMinisterialQuotas = () => {
+  const handleRestoreMinisterialQuotas = async () => {
     if (!canEdit) {
       setShowSuccessToast('🔒 الصلاحية محصورة بالمديرة والإدارة لتعديل الخطة والأنصبة');
       setTimeout(() => setShowSuccessToast(null), 3000);
@@ -569,8 +571,10 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
       id: `quota-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
     }));
 
-    saveSubjectQuotas([...otherGradeQuotas, ...regeneratedQuotas]);
-    setShowSuccessToast(`تمت استعادة وتطبيق الخطة الوزارية المعتمدة للأنصبة (${selectedGrade}) بنجاح 🏛️✓`);
+    const ok = await saveSubjectQuotas([...otherGradeQuotas, ...regeneratedQuotas]);
+    setShowSuccessToast(ok
+      ? `تمت استعادة وتطبيق الخطة الوزارية المعتمدة للأنصبة (${selectedGrade}) بنجاح 🏛️✓`
+      : 'تعذر حفظ الأنصبة المستعادة في قاعدة البيانات');
     setTimeout(() => setShowSuccessToast(null), 4500);
   };
 

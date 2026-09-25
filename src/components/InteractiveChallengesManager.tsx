@@ -1460,12 +1460,14 @@ export const InteractiveChallengesManager: React.FC<InteractiveChallengesManager
             setIsCreateChallengeOpen(false);
             setEditingChallenge(null);
           }}
-          onSave={(data) => {
+          onSave={async (data) => {
             if (editingChallenge) {
-              updateChallenge(editingChallenge.id, data);
+              const ok = await updateChallenge(editingChallenge.id, data);
+              if (ok === false) return;
               showToast('تم تحديث بيانات المسابقة بنجاح ✨');
             } else {
-              addChallenge(data as any);
+              const ok = await addChallenge(data as any);
+              if (ok === false) return;
               showToast('تم إنشاء المسابقة والتحدي التفاعلي بنجاح 🚀');
             }
             setIsCreateChallengeOpen(false);

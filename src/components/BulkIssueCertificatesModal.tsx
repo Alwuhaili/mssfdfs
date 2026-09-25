@@ -117,7 +117,7 @@ export const BulkIssueCertificatesModal: React.FC<BulkIssueCertificatesModalProp
 
   if (!isOpen) return null;
 
-  const handleExecute = () => {
+  const handleExecute = async () => {
     setIsProcessing(true);
     setResultMessage(null);
 
@@ -134,7 +134,7 @@ export const BulkIssueCertificatesModal: React.FC<BulkIssueCertificatesModalProp
           targetModel: selectedTargetModel,
         };
 
-        const res = issueCertificatesForScope(options);
+        const res = await issueCertificatesForScope(options);
         setResultMessage(res.message);
         if (onSuccess) {
           onSuccess(res.message);
@@ -146,7 +146,7 @@ export const BulkIssueCertificatesModal: React.FC<BulkIssueCertificatesModalProp
         }, 1200);
       } else {
         // Delete Mode
-        const res = deleteCertificatesForScope({
+        const res = await deleteCertificatesForScope({
           scope,
           gradeLevel: scope === 'grade' || scope === 'section' ? selectedGrade : undefined,
           section: scope === 'section' ? selectedSection : undefined,

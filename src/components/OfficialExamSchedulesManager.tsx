@@ -373,7 +373,7 @@ export const OfficialExamSchedulesManager: React.FC<OfficialExamSchedulesManager
   };
 
   // Save Schedule (Create or Update)
-  const handleSaveSchedule = () => {
+  const handleSaveSchedule = async () => {
     if (!canManage) {
       setPermissionNotice('عذراً، الصلاحية محصورة بالسيدة المديرة وإدارة المدرسة.');
       return;
@@ -391,7 +391,7 @@ export const OfficialExamSchedulesManager: React.FC<OfficialExamSchedulesManager
 
     if (editingSchedule) {
       // Update
-      updateExamSchedule(editingSchedule.id, {
+      const ok = await updateExamSchedule(editingSchedule.id, {
         title: formTitle.trim(),
         termType: formTermType,
         gradeLevels: formGradeLevels,
@@ -408,10 +408,11 @@ export const OfficialExamSchedulesManager: React.FC<OfficialExamSchedulesManager
         isPublished: formIsPublished,
         status: formIsPublished ? 'معتمد ومُعلن' : 'مسودة',
       });
+      if (ok === false) return;
       setActiveScheduleId(editingSchedule.id);
     } else {
       // Create
-      const created = addExamSchedule({
+      const created = await addExamSchedule({
         title: formTitle.trim(),
         termType: formTermType,
         gradeLevels: formGradeLevels,
@@ -438,7 +439,7 @@ export const OfficialExamSchedulesManager: React.FC<OfficialExamSchedulesManager
   };
 
   // Delete Action
-  const handleDeleteSchedule = () => {
+  const handleDeleteSchedule = async () => {
     if (!deleteConfirmSchedule) return;
     if (!canManage) {
       setPermissionNotice('عذراً، صلاحية الحذف محصورة بالسيدة المديرة وإدارة المدرسة فقط.');
@@ -446,7 +447,8 @@ export const OfficialExamSchedulesManager: React.FC<OfficialExamSchedulesManager
       return;
     }
 
-    deleteExamSchedule(deleteConfirmSchedule.id);
+    const ok = await deleteExamSchedule(deleteConfirmSchedule.id);
+    if (ok === false) return;
     setDeleteConfirmSchedule(null);
     if (activeScheduleId === deleteConfirmSchedule.id) {
       setActiveScheduleId(null);

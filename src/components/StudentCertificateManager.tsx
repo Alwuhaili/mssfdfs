@@ -286,6 +286,7 @@ export const StudentCertificateManager: React.FC = () => {
     currentUser,
     updateCertificate,
     updateSubjectGrade,
+    commitCertificate,
     recalculateCertificate,
     addStudentCertificate,
     deleteCertificate,
@@ -420,12 +421,13 @@ export const StudentCertificateManager: React.FC = () => {
     setIsDeleteModalOpen(true);
   };
 
-  const handleConfirmDelete = () => {
+  const handleConfirmDelete = async () => {
     if (!deleteTarget) return;
     let feedback = '';
     if (deleteTarget.type === 'single' && deleteTarget.certificate) {
       const cert = deleteTarget.certificate;
-      deleteCertificate(cert.id);
+      const deleted = await deleteCertificate(cert.id);
+      if (!deleted) { setDeleteFeedbackToast('تعذر حذف الشهادة من قاعدة البيانات.'); return; }
       setSelectedCertIds((prev) => prev.filter((id) => id !== cert.id));
       if (selectedCertId === cert.id) {
         const remaining = certificates.filter((c) => c.id !== cert.id);
@@ -434,7 +436,8 @@ export const StudentCertificateManager: React.FC = () => {
       feedback = `تم حذف شهادة الطالبة (${cert.studentName}) بنجاح.`;
     } else if (deleteTarget.type === 'bulk' && deleteTarget.certIds) {
       const ids = deleteTarget.certIds;
-      deleteMultipleCertificates(ids);
+      const deleted = await deleteMultipleCertificates(ids);
+      if (!deleted) { setDeleteFeedbackToast('تعذر حذف الشهادات من قاعدة البيانات.'); return; }
       setSelectedCertIds((prev) => prev.filter((id) => !ids.includes(id)));
       if (selectedCertId && ids.includes(selectedCertId)) {
         const remaining = certificates.filter((c) => !ids.includes(c.id));
@@ -442,7 +445,8 @@ export const StudentCertificateManager: React.FC = () => {
       }
       feedback = `تم حذف (${ids.length}) شهادات محددة بنجاح.`;
     } else if (deleteTarget.type === 'scope') {
-      clearAllCertificates();
+      const deleted = await clearAllCertificates();
+      if (!deleted) { setDeleteFeedbackToast('تعذر مسح الشهادات من قاعدة البيانات.'); return; }
       setSelectedCertIds([]);
       setSelectedCertId(null);
       feedback = `تم مسح وتفريغ كافة الشهادات المدرسية بنجاح.`;
@@ -864,9 +868,10 @@ export const StudentCertificateManager: React.FC = () => {
     setIsBulkDownloadModalOpen(false);
   };
 
-  const handleCreateCertificate = () => {
+  const handleCreateCertificate = async () => {
     if (!selectedStudentForCert) return;
-    addStudentCertificate(selectedStudentForCert, isCreateBlankForSingle);
+    const saved = await addStudentCertificate(selectedStudentForCert, isCreateBlankForSingle);
+    if (!saved) { setDeleteFeedbackToast('تعذر حفظ الشهادة في قاعدة البيانات.'); return; }
     setIsAddModalOpen(false);
     setSelectedStudentForCert('');
   };
@@ -2041,11 +2046,14 @@ export const StudentCertificateManager: React.FC = () => {
                                   {(role === 'admin' || role === 'teacher') && (
                                     <td className="p-2 text-center">
                                       <button
-                                        onClick={() =>
-                                          setEditingSubject(
-                                            isEditing ? null : { certId: cert.id, subjectId: sub.id }
-                                          )
-                                        }
+                                        onClick={() => {
+                                          if (isEditing) {
+                                            void commitCertificate(cert.id);
+                                            setEditingSubject(null);
+                                          } else {
+                                            setEditingSubject({ certId: cert.id, subjectId: sub.id });
+                                          }
+                                        }}
                                         className={`px-3 py-1 rounded-lg text-xs font-bold transition shadow-xs ${
                                           isEditing
                                             ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
@@ -2090,6 +2098,9 @@ export const StudentCertificateManager: React.FC = () => {
                             type="text"
                             value={cert.notes || ''}
                             onChange={(e) => updateCertificate(cert.id, { notes: e.target.value })}
+                            onBlur={() => {
+                              void commitCertificate(cert.id);
+                            }}
                             placeholder="اكتب أي ملاحظة خاصة بالطالبة..."
                             className="flex-1 px-3 py-1 border border-slate-200 rounded-lg text-xs focus:ring-1 focus:ring-indigo-500"
                           />

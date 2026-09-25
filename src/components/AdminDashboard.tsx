@@ -2140,11 +2140,12 @@ export const AdminDashboard: React.FC<{ activeTab: string }> = ({ activeTab }) =
                 {lang === 'ar' ? 'إلغاء' : 'Cancel'}
               </button>
               <button
-                onClick={() => {
-                  if (userToDelete.type === 'teacher') deleteTeacher(userToDelete.id);
-                  if (userToDelete.type === 'student') deleteStudent(userToDelete.id);
+                onClick={async () => {
+                  let ok = true;
+                  if (userToDelete.type === 'teacher') ok = await deleteTeacher(userToDelete.id);
+                  if (userToDelete.type === 'student') ok = await deleteStudent(userToDelete.id);
                   if (userToDelete.type === 'parent') deleteParent(userToDelete.id);
-                  setUserToDelete(null);
+                  if (ok) setUserToDelete(null);
                 }}
                 className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-md shadow-rose-600/20 flex items-center gap-1.5"
               >

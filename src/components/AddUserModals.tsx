@@ -245,11 +245,11 @@ export const AddStudentModal: React.FC<AddStudentModalProps> = ({ isOpen, onClos
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name || !parentName || !parentPhone) return;
 
-    addStudent({
+    const saved = await addStudent({
       name,
       nationalId: nationalId || `${Math.floor(1000000000 + Math.random() * 9000000000)}`,
       phone: studentPhone || undefined,
@@ -262,6 +262,7 @@ export const AddStudentModal: React.FC<AddStudentModalProps> = ({ isOpen, onClos
       gpa: parseFloat(gpa) || 98.0,
       enrollmentYear: enrollmentYear.trim() || '2026',
     });
+    if (!saved) return;
 
     onClose();
     setName('');

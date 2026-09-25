@@ -261,7 +261,7 @@ export const NotificationModal: React.FC<{ isOpen: boolean; onClose: () => void 
     });
   };
 
-  const handleSendNotification = (e: React.FormEvent) => {
+  const handleSendNotification = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim() || !message.trim()) return;
 
@@ -349,7 +349,7 @@ export const NotificationModal: React.FC<{ isOpen: boolean; onClose: () => void 
         ? activeTeacherObj?.name || 'أستاذة المادة الدراسية'
         : 'المشرف التربوي');
 
-    const created = addNotification({
+    const created = await addNotification({
       title,
       message,
       type,

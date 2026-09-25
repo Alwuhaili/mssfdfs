@@ -141,12 +141,13 @@ export const AcademicCalendarWidget: React.FC<{ compact?: boolean }> = ({ compac
     setIsModalOpen(true);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.title.trim() || !formData.date) return;
 
+    let ok = true;
     if (editingEvent) {
-      updateCalendarEvent(editingEvent.id, {
+      ok = await updateCalendarEvent(editingEvent.id, {
         title: formData.title.trim(),
         description: formData.description.trim(),
         date: formData.date,
@@ -157,7 +158,7 @@ export const AcademicCalendarWidget: React.FC<{ compact?: boolean }> = ({ compac
         isImportant: formData.isImportant,
       });
     } else {
-      addCalendarEvent({
+      ok = await addCalendarEvent({
         title: formData.title.trim(),
         description: formData.description.trim(),
         date: formData.date,
@@ -168,6 +169,7 @@ export const AcademicCalendarWidget: React.FC<{ compact?: boolean }> = ({ compac
         isImportant: formData.isImportant,
       });
     }
+    if (ok === false) return;
 
     setIsModalOpen(false);
   };

@@ -5,8 +5,10 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { assertUniqueIdentity, stableUsername, type IdentityRecord } from '../utils/identityPolicy';
 import { centralSyncService, SCHOOL_ADMIN_DATA_SYNC_KEY } from '../services/syncService';
-import { publishPublicSchoolInfo, initializePublicSchoolInfoFromAuthoritative, initializePublicFacultyFromAuthoritative, initializePublicHonorBoardFromAuthoritative, publishPublicFaculty, publishPublicHonorBoard } from '../services/publicHomepageService';
+import { publishPublicSchoolInfo, publishPublicNews, publishPublicGallery, initializePublicSchoolInfoFromAuthoritative, initializePublicFacultyFromAuthoritative, initializePublicHonorBoardFromAuthoritative, publishPublicFaculty, publishPublicHonorBoard } from '../services/publicHomepageService';
 import { buildPublicHonorBoard, HONOR_ROLL_DEMO_NAMES } from '../utils/publicHomepageFacultyHonor';
+import { schoolAdminPatchTouchesPublicHomepage } from '../utils/publicHomepageProjection';
+import { planCollectionPersistence } from '../utils/explicitPersistence';
 import { buildTimetableAcademicSnapshot, timetableAcademicSnapshotEquals } from '../utils/timetableSettings';
 import {
   activePersistenceWriteCount,
@@ -94,7 +96,6 @@ import {
   INITIAL_ATTENDANCE,
   INITIAL_ANNOUNCEMENTS,
   INITIAL_MESSAGES,
-  INITIAL_LECTURES,
   INITIAL_TIMETABLE,
   INITIAL_SUBJECT_QUOTAS,
   INITIAL_FINANCIAL,
@@ -106,7 +107,15 @@ import {
   INITIAL_SUPERVISORS,
 } from '../data/initialData';
 import { INITIAL_AUDIT_LOGS } from '../data/initialAuditLogs';
-import { ALL_IRAQI_CURRICULUM_BOOKS } from '../data/iraqiCurriculumBooks';
+import { canManageLibraryResource, applyManagedLibraryResourceUpdate } from '../utils/libraryResourceAccess';
+import {
+  clearLibraryResourceSuppression,
+  filterRuntimeLibraryResources,
+  hydrateLibraryDeletionGuard,
+  isLibraryResourceSuppressed,
+  suppressLibraryResourceId,
+} from '../utils/libraryDeletionGuard';
+import { deleteLibraryFile } from '../services/storageService';
 import { INITIAL_CHALLENGES } from '../data/challengesData';
 import { DEFAULT_ANNUAL_PLANS, DEFAULT_DAILY_LESSON_PLANS } from '../data/initialCurriculumPlans';
 import { INITIAL_EXAM_SCHEDULES } from '../data/initialExamSchedules';
@@ -166,7 +175,7 @@ interface AppContextType {
     academicYearTo?: string;
     overrides?: Record<string, 'pass' | 'fail'>;
     autoAddGraduatesToHome?: boolean;
-  }) => { promotedCount: number; graduatedCount: number; retainedCount: number };
+  }) => Promise<{ promotedCount: number; graduatedCount: number; retainedCount: number }>;
   exams: Exam[];
   submissions: ExamSubmission[];
   attendance: AttendanceRecord[];
@@ -196,12 +205,14 @@ interface AppContextType {
   upsertAccelerationAttempt: (attempt: AccelerationAttempt) => Promise<boolean>;
   calendarEvents: CalendarEvent[];
   schoolAdminData: SchoolAdminData;
-  updateSchoolAdminData: (updated: Partial<SchoolAdminData>) => void;
+  updateSchoolAdminData: (updated: Partial<SchoolAdminData>) => Promise<boolean>;
+  persistPublicHomepageNews: (list: unknown) => Promise<boolean>;
+  persistPublicHomepageGallery: (list: unknown) => Promise<boolean>;
 
   // Calendar Event Actions
-  addCalendarEvent: (event: Omit<CalendarEvent, 'id'>) => void;
-  updateCalendarEvent: (id: string, updated: Partial<CalendarEvent>) => void;
-  deleteCalendarEvent: (id: string) => void;
+  addCalendarEvent: (event: Omit<CalendarEvent, 'id'>) => Promise<boolean>;
+  updateCalendarEvent: (id: string, updated: Partial<CalendarEvent>) => Promise<boolean>;
+  deleteCalendarEvent: (id: string) => Promise<boolean>;
 
   // Certificates & Grade Management Actions
   decisionSettings: MinistryDecisionSettings;
@@ -211,21 +222,22 @@ interface AppContextType {
   applySubjectDecisionMarks: (certificateId: string, subjectId: string, decisionMarks: number) => void;
   autoOptimizeDecisionMarksForCert: (certificateId: string) => void;
   resetDecisionMarksForCert: (certificateId: string) => void;
-  updateCertificate: (id: string, updated: Partial<StudentCertificate>) => void;
+  updateCertificate: (id: string, updated: Partial<StudentCertificate>, persist?: boolean) => void;
   updateSubjectGrade: (certificateId: string, subjectId: string, updated: Partial<SubjectGrade>) => void;
-  batchUpdateStudentGrades: (certificateId: string, updatedSubjects: SubjectGrade[]) => void;
+  batchUpdateStudentGrades: (certificateId: string, updatedSubjects: SubjectGrade[]) => Promise<boolean>;
+  commitCertificate: (certificateId: string) => Promise<boolean>;
   recalculateCertificate: (certificateId: string) => void;
-  addStudentCertificate: (studentId: string, isBlank?: boolean) => void;
-  issueCertificatesForScope: (options: IssueCertificatesOptions) => { totalGenerated: number; skippedCount: number; message: string };
-  deleteCertificate: (id: string) => void;
-  deleteMultipleCertificates: (ids: string[]) => void;
+  addStudentCertificate: (studentId: string, isBlank?: boolean) => Promise<boolean>;
+  issueCertificatesForScope: (options: IssueCertificatesOptions) => Promise<{ totalGenerated: number; skippedCount: number; message: string }>;
+  deleteCertificate: (id: string) => Promise<boolean>;
+  deleteMultipleCertificates: (ids: string[]) => Promise<boolean>;
   deleteCertificatesForScope: (options: {
     scope: 'all' | 'grade' | 'section' | 'student';
     gradeLevel?: GradeLevel;
     section?: string;
     studentId?: string;
-  }) => { deletedCount: number; message: string };
-  clearAllCertificates: () => void;
+  }) => Promise<{ deletedCount: number; message: string }>;
+  clearAllCertificates: () => Promise<boolean>;
   
   userPasscodes: Record<string, string>;
   getUserPasscode: (userKey: string, fallbackRole?: UserRole) => string;
@@ -261,7 +273,7 @@ interface AppContextType {
   updateTeacher: (id: string, updated: Partial<Teacher>) => Promise<boolean>;
   deleteTeacher: (id: string) => Promise<boolean>;
   updateStudent: (id: string, updated: Partial<Student>) => Promise<boolean>;
-  deleteStudent: (id: string) => void;
+  deleteStudent: (id: string) => Promise<boolean>;
   updateParent: (id: string, updated: Partial<Parent>) => void;
   deleteParent: (id: string) => void;
   addSupervisor: (supervisor: Omit<EducationalSupervisor, 'id' | 'joinedDate'> & { joinedDate?: string }) => void;
@@ -280,21 +292,21 @@ interface AppContextType {
   deleteFinancialRecord: (id: string) => void;
 
   // Timetable Actions
-  updateTimetableSlot: (id: string, updated: Partial<TimetableSlot>) => void;
-  addTimetableSlot: (slot: Omit<TimetableSlot, 'id'>) => void;
-  deleteTimetableSlot: (id: string) => void;
-  saveFullTimetable: (slots: TimetableSlot[]) => void;
+  updateTimetableSlot: (id: string, updated: Partial<TimetableSlot>) => Promise<boolean>;
+  addTimetableSlot: (slot: Omit<TimetableSlot, 'id'>) => Promise<boolean>;
+  deleteTimetableSlot: (id: string) => Promise<boolean>;
+  saveFullTimetable: (slots: TimetableSlot[]) => Promise<boolean>;
 
   // Grade Subject Quotas Actions
   subjectQuotas: GradeSubjectQuota[];
-  updateSubjectQuota: (id: string, updated: Partial<GradeSubjectQuota>) => void;
-  addSubjectQuota: (quota: Omit<GradeSubjectQuota, 'id'>) => void;
-  deleteSubjectQuota: (id: string) => void;
-  saveSubjectQuotas: (quotas: GradeSubjectQuota[]) => void;
+  updateSubjectQuota: (id: string, updated: Partial<GradeSubjectQuota>) => Promise<boolean>;
+  addSubjectQuota: (quota: Omit<GradeSubjectQuota, 'id'>) => Promise<boolean>;
+  deleteSubjectQuota: (id: string) => Promise<boolean>;
+  saveSubjectQuotas: (quotas: GradeSubjectQuota[]) => Promise<boolean>;
 
   // Actions
   addTeacher: (teacher: Omit<Teacher, 'id' | 'status' | 'joinedDate'>) => Promise<boolean>;
-  addStudent: (student: Omit<Student, 'id' | 'status' | 'enrollmentYear'> & { enrollmentYear?: string }) => void;
+  addStudent: (student: Omit<Student, 'id' | 'status' | 'enrollmentYear'> & { enrollmentYear?: string }) => Promise<boolean>;
   createExam: (exam: Omit<Exam, 'id' | 'createdAt'>) => void;
   updateExam: (id: string, updated: Partial<Exam>) => void;
   deleteExam: (id: string) => void;
@@ -315,8 +327,8 @@ interface AppContextType {
   undoAccidentalAbsence: (
     recordId: string,
     options?: { reason?: string; deleteRecordInstead?: boolean; notifyParent?: boolean; undoneBy?: string }
-  ) => { success: boolean; message: string };
-  batchUndoAccidentalAbsences: (recordIds: string[], reason?: string) => { successCount: number; message: string };
+  ) => Promise<{ success: boolean; message: string }>;
+  batchUndoAccidentalAbsences: (recordIds: string[], reason?: string) => Promise<{ successCount: number; message: string }>;
   undoStudentAbsenceDays: (
     studentId: string,
     daysToUndo: number,
@@ -343,11 +355,11 @@ interface AppContextType {
   toggleStarMessage: (id: string, userId?: string) => void;
   emptySpamFolder: (userId?: string) => void;
   emptyTrashFolder: (userId?: string) => void;
-  addLecture: (lec: Omit<LectureResource, 'id' | 'uploadedAt'>) => void;
-  deleteLecture: (id: string) => void;
-  updateLecture: (id: string, data: Partial<LectureResource>) => void;
+  addLecture: (lec: Omit<LectureResource, 'id' | 'uploadedAt'>, options?: { resourceId?: string }) => Promise<LectureResource>;
+  deleteLecture: (id: string) => Promise<boolean>;
+  updateLecture: (id: string, data: Partial<LectureResource>) => Promise<boolean>;
   recordLectureDownload: (id: string) => void;
-  addNotification: (notif: Omit<NotificationItem, 'id' | 'createdAt'> & { id?: string }) => boolean;
+  addNotification: (notif: Omit<NotificationItem, 'id' | 'createdAt'> & { id?: string }) => Promise<boolean>;
   deleteNotification: (id: string, explicitUserId?: string) => void;
   updateNotification: (
     id: string,
@@ -377,9 +389,9 @@ interface AppContextType {
   // Interactive Games, Challenges & Competitions
   challenges: InteractiveChallenge[];
   canUserManageChallenge: (challenge: InteractiveChallenge) => boolean;
-  addChallenge: (challenge: Omit<InteractiveChallenge, 'id'>) => void;
-  updateChallenge: (id: string, updated: Partial<InteractiveChallenge>) => void;
-  deleteChallenge: (id: string) => void;
+  addChallenge: (challenge: Omit<InteractiveChallenge, 'id'>) => Promise<boolean>;
+  updateChallenge: (id: string, updated: Partial<InteractiveChallenge>) => Promise<boolean>;
+  deleteChallenge: (id: string) => Promise<boolean>;
   addQuestionToChallenge: (challengeId: string, question: Omit<ChallengeQuestion, 'id'>) => void;
   updateQuestionInChallenge: (challengeId: string, questionId: string, question: Partial<ChallengeQuestion>) => void;
   deleteQuestionFromChallenge: (challengeId: string, questionId: string) => void;
@@ -437,23 +449,23 @@ interface AppContextType {
   // Annual Curriculum Plans & Daily Lesson Preparation (الخطط السنوية واليومية)
   annualPlans: AnnualPlan[];
   dailyLessonPlans: DailyLessonPlan[];
-  addAnnualPlan: (plan: Omit<AnnualPlan, 'id' | 'createdAt' | 'updatedAt'>) => AnnualPlan;
-  updateAnnualPlan: (id: string, updated: Partial<AnnualPlan>) => void;
-  deleteAnnualPlan: (id: string) => void;
+  addAnnualPlan: (plan: Omit<AnnualPlan, 'id' | 'createdAt' | 'updatedAt'>) => Promise<AnnualPlan>;
+  updateAnnualPlan: (id: string, updated: Partial<AnnualPlan>) => Promise<boolean>;
+  deleteAnnualPlan: (id: string) => Promise<boolean>;
   duplicateAnnualPlan: (id: string) => void;
   toggleAnnualTopicCompletion: (planId: string, semesterId: string, monthId: string, weekId: string) => void;
   approveAnnualPlan: (id: string, notes?: string, approverRole?: string, approverName?: string) => void;
-  addDailyLessonPlan: (plan: Omit<DailyLessonPlan, 'id' | 'createdAt' | 'updatedAt'>) => DailyLessonPlan;
-  updateDailyLessonPlan: (id: string, updated: Partial<DailyLessonPlan>) => void;
-  deleteDailyLessonPlan: (id: string) => void;
+  addDailyLessonPlan: (plan: Omit<DailyLessonPlan, 'id' | 'createdAt' | 'updatedAt'>) => Promise<DailyLessonPlan>;
+  updateDailyLessonPlan: (id: string, updated: Partial<DailyLessonPlan>) => Promise<boolean>;
+  deleteDailyLessonPlan: (id: string) => Promise<boolean>;
   duplicateDailyLessonPlan: (id: string) => void;
   approveDailyLessonPlan: (id: string, notes?: string, reviewerRole?: string, reviewerName?: string) => void;
 
   // Official Exam Schedules (جداول الامتحانات الرسمية - صلاحيات المديرة والإدارة)
   examSchedules: ExamSchedule[];
-  addExamSchedule: (schedule: Omit<ExamSchedule, 'id' | 'createdAt' | 'updatedAt'>) => ExamSchedule;
-  updateExamSchedule: (id: string, updated: Partial<ExamSchedule>) => void;
-  deleteExamSchedule: (id: string) => void;
+  addExamSchedule: (schedule: Omit<ExamSchedule, 'id' | 'createdAt' | 'updatedAt'>) => Promise<ExamSchedule>;
+  updateExamSchedule: (id: string, updated: Partial<ExamSchedule>) => Promise<boolean>;
+  deleteExamSchedule: (id: string) => Promise<boolean>;
   duplicateExamSchedule: (id: string) => void;
   toggleExamSchedulePublish: (id: string) => void;
 
@@ -1048,11 +1060,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [deletedLectureIds, setDeletedLectureIds] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('maysan_deleted_lecture_ids_v1');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        hydrateLibraryDeletionGuard(parsed);
+        return parsed;
+      }
     } catch (e) {
       console.error('Failed to parse deleted lecture IDs', e);
     }
-    return initialStored?.deletedLectureIds || [];
+    const initialDeleted = initialStored?.deletedLectureIds || [];
+    hydrateLibraryDeletionGuard(initialDeleted);
+    return initialDeleted;
   });
 
   const [lectures, setLectures] = useState<LectureResource[]>(() => {
@@ -1068,35 +1086,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (initialStored?.deletedLectureIds && Array.isArray(initialStored.deletedLectureIds)) {
       initialStored.deletedLectureIds.forEach((id: string) => deletedIds.add(id));
     }
-
-    const raw: LectureResource[] = (initialStored?.lectures || INITIAL_LECTURES).filter(
-      (l) => !deletedIds.has(l.id)
-    );
-    // Map authoritative official Iraqi curriculum books
-    const bookMap = new Map<string, LectureResource>();
-    ALL_IRAQI_CURRICULUM_BOOKS.forEach((b) => {
-      if (!deletedIds.has(b.id)) {
-        bookMap.set(b.id, b);
-      }
-    });
-
-    // Update existing entries with official books
-    const cleanedRaw = raw.map((lec) => {
-      if (bookMap.has(lec.id)) {
-        return bookMap.get(lec.id)!;
-      }
-      return lec;
-    });
-
-    // Make sure all books from ALL_IRAQI_CURRICULUM_BOOKS are present EXCEPT deleted ones
-    const existingIds = new Set(cleanedRaw.map((l) => l.id));
-    ALL_IRAQI_CURRICULUM_BOOKS.forEach((b) => {
-      if (!existingIds.has(b.id) && !deletedIds.has(b.id)) {
-        cleanedRaw.push(b);
-      }
-    });
-
-    return cleanedRaw;
+    hydrateLibraryDeletionGuard([...deletedIds]);
+    return filterRuntimeLibraryResources(
+      Array.isArray(initialStored?.lectures) ? initialStored.lectures : []
+    ).filter((row) => !deletedIds.has(row.id));
   });
   const [timetable, setTimetable] = useState<TimetableSlot[]>(() => {
     if (initialStored?.timetable && Array.isArray(initialStored.timetable) && initialStored.timetable.length > 0) {
@@ -1243,6 +1236,84 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const blockedSyncResult = { success: false, message: 'logout-in-progress' };
 
+  const syncSourceUser = () => ({
+    id: currentUser?.id || role,
+    name: currentUser?.name || (role === 'admin' ? 'المديرة العامة' : role),
+    role,
+  });
+
+  const persistCollectionDoc = async (key: string, id: string, item: any, baseItem?: any): Promise<boolean> => {
+    if (key === 'lectures' && isLibraryResourceSuppressed(id)) {
+      return true;
+    }
+    return runTrackedPersistenceWrite(async () => {
+      const res = await centralSyncService.upsertCollectionDocument(key, id, item, baseItem, syncSourceUser());
+      return res.success === true;
+    }, false);
+  };
+
+  const deleteCollectionDoc = async (key: string, id: string): Promise<boolean> => {
+    return runTrackedPersistenceWrite(async () => {
+      const res = await centralSyncService.deleteCollectionDocument(key, id, syncSourceUser());
+      return res.success === true;
+    }, false);
+  };
+
+  const persistChangedCollectionDocs = async (
+    key: string,
+    previous: Array<{ id: string }>,
+    next: Array<{ id: string }>,
+    includeDeletes = false
+  ): Promise<boolean> => {
+    const plan = planCollectionPersistence(previous, next, { includeDeletes });
+    const prevMap = new Map(previous.map((item) => [item.id, item]));
+    const results = await Promise.all([
+      ...plan.upserts.map((item) => persistCollectionDoc(key, item.id, item, prevMap.get(item.id))),
+      ...plan.deletes.map((id) => deleteCollectionDoc(key, id)),
+    ]);
+    return results.every(Boolean);
+  };
+
+  const persistEntityFromArray = async (
+    key: string,
+    previous: Array<{ id: string }>,
+    next: Array<{ id: string }>,
+    id: string
+  ): Promise<boolean> => {
+    const before = previous.find((item) => item.id === id);
+    const after = next.find((item) => item.id === id);
+    if (!after) return false;
+    return persistCollectionDoc(key, id, after, before);
+  };
+
+  const commitEntityArrayUpdate = async <T extends { id: string }>(
+    key: string,
+    current: T[],
+    setState: React.Dispatch<React.SetStateAction<T[]>>,
+    id: string,
+    updater: (previous: T[]) => T[]
+  ): Promise<boolean> => {
+    const next = updater(current);
+    const ok = await persistEntityFromArray(key, current, next, id);
+    if (!ok) return false;
+    setState(next);
+    return true;
+  };
+
+  const commitChangedCollectionUpdate = async <T extends { id: string }>(
+    key: string,
+    current: T[],
+    setState: React.Dispatch<React.SetStateAction<T[]>>,
+    updater: (previous: T[]) => T[],
+    includeDeletes = false
+  ): Promise<boolean> => {
+    const next = updater(current);
+    const ok = await persistChangedCollectionDocs(key, current, next, includeDeletes);
+    if (!ok) return false;
+    setState(next);
+    return true;
+  };
+
   const beginPendingSyncMutation = (key: string): number => {
     const token = pendingSyncMutationGenerationRef.current + 1;
     pendingSyncMutationGenerationRef.current = token;
@@ -1309,7 +1380,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const requireLessonPlanCreateAuthority = (): boolean => lessonPlanIsAdmin || (lessonPlanIsTeacher && Boolean(lessonPlanTeacherId));
 
   // Curriculum Plan Actions (Annual & Daily)
-  const addAnnualPlan = (plan: Omit<AnnualPlan, 'id' | 'createdAt' | 'updatedAt'>): AnnualPlan => {
+  const addAnnualPlan = async (plan: Omit<AnnualPlan, 'id' | 'createdAt' | 'updatedAt'>): Promise<AnnualPlan> => {
     if (!requireLessonPlanCreateAuthority()) throw new Error('Unauthorized annual lesson plan creation');
     const securedPlan = lessonPlanIsTeacher ? { ...plan, teacherId: lessonPlanTeacherId, teacherName: lessonPlanTeacherName, createdBy: lessonPlanTeacherId } : plan;
     const newPlan: AnnualPlan = {
@@ -1318,6 +1389,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: new Date().toISOString().split('T')[0],
       updatedAt: new Date().toISOString().split('T')[0],
     };
+    const persisted = await persistCollectionDoc('annualPlans', newPlan.id, newPlan);
+    if (!persisted) throw new Error('تعذر حفظ الخطة السنوية في قاعدة البيانات.');
     setAnnualPlans((prev) => [newPlan, ...prev]);
     addAuditLog({
       action: 'إعداد خطة سنوية جديدة',
@@ -1331,17 +1404,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return newPlan;
   };
 
-  const updateAnnualPlan = (id: string, updated: Partial<AnnualPlan>) => {
+  const updateAnnualPlan = async (id: string, updated: Partial<AnnualPlan>) => {
     const target = annualPlans.find((p) => p.id === id);
     if (!target || !canManageLessonPlan(target)) return;
     const securedUpdated = lessonPlanIsTeacher ? { ...updated, teacherId: target.teacherId, teacherName: target.teacherName, createdBy: target.createdBy, status: target.status, approvedBy: target.approvedBy, approvedAt: target.approvedAt, approvalNotes: target.approvalNotes, supervisorNotes: target.supervisorNotes, supervisorName: target.supervisorName, supervisorSignedAt: target.supervisorSignedAt } : updated;
-    setAnnualPlans((prev) =>
-      prev.map((p) =>
+    const committed = await commitEntityArrayUpdate('annualPlans', annualPlans, setAnnualPlans, id, (prev) => {
+      const next = prev.map((p) =>
         p.id === id
           ? { ...p, ...securedUpdated, updatedAt: new Date().toISOString().split('T')[0] }
           : p
-      )
-    );
+      );
+      return next;
+    });
+    if (!committed) return false;
     addAuditLog({
       action: 'تحديث الخطة السنوية',
       actionType: 'update',
@@ -1352,9 +1427,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const deleteAnnualPlan = (id: string) => {
+  const deleteAnnualPlan = async (id: string) => {
     const target = annualPlans.find((p) => p.id === id);
     if (!target || !canManageLessonPlan(target)) return;
+    const persisted = await deleteCollectionDoc('annualPlans', id);
+    if (!persisted) return false;
+
     setAnnualPlans((prev) => {
       const next = prev.filter((p) => p.id !== id);
       try {
@@ -1372,9 +1450,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       details: `تم الحذف النهائي للخطة السنوية رقم (${id}) من سجلات النظام`,
       severity: 'warning',
     });
+    return true;
   };
 
-  const duplicateAnnualPlan = (id: string) => {
+  const duplicateAnnualPlan = async (id: string) => {
     const target = annualPlans.find((p) => p.id === id);
     if (!target || !canManageLessonPlan(target)) return;
     const duplicated: AnnualPlan = {
@@ -1407,6 +1486,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         })),
       })),
     };
+    const persisted = await persistCollectionDoc('annualPlans', duplicated.id, duplicated);
+    if (!persisted) return false;
     setAnnualPlans((prev) => [duplicated, ...prev]);
     addAuditLog({
       action: 'تكرار / استنساخ خطة سنوية',
@@ -1418,7 +1499,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const toggleAnnualTopicCompletion = (
+  const toggleAnnualTopicCompletion = async (
     planId: string,
     semesterId: string,
     monthId: string,
@@ -1426,8 +1507,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ) => {
     const target = annualPlans.find((p) => p.id === planId);
     if (!target || !canManageLessonPlan(target)) return;
-    setAnnualPlans((prev) =>
-      prev.map((plan) => {
+    const committed = await commitEntityArrayUpdate('annualPlans', annualPlans, setAnnualPlans, planId, (prev) => {
+      const next = prev.map((plan) => {
         if (plan.id !== planId) return plan;
         return {
           ...plan,
@@ -1454,11 +1535,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             };
           }),
         };
-      })
-    );
+      });
+      return next;
+    });
+    if (!committed) return false;
   };
 
-  const approveAnnualPlan = (
+  const approveAnnualPlan = async (
     id: string,
     notes?: string,
     approverRole?: string,
@@ -1471,8 +1554,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       currentUser?.name ||
       (isSupervisor ? 'المشرف التربوي الاختصاصي' : schoolAdminData.principalName || 'إدارة المدرسة');
 
-    setAnnualPlans((prev) =>
-      prev.map((plan) => {
+    const committed = await commitEntityArrayUpdate('annualPlans', annualPlans, setAnnualPlans, id, (prev) => {
+      const next = prev.map((plan) => {
         if (plan.id !== id) return plan;
         if (isSupervisor) {
           return {
@@ -1485,15 +1568,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         } else {
           return {
             ...plan,
-            status: 'approved',
+            status: 'approved' as const,
             approvalNotes: notes || plan.approvalNotes || 'تمت المصادقة والاعتماد من قبل إدارة المدرسة',
             approvedBy: finalApproverName,
             approvedAt: new Date().toISOString().split('T')[0],
             updatedAt: new Date().toISOString().split('T')[0],
           };
         }
-      })
-    );
+      });
+      return next;
+    });
+    if (!committed) return false;
 
     addAuditLog({
       action: isSupervisor ? 'المصادقة الإشرافية على الخطة السنوية' : 'اعتماد الخطة السنوية من الإدارة',
@@ -1506,9 +1591,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Daily Lesson Plan Actions
-  const addDailyLessonPlan = (
+  const addDailyLessonPlan = async (
     plan: Omit<DailyLessonPlan, 'id' | 'createdAt' | 'updatedAt'>
-  ): DailyLessonPlan => {
+  ): Promise<DailyLessonPlan> => {
     if (!requireLessonPlanCreateAuthority()) throw new Error('Unauthorized daily lesson plan creation');
     const securedPlan = lessonPlanIsTeacher ? { ...plan, teacherId: lessonPlanTeacherId, teacherName: lessonPlanTeacherName, createdBy: lessonPlanTeacherId } : plan;
     const newPlan: DailyLessonPlan = {
@@ -1517,6 +1602,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: new Date().toISOString().split('T')[0],
       updatedAt: new Date().toISOString().split('T')[0],
     };
+    const persisted = await persistCollectionDoc('dailyLessonPlans', newPlan.id, newPlan);
+    if (!persisted) throw new Error('تعذر حفظ خطة الدرس في قاعدة البيانات.');
     setDailyLessonPlans((prev) => [newPlan, ...prev]);
     addAuditLog({
       action: 'إعداد خطة درس يومية جديدة',
@@ -1530,17 +1617,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return newPlan;
   };
 
-  const updateDailyLessonPlan = (id: string, updated: Partial<DailyLessonPlan>) => {
+  const updateDailyLessonPlan = async (id: string, updated: Partial<DailyLessonPlan>) => {
     const target = dailyLessonPlans.find((p) => p.id === id);
     if (!target || !canManageLessonPlan(target)) return;
     const securedUpdated = lessonPlanIsTeacher ? { ...updated, teacherId: target.teacherId, teacherName: target.teacherName, createdBy: target.createdBy, status: target.status, principalNotes: target.principalNotes, principalName: target.principalName, supervisorNotes: target.supervisorNotes, supervisorName: target.supervisorName, reviewedAt: target.reviewedAt } : updated;
-    setDailyLessonPlans((prev) =>
-      prev.map((p) =>
+    const committed = await commitEntityArrayUpdate('dailyLessonPlans', dailyLessonPlans, setDailyLessonPlans, id, (prev) => {
+      const next = prev.map((p) =>
         p.id === id
           ? { ...p, ...securedUpdated, updatedAt: new Date().toISOString().split('T')[0] }
           : p
-      )
-    );
+      );
+      return next;
+    });
+    if (!committed) return false;
     addAuditLog({
       action: 'تحديث الخطة اليومية للدرس',
       actionType: 'update',
@@ -1551,9 +1640,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const deleteDailyLessonPlan = (id: string) => {
+  const deleteDailyLessonPlan = async (id: string) => {
     const target = dailyLessonPlans.find((p) => p.id === id);
     if (!target || !canManageLessonPlan(target)) return;
+    const persisted = await deleteCollectionDoc('dailyLessonPlans', id);
+    if (!persisted) return false;
+
     setDailyLessonPlans((prev) => {
       const next = prev.filter((p) => p.id !== id);
       try {
@@ -1571,9 +1663,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       details: `تم الحذف النهائي لخطة الدرس اليومية رقم (${id}) من سجلات النظام`,
       severity: 'warning',
     });
+    return true;
   };
 
-  const duplicateDailyLessonPlan = (id: string) => {
+  const duplicateDailyLessonPlan = async (id: string) => {
     const target = dailyLessonPlans.find((p) => p.id === id);
     if (!target || !canManageLessonPlan(target)) return;
     const duplicated: DailyLessonPlan = {
@@ -1592,6 +1685,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: new Date().toISOString().split('T')[0],
       updatedAt: new Date().toISOString().split('T')[0],
     };
+    const persisted = await persistCollectionDoc('dailyLessonPlans', duplicated.id, duplicated);
+    if (!persisted) return false;
     setDailyLessonPlans((prev) => [duplicated, ...prev]);
     addAuditLog({
       action: 'تكرار / استنساخ خطة يومية',
@@ -1603,7 +1698,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const approveDailyLessonPlan = (
+  const approveDailyLessonPlan = async (
     id: string,
     notes?: string,
     reviewerRole?: string,
@@ -1616,13 +1711,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       currentUser?.name ||
       (isSupervisor ? 'المشرف التربوي' : schoolAdminData.principalName || 'إدارة المدرسة');
 
-    setDailyLessonPlans((prev) =>
-      prev.map((plan) => {
+    const committed = await commitEntityArrayUpdate('dailyLessonPlans', dailyLessonPlans, setDailyLessonPlans, id, (prev) => {
+      const next = prev.map((plan) => {
         if (plan.id !== id) return plan;
         if (isSupervisor) {
           return {
             ...plan,
-            status: 'reviewed',
+            status: 'reviewed' as const,
             supervisorNotes: notes || plan.supervisorNotes || 'تمت المراجعة والتقييم الإشرافي بنجاح',
             supervisorName: finalReviewerName,
             reviewedAt: new Date().toISOString().split('T')[0],
@@ -1631,15 +1726,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         } else {
           return {
             ...plan,
-            status: 'reviewed',
+            status: 'reviewed' as const,
             principalNotes: notes || plan.principalNotes || 'تحضير يومي ممتاز ومستوفٍ للمعايير التعليمية',
             principalName: finalReviewerName,
             reviewedAt: new Date().toISOString().split('T')[0],
             updatedAt: new Date().toISOString().split('T')[0],
           };
         }
-      })
-    );
+      });
+      return next;
+    });
+    if (!committed) return false;
 
     addAuditLog({
       action: isSupervisor ? 'مراجعة وتقييم إشرافي لخطة الدرس' : 'اعتماد مديرة المدرسة للخطة اليومية',
@@ -1777,40 +1874,47 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const updateSchoolAdminData = (updated: Partial<SchoolAdminData>) => {
-    // SECURITY_SCHOOL_ACCOUNT_ADMIN_ONLY_V1
+  const updateSchoolAdminData = async (updated: Partial<SchoolAdminData>): Promise<boolean> => {
     if (role !== 'admin' || currentUser?.role !== 'admin') {
       console.warn('[SECURITY] Blocked unauthorized school administration update.');
-      return;
+      return false;
     }
-    // SCHOOL_ADMIN_DATA_DEDICATED_WRITE_V2
     if (!isInitialHydrationDone.current) {
       console.warn('[SCHOOL_ADMIN_DATA_DEDICATED_WRITE_V2] Blocked schoolAdminData write before hydration.');
-      return;
+      return false;
     }
     const sourceUser = { id: currentUser?.id || role, name: currentUser?.name || role, role };
     const mutationToken = beginPendingSyncMutation(SCHOOL_ADMIN_DATA_SYNC_KEY);
     const nextPublicSource = { ...schoolAdminData, ...updated };
-    setSchoolAdminData((prev) => ({ ...prev, ...updated }));
-    void runTrackedPersistenceWrite(
-      () => centralSyncService.directObjectMutation(SCHOOL_ADMIN_DATA_SYNC_KEY, updated, sourceUser),
-      false
-    )
-      .then((ok) => {
-        if (ok) {
-          void publishPublicSchoolInfo(nextPublicSource);
+    try {
+      const persisted = await runTrackedPersistenceWrite(async () => {
+        const ok = await centralSyncService.patchSettingFields(
+          SCHOOL_ADMIN_DATA_SYNC_KEY,
+          updated,
+          sourceUser
+        );
+        if (!ok) return false;
+        if (!schoolAdminPatchTouchesPublicHomepage(updated as Record<string, unknown>)) {
+          return true;
         }
-      })
-      .finally(() => {
-        settlePendingSyncMutation(SCHOOL_ADMIN_DATA_SYNC_KEY, mutationToken);
-      });
-    addAuditLog({
-      action: 'تحديث بيانات ورؤية الإدارة المدرسية',
-      actionType: 'settings_change',
-      targetCategory: 'system',
-      details: 'تم تحديث معلومات الإدارة المدرسية واسم المديرة أو الترويسة الرسمية بنجاح',
-      severity: 'info',
-    });
+        return publishPublicSchoolInfo(nextPublicSource);
+      }, false);
+      if (!persisted) return false;
+      setSchoolAdminData((prev) => ({ ...prev, ...updated }));
+      return true;
+    } finally {
+      settlePendingSyncMutation(SCHOOL_ADMIN_DATA_SYNC_KEY, mutationToken);
+    }
+  };
+
+  const persistPublicHomepageNews = async (list: unknown): Promise<boolean> => {
+    if (role !== 'admin' || currentUser?.role !== 'admin') return false;
+    return runTrackedPersistenceWrite(() => publishPublicNews(list as any), false);
+  };
+
+  const persistPublicHomepageGallery = async (list: unknown): Promise<boolean> => {
+    if (role !== 'admin' || currentUser?.role !== 'admin') return false;
+    return runTrackedPersistenceWrite(() => publishPublicGallery(list as any), false);
   };
 
   // SECURITY_MESSAGING_ADMIN_AUTH_UID_PUBLISH_V1_3D6F2C_STAGE0_9
@@ -1887,7 +1991,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => {
       cancelled = true;
     };
-  }, [role, currentUser?.role, currentUser?.authUid, syncHydrationGeneration, teachers]);
+  }, [role, currentUser?.role, currentUser?.authUid, syncHydrationGeneration]);
 
   useEffect(() => {
     if (role !== 'admin' || currentUser?.role !== 'admin') return;
@@ -1927,7 +2031,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => {
       cancelled = true;
     };
-  }, [role, currentUser?.role, currentUser?.authUid, syncHydrationGeneration, students, graduates]);
+  }, [role, currentUser?.role, currentUser?.authUid, syncHydrationGeneration]);
 
   // ─────────────────────────────────────────────────────────────
   // OFFICIAL EXAM SCHEDULES (جداول الامتحانات الرسمية)
@@ -1963,7 +2067,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return true;
   };
 
-  const addExamSchedule = (schedule: Omit<ExamSchedule, 'id' | 'createdAt' | 'updatedAt'>): ExamSchedule => {
+  const addExamSchedule = async (schedule: Omit<ExamSchedule, 'id' | 'createdAt' | 'updatedAt'>): Promise<ExamSchedule> => {
     if (!checkExamScheduleAdminPermission('إنشاء جدول امتحانات جديد')) {
       throw new Error('عذراً، صلاحية إنشاء وتعديل وحذف جداول الامتحانات محصورة بالمديرة وإدارة المدرسة فقط.');
     }
@@ -1977,6 +2081,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updatedAt: new Date().toISOString(),
     };
 
+    const persisted = await persistCollectionDoc('examSchedules', newSchedule.id, newSchedule);
+    if (!persisted) throw new Error('تعذر حفظ جدول الامتحانات في قاعدة البيانات.');
     setExamSchedules((prev) => [newSchedule, ...prev]);
 
     addAuditLog({
@@ -2002,18 +2108,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return newSchedule;
   };
 
-  const updateExamSchedule = (id: string, updated: Partial<ExamSchedule>) => {
+  const updateExamSchedule = async (id: string, updated: Partial<ExamSchedule>) => {
     if (!checkExamScheduleAdminPermission('تعديل جدول امتحانات')) {
       throw new Error('عذراً، صلاحية تعديل جداول الامتحانات محصورة بالمديرة وإدارة المدرسة فقط.');
     }
 
-    setExamSchedules((prev) =>
-      prev.map((sch) =>
+    const committed = await commitEntityArrayUpdate('examSchedules', examSchedules, setExamSchedules, id, (prev) => {
+      const next = prev.map((sch) =>
         sch.id === id
           ? { ...sch, ...updated, updatedAt: new Date().toISOString() }
           : sch
-      )
-    );
+      );
+      return next;
+    });
+    if (!committed) return false;
 
     addAuditLog({
       action: 'تعديل جدول امتحانات رسمي',
@@ -2025,12 +2133,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const deleteExamSchedule = (id: string) => {
+  const deleteExamSchedule = async (id: string) => {
     if (!checkExamScheduleAdminPermission('حذف جدول امتحانات')) {
       throw new Error('عذراً، صلاحية حذف جداول الامتحانات محصورة بالمديرة وإدارة المدرسة فقط.');
     }
 
     const target = examSchedules.find((s) => s.id === id);
+    const persisted = await deleteCollectionDoc('examSchedules', id);
+    if (!persisted) return false;
+
     setExamSchedules((prev) => {
       const next = prev.filter((s) => s.id !== id);
       try {
@@ -2050,9 +2161,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       details: `تم الحذف النهائي لجدول الامتحانات (${target?.title || id}) من سجلات المدرسة بواسطة الإدارة`,
       severity: 'warning',
     });
+    return true;
   };
 
-  const duplicateExamSchedule = (id: string) => {
+  const duplicateExamSchedule = async (id: string) => {
     if (!checkExamScheduleAdminPermission('استنساخ جدول امتحانات')) {
       throw new Error('عذراً، صلاحية استنساخ وتكرار جداول الامتحانات محصورة بالإدارة والمديرة فقط.');
     }
@@ -2076,6 +2188,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })),
     };
 
+    const persisted = await persistCollectionDoc('examSchedules', duplicated.id, duplicated);
+    if (!persisted) return false;
     setExamSchedules((prev) => [duplicated, ...prev]);
 
     addAuditLog({
@@ -2089,16 +2203,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const toggleExamSchedulePublish = (id: string) => {
+  const toggleExamSchedulePublish = async (id: string) => {
     if (!checkExamScheduleAdminPermission('نشر أو حظر جدول امتحانات')) {
       throw new Error('عذراً، اعتماد ونشر الجداول محصور بالإدارة والمديرة فقط.');
     }
 
-    setExamSchedules((prev) =>
-      prev.map((sch) => {
+    const committed = await commitEntityArrayUpdate('examSchedules', examSchedules, setExamSchedules, id, (prev) => {
+      const next = prev.map((sch) => {
         if (sch.id !== id) return sch;
         const nextPublished = !sch.isPublished;
-        const nextStatus = nextPublished ? 'معتمد ومُعلن' : 'مسودة';
+        const nextStatus: ExamSchedule['status'] = nextPublished ? 'معتمد ومُعلن' : 'مسودة';
         const nowStr = new Date().toISOString();
 
         if (nextPublished) {
@@ -2118,8 +2232,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           publishedAt: nextPublished ? nowStr : undefined,
           updatedAt: nowStr,
         };
-      })
-    );
+      });
+      return next;
+    });
+    if (!committed) return false;
   };
 
   // Challenge & Interactive Game Handlers & Ownership Check
@@ -2175,7 +2291,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return false;
   };
 
-  const addChallenge = (newChal: Omit<InteractiveChallenge, 'id'>) => {
+  const addChallenge = async (newChal: Omit<InteractiveChallenge, 'id'>) => {
     const defaultCreatorName = currentUser?.name || currentUser?.teacherObj?.name || 'أستاذة المادة';
     const defaultCreatorId = currentUser?.id || currentUser?.teacherObj?.id || 'tech-current';
     const created: InteractiveChallenge = {
@@ -2186,23 +2302,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       questions: newChal.questions || [],
       participations: newChal.participations || [],
     };
+    const persisted = await persistCollectionDoc('challenges', created.id, created);
+    if (!persisted) return false;
     setChallenges((prev) => [created, ...prev]);
   };
 
-  const updateChallenge = (id: string, updated: Partial<InteractiveChallenge>) => {
-    setChallenges((prev) =>
-      prev.map((c) => {
+  const updateChallenge = async (id: string, updated: Partial<InteractiveChallenge>) => {
+    const committed = await commitEntityArrayUpdate('challenges', challenges, setChallenges, id, (prev) => {
+      const next = prev.map((c) => {
         if (c.id !== id) return c;
         if (!canUserManageChallenge(c)) {
           console.warn(`[Security] Unauthorized edit attempt on challenge ${c.title} by ${currentUser?.name}`);
           return c;
         }
         return { ...c, ...updated };
-      })
-    );
+      });
+      return next;
+    });
+    if (!committed) return false;
   };
 
-  const deleteChallenge = (id: string) => {
+  const deleteChallenge = async (id: string) => {
     const targetChallenge = challenges.find((c) => c.id === id);
     if (targetChallenge && !canUserManageChallenge(targetChallenge)) {
       console.warn(`[Security] Unauthorized delete attempt on challenge ${targetChallenge.title} by ${currentUser?.name}`);
@@ -2212,6 +2332,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const targetTitle = targetChallenge?.title || 'المسابقة / اللعبة';
 
     // 1. Permanently record in deletedChallengeIds
+    const persisted = await deleteCollectionDoc('challenges', id);
+    if (!persisted) return false;
+
     setDeletedChallengeIds((prev) => {
       if (prev.includes(id)) return prev;
       const updated = [...prev, id];
@@ -2234,6 +2357,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       details: `تم حذف المسابقة والتحدي التفاعلي (${targetTitle}) برقم المعرف (${id}) وجميع أسئلته ومشاركاته وسجلاته بشكل دائم ونهائي بواسطة الإدارة المدرسية.`,
       severity: 'warning',
     });
+    return true;
   };
 
   const addQuestionToChallenge = (challengeId: string, question: Omit<ChallengeQuestion, 'id'>) => {
@@ -2470,22 +2594,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Calendar Event Handlers
-  const addCalendarEvent = (newEvent: Omit<CalendarEvent, 'id'>) => {
+  const addCalendarEvent = async (newEvent: Omit<CalendarEvent, 'id'>) => {
     const created: CalendarEvent = {
       ...newEvent,
       id: `evt-${Date.now()}`,
     };
+    const persisted = await persistCollectionDoc('calendarEvents', created.id, created);
+    if (!persisted) return false;
     setCalendarEvents((prev) => [created, ...prev]);
   };
 
-  const updateCalendarEvent = (id: string, updated: Partial<CalendarEvent>) => {
-    setCalendarEvents((prev) =>
-      prev.map((evt) => (evt.id === id ? { ...evt, ...updated } : evt))
-    );
+  const updateCalendarEvent = async (id: string, updated: Partial<CalendarEvent>) => {
+    const committed = await commitEntityArrayUpdate('calendarEvents', calendarEvents, setCalendarEvents, id, (prev) => {
+      const next = prev.map((evt) => (evt.id === id ? { ...evt, ...updated } : evt));
+      return next;
+    });
+    if (!committed) return false;
   };
 
-  const deleteCalendarEvent = (id: string) => {
-    setCalendarEvents((prev) => prev.filter((evt) => evt.id !== id));
+  const deleteCalendarEvent = async (id: string) => {
+    const persisted = await deleteCollectionDoc('calendarEvents', id);
+    if (!persisted) return false;
+
+    setCalendarEvents((prev) => prev.filter((evt) => evt.id !== id));    return true;
   };
 
   // Hydrate stored files from IndexedDB on initial mount
@@ -2513,7 +2644,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             (l, idx) => l.pdfDataUrl !== lectures[idx]?.pdfDataUrl
           );
           if (hasChanges) {
-            setLectures(updatedLectures);
+            setLectures(filterRuntimeLibraryResources(updatedLectures));
           }
         }
       } catch (err) {
@@ -2635,7 +2766,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [syncLatencyMs, setSyncLatencyMs] = useState<number>(0);
   const [syncErrorMessage, setSyncErrorMessage] = useState<string | undefined>(undefined);
 
-  const isApplyingRemoteUpdate = useRef<boolean>(false);
   const isInitialHydrationDone = useRef<boolean>(false);
   // SECURITY_MESSAGING_USER_STATE_OVERLAY_V1_3D6C1
   const messageUserStateCacheRef = useRef<Record<string, any>>({});
@@ -2646,7 +2776,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const messageUserStateReconcileTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const mailboxReconcileSessionRef = useRef(0);
   const pendingDirectMessagePersistRef = useRef<Record<string, DirectMessage>>({});
-  const pushDebounceTimer = useRef<any>(null);
 
   const clearMailboxPendingRuntime = (messageId?: string) => {
     if (messageId) {
@@ -2700,7 +2829,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     options?: { applyMessages?: boolean }
   ) => {
     if (!remoteData || typeof remoteData !== 'object') return;
-    isApplyingRemoteUpdate.current = true;
 
     if (Array.isArray(remoteData.teachers)) {
       authoritativeTeachersReceivedRef.current = true;
@@ -2748,8 +2876,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
       setMessages(overlayCurrentUserMessageStates(mergedRemote));
     }
-    if (Array.isArray(remoteData.lectures)) setLectures(remoteData.lectures);
-    if (Array.isArray(remoteData.deletedLectureIds)) setDeletedLectureIds(remoteData.deletedLectureIds);
+    if (Array.isArray(remoteData.deletedLectureIds)) {
+      hydrateLibraryDeletionGuard(remoteData.deletedLectureIds);
+      setDeletedLectureIds(remoteData.deletedLectureIds);
+    }
+    if (Array.isArray(remoteData.lectures)) {
+      setLectures(filterRuntimeLibraryResources(remoteData.lectures));
+    }
     if (Array.isArray(remoteData.deletedChallengeIds)) setDeletedChallengeIds(remoteData.deletedChallengeIds);
     if (Array.isArray(remoteData.timetable)) setTimetable(remoteData.timetable);
     if (Array.isArray(remoteData.subjectQuotas)) setSubjectQuotas(remoteData.subjectQuotas);
@@ -2780,46 +2913,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setLastSyncedAt(new Date());
     if (remoteLastSyncedBy) setLastSyncedBy(remoteLastSyncedBy);
     setSyncStatus('synced');
-
-    setTimeout(() => {
-      isApplyingRemoteUpdate.current = false;
-    }, 400);
   };
-
-  // Build full payload for central store
-  const getFullPayload = () => ({
-    teachers,
-    students,
-    parents,
-    supervisors,
-    graduates,
-    exams,
-    submissions,
-    attendance,
-    announcements,
-    messages,
-    lectures: lectures.map((l) => ({
-      ...l,
-      pdfDataUrl: l.pdfDataUrl && l.pdfDataUrl.length > 500 ? `idb:${l.id}` : l.pdfDataUrl,
-      fileUrl: l.fileUrl && l.fileUrl.length > 500 ? `idb:${l.id}` : l.fileUrl,
-    })),
-    deletedLectureIds,
-    deletedChallengeIds,
-    timetable,
-    subjectQuotas,
-    financial,
-    notifications,
-    certificates,
-    calendarEvents,
-    challenges,
-    schoolAdminData,
-    decisionSettings,
-    auditLogs,
-    annualPlans,
-    dailyLessonPlans,
-    examSchedules,
-    customFolders,
-  });
 
   // Initial Server Hydration & Seeding
   useEffect(() => {
@@ -2880,25 +2974,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           isInitialHydrationDone.current = true;
           setSyncHydrationGeneration((n) => n + 1);
         } else {
-          // Server database needs initial seed from local authoritative data
-          const payload = getFullPayload();
-          const sourceUser = {
-            id: currentUser?.id || role,
-            name: currentUser?.name || (role === 'admin' ? 'المديرة العامة' : role),
-            role: role,
-          };
-          const pushRes = await runTrackedPersistenceWrite(
-            () => centralSyncService.pushUpdates(payload, sourceUser, 1),
-            blockedSyncResult
-          );
-          if (pushRes.success && pushRes.version) {
-            setSyncVersion(pushRes.version);
-            setLastSyncedAt(new Date());
-            setLastSyncedBy(sourceUser);
-            setSyncStatus('synced');
-          }
+          // Empty server: hydrate locally. Do not seed demo/default React state into Firestore.
           isInitialHydrationDone.current = true;
           setSyncHydrationGeneration((n) => n + 1);
+          setSyncStatus('synced');
         }
       } catch (err: any) {
         console.warn('Initial sync error, continuing with local state:', err);
@@ -2914,6 +2993,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Start the Firebase realtime listeners only for an authenticated session.
     void centralSyncService.connectRealtimeStream();
 
+    const refreshFromServer = async (force = false) => {
+      if (!isInitialHydrationDone.current) return;
+      if (!force && centralSyncService.isRealtimeStreamActive()) return;
+      try {
+        const res = await centralSyncService.fetchServerData(
+          force ? undefined : syncVersionRef.current,
+          force
+        );
+        if (!isMounted) return;
+        if (res.success && !res.notModified && res.data) {
+          applyRemoteData(res.data, res.version || syncVersionRef.current + 1, res.lastSyncedBy, {
+            applyMessages: shouldApplyRemoteMessages({
+              source: 'generic-fetch',
+              payloadHasMessages: Array.isArray(res.data.messages),
+              realtimeActive: centralSyncService.isRealtimeStreamActive(),
+            }),
+          });
+        }
+      } catch {
+        // ignore
+      }
+    };
+
     // Real-time SSE and cross-tab sync channel
     const unsubscribeBroadcast = centralSyncService.subscribe(async (evt) => {
       if (evt.type === 'REALTIME_SERVER_UPDATE' && evt.payload) {
@@ -2925,7 +3027,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             realtimeActive: centralSyncService.isRealtimeStreamActive(),
           }),
         });
-      } else if (evt.type === 'SERVER_DATA_UPDATED' || evt.type === 'DATABASE_RESET') {
+      } else if (evt.type === 'DATABASE_RESET') {
         try {
           const res = await centralSyncService.fetchServerData(undefined, true);
           if (isMounted && res.success && res.data) {
@@ -2940,6 +3042,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         } catch {
           // ignore
         }
+      } else if (evt.type === 'SERVER_DATA_UPDATED') {
+        // Firestore onSnapshot already distributes canonical writes.
       } else if (evt.type === 'MESSAGE_USER_STATES_UPDATE' && evt.payload && typeof evt.payload === 'object') {
         // SECURITY_MESSAGING_USER_STATE_REALTIME_APPCONTEXT_V1_3D6F2A
         // SECURITY_MESSAGING_SYNC_ISOLATION_V1_3D6F2C_STAGE0
@@ -2966,54 +3070,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       } else if (evt.type === 'NETWORK_ONLINE') {
         setSyncStatus('synced');
         void centralSyncService.connectRealtimeStream();
-        forceSyncAll();
+        void refreshFromServer();
       } else if (evt.type === 'NETWORK_OFFLINE') {
         setSyncStatus('offline');
       }
     });
 
-    // Periodic check for updates as fallback every 6 seconds
-    const pollInterval = setInterval(async () => {
-      if (!isInitialHydrationDone.current) return;
-      try {
-        const res = await centralSyncService.fetchServerData(syncVersionRef.current, false);
-        if (!isMounted) return;
+    const pollInterval = setInterval(() => {
+      void refreshFromServer(false);
+    }, 30000);
 
-        if (res.success) {
-          if (!res.notModified && res.data) {
-            applyRemoteData(res.data, res.version || syncVersionRef.current + 1, res.lastSyncedBy, {
-              applyMessages: shouldApplyRemoteMessages({
-                source: 'generic-fetch',
-                payloadHasMessages: Array.isArray(res.data.messages),
-                realtimeActive: centralSyncService.isRealtimeStreamActive(),
-              }),
-            });
-          }
-          setSyncStatus('synced');
-          setSyncErrorMessage(undefined);
-        }
-      } catch {
-        // offline or transient
-      }
-    }, 6000);
-
-    // Refresh on window focus / tab switch
-    const onWindowFocus = async () => {
-      if (!isInitialHydrationDone.current) return;
-      try {
-        const res = await centralSyncService.fetchServerData(syncVersionRef.current, false);
-        if (res.success && !res.notModified && res.data) {
-          applyRemoteData(res.data, res.version || syncVersionRef.current + 1, res.lastSyncedBy, {
-            applyMessages: shouldApplyRemoteMessages({
-              source: 'generic-fetch',
-              payloadHasMessages: Array.isArray(res.data.messages),
-              realtimeActive: centralSyncService.isRealtimeStreamActive(),
-            }),
-          });
-        }
-      } catch {
-        // ignore
-      }
+    const onWindowFocus = () => {
+      void refreshFromServer(false);
     };
     window.addEventListener('focus', onWindowFocus);
 
@@ -3027,151 +3095,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, [currentUser?.authUid]);
 
-  // Debounced auto-push to central server on local changes
-  useEffect(() => {
-    // Visitors opened from a public URL / QR are strictly read-only.
-    // A central write is allowed only after explicit successful authentication.
-    if (!currentUser) return;
-    if (sessionAdmissionRef.current.logoutInProgress) return;
-    if (isApplyingRemoteUpdate.current) return;
-    if (!isInitialHydrationDone.current) return;
-
-    if (pushDebounceTimer.current) {
-      clearTimeout(pushDebounceTimer.current);
-    }
-
-    const debounceDelay = 100;
-
-    pushDebounceTimer.current = setTimeout(async () => {
-        pushDebounceTimer.current = null;
-      if (sessionAdmissionRef.current.logoutInProgress || !currentUser) return;
-      try {
-        setSyncStatus('syncing');
-        const payload = getFullPayload();
-        
-        // Legacy-only offline fallback. Security mode never persists private school data in localStorage.
-        if (LEGACY_AUTH_ENABLED) {
-          try {
-            localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload));
-          } catch(e) {
-            console.error("Local storage save failed", e);
-          }
-        }
-        
-        const sourceUser = {
-          id: currentUser?.id || role,
-          name: currentUser?.name || (role === 'admin' ? 'المديرة العامة' : role),
-          role: role,
-        };
-
-        const res = await runTrackedPersistenceWrite(
-          () => centralSyncService.pushUpdates(payload, sourceUser, syncVersionRef.current),
-          blockedSyncResult
-        );
-        if (res.success && res.version) {
-          setSyncVersion(res.version);
-          setLastSyncedAt(new Date());
-          setLastSyncedBy(sourceUser);
-          setSyncStatus('synced');
-          setSyncErrorMessage(undefined);
-        } else {
-          setSyncStatus('error');
-          setSyncErrorMessage(res.message);
-        }
-      } catch (err: any) {
-        setSyncStatus('offline');
-        setSyncErrorMessage(err.message);
-      }
-    }, debounceDelay);
-
-    return () => {
-      if (pushDebounceTimer.current) clearTimeout(pushDebounceTimer.current);
-    };
-  }, [
-    teachers,
-    students,
-    parents,
-    supervisors,
-    graduates,
-    exams,
-    submissions,
-    attendance,
-    announcements,
-    lectures,
-    deletedLectureIds,
-    deletedChallengeIds,
-    timetable,
-    subjectQuotas,
-    financial,
-    notifications,
-    certificates,
-    calendarEvents,
-    challenges,
-    schoolAdminData,
-    decisionSettings,
-    auditLogs,
-    annualPlans,
-    dailyLessonPlans,
-    examSchedules,
-    customFolders,
-  ]);
-
-  // Manual Force Sync All
   const forceSyncAll = async (): Promise<boolean> => {
     setSyncStatus('syncing');
     try {
-      if (role === 'admin') {
-        // If Directress/Admin triggers sync, push immediately so local edits take master authority
-        const payload = getFullPayload();
-        const sourceUser = {
-          id: currentUser?.id || 'admin-main',
-          name: currentUser?.name || 'المديرة العامة',
-          role: 'admin',
-        };
-        const pushRes = await runTrackedPersistenceWrite(
-          () => centralSyncService.pushUpdates(payload, sourceUser),
-          blockedSyncResult
-        );
-        if (pushRes.success && pushRes.version) {
-          setSyncVersion(pushRes.version);
-          setLastSyncedAt(new Date());
-          setLastSyncedBy(sourceUser);
-          setSyncStatus('synced');
-          setSyncErrorMessage(undefined);
-          return true;
-        }
-      } else {
-        // Non-admin user: fetch latest server state
-        const fetchRes = await centralSyncService.fetchServerData(undefined, true);
-        if (fetchRes.success && fetchRes.data && Object.keys(fetchRes.data).length > 5) {
-          applyRemoteData(fetchRes.data, fetchRes.version || syncVersion, fetchRes.lastSyncedBy, {
-            applyMessages: shouldApplyRemoteMessages({
-              source: 'generic-fetch',
-              payloadHasMessages: Array.isArray(fetchRes.data.messages),
-              realtimeActive: centralSyncService.isRealtimeStreamActive(),
-            }),
-          });
-        }
-
-        // Then push any non-admin local edits (submissions, messages)
-        const payload = getFullPayload();
-        const sourceUser = {
-          id: currentUser?.id || role,
-          name: currentUser?.name || role,
-          role: role,
-        };
-        const pushRes = await runTrackedPersistenceWrite(
-          () => centralSyncService.pushUpdates(payload, sourceUser),
-          blockedSyncResult
-        );
-        if (pushRes.success && pushRes.version) {
-          setSyncVersion(pushRes.version);
-          setLastSyncedAt(new Date());
-          setLastSyncedBy(sourceUser);
-          setSyncStatus('synced');
-          return true;
-        }
+      const fetchRes = await centralSyncService.fetchServerData(undefined, true);
+      if (fetchRes.success && fetchRes.data) {
+        applyRemoteData(fetchRes.data, fetchRes.version || syncVersion, fetchRes.lastSyncedBy, {
+          applyMessages: shouldApplyRemoteMessages({
+            source: 'generic-fetch',
+            payloadHasMessages: Array.isArray(fetchRes.data.messages),
+            realtimeActive: centralSyncService.isRealtimeStreamActive(),
+          }),
+        });
+        setSyncVersion(fetchRes.version || syncVersion);
+        setLastSyncedAt(new Date());
+        setLastSyncedBy(fetchRes.lastSyncedBy || null);
+        setSyncStatus('synced');
+        setSyncErrorMessage(undefined);
+        return true;
       }
+      setSyncStatus('error');
+      setSyncErrorMessage(fetchRes.message);
       return false;
     } catch (err: any) {
       console.warn('Manual sync failed:', err);
@@ -3204,59 +3148,68 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Ministry Decision Settings & Actions
-  const updateDecisionSettings = (updated: Partial<MinistryDecisionSettings>) => {
-    setDecisionSettings((prev) => {
-      const next = { ...prev, ...updated };
-      setCertificates((certs) => certs.map((c) => computeCertificateStats(c, next)));
-      void runTrackedPersistenceWrite(
-        () =>
-          centralSyncService.directObjectMutation('decisionSettings', next, {
-            id: currentUser?.id || role,
-            name: currentUser?.name || role,
-            role,
-          }),
-        false
-      );
-      return next;
-    });
+  const updateDecisionSettings = async (updated: Partial<MinistryDecisionSettings>): Promise<boolean> => {
+    const next = { ...decisionSettings, ...updated };
+    const result = await runTrackedPersistenceWrite(
+      () => centralSyncService.directObjectMutation('decisionSettings', next, syncSourceUser()),
+      false
+    );
+    if (!result) return false;
+    setDecisionSettings(next);
+    setCertificates((certs) => certs.map((c) => computeCertificateStats(c, next)));
+    return true;
   };
 
-  const applySubjectDecisionMarks = (certificateId: string, subjectId: string, decisionMarks: number) => {
-    setCertificates((prev) =>
-      prev.map((cert) => {
+  const applySubjectDecisionMarks = async (certificateId: string, subjectId: string, decisionMarks: number) => {
+    const committed = await commitEntityArrayUpdate('certificates', certificates, setCertificates, certificateId, (prev) => {
+      const next = prev.map((cert) => {
         if (cert.id !== certificateId) return cert;
         const updatedSubjects = cert.subjects.map((s) =>
           s.id === subjectId ? { ...s, decisionMarks: Math.max(0, Math.min(10, decisionMarks)) } : s
         );
         return computeCertificateStats({ ...cert, subjects: updatedSubjects }, decisionSettings);
-      })
-    );
+      });
+      return next;
+    });
+    if (!committed) return false;
   };
 
-  const autoOptimizeDecisionMarksForCert = (certificateId: string) => {
-    setCertificates((prev) =>
-      prev.map((cert) => {
+  const autoOptimizeDecisionMarksForCert = async (certificateId: string) => {
+    const committed = await commitEntityArrayUpdate('certificates', certificates, setCertificates, certificateId, (prev) => {
+      const next = prev.map((cert) => {
         if (cert.id !== certificateId) return cert;
         return autoOptimizeDecisionMarks(cert, decisionSettings);
-      })
-    );
+      });
+      return next;
+    });
+    if (!committed) return false;
   };
 
-  const resetDecisionMarksForCert = (certificateId: string) => {
-    setCertificates((prev) =>
-      prev.map((cert) => {
+  const resetDecisionMarksForCert = async (certificateId: string) => {
+    const committed = await commitEntityArrayUpdate('certificates', certificates, setCertificates, certificateId, (prev) => {
+      const next = prev.map((cert) => {
         if (cert.id !== certificateId) return cert;
         const clearedSubjects = cert.subjects.map((s) => ({ ...s, decisionMarks: 0 }));
         return computeCertificateStats({ ...cert, subjects: clearedSubjects }, decisionSettings);
-      })
-    );
+      });
+      return next;
+    });
+    if (!committed) return false;
   };
 
   // Certificate Actions
-  const updateCertificate = (id: string, updated: Partial<StudentCertificate>) => {
-    setCertificates((prev) =>
-      prev.map((c) => (c.id === id ? computeCertificateStats({ ...c, ...updated }, decisionSettings) : c))
-    );
+  const updateCertificate = async (id: string, updated: Partial<StudentCertificate>, persist = false) => {
+    const next = ((prev: StudentCertificate[]) => {
+      const next = prev.map((c) =>
+        c.id === id ? computeCertificateStats({ ...c, ...updated }, decisionSettings) : c
+      );
+      return next;
+    })(certificates);
+    if (persist) {
+      const committed = await persistEntityFromArray('certificates', certificates, next, id);
+      if (!committed) return false;
+    }
+    setCertificates(next);
   };
 
   const updateSubjectGrade = (
@@ -3311,28 +3264,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   };
 
-  const batchUpdateStudentGrades = (
+  const batchUpdateStudentGrades = async (
     certificateId: string,
     updatedSubjects: SubjectGrade[]
-  ) => {
-    setCertificates((prev) =>
-      prev.map((cert) => {
+  ): Promise<boolean> => {
+    let before: StudentCertificate | undefined;
+    let snapshot: StudentCertificate | undefined;
+    setCertificates((prev) => {
+      before = prev.find((cert) => cert.id === certificateId);
+      const next = prev.map((cert) => {
         if (cert.id !== certificateId) return cert;
-        return computeCertificateStats(
-          { ...cert, subjects: updatedSubjects },
-          decisionSettings
-        );
-      })
-    );
+        return computeCertificateStats({ ...cert, subjects: updatedSubjects }, decisionSettings);
+      });
+      snapshot = next.find((cert) => cert.id === certificateId);
+      return next;
+    });
+    if (!snapshot) return false;
+    return persistCollectionDoc('certificates', certificateId, snapshot, before);
   };
 
-  const recalculateCertificate = (certificateId: string) => {
-    setCertificates((prev) =>
-      prev.map((cert) => (cert.id === certificateId ? computeCertificateStats(cert, decisionSettings) : cert))
-    );
+  const commitCertificate = async (certificateId: string): Promise<boolean> => {
+    let before: StudentCertificate | undefined;
+    setCertificates((prev) => {
+      before = prev.find((cert) => cert.id === certificateId);
+      return prev;
+    });
+    if (!before) return false;
+    return persistCollectionDoc('certificates', certificateId, before);
   };
 
-  const addStudentCertificate = (studentId: string, isBlank = false) => {
+  const recalculateCertificate = async (certificateId: string) => {
+    const committed = await commitEntityArrayUpdate('certificates', certificates, setCertificates, certificateId, (prev) => {
+      const next = prev.map((cert) =>
+        cert.id === certificateId ? computeCertificateStats(cert, decisionSettings) : cert
+      );
+      return next;
+    });
+    if (!committed) return false;
+  };
+
+  const addStudentCertificate = async (studentId: string, isBlank = false): Promise<boolean> => {
     const student = students.find((s) => s.id === studentId);
     if (!student) return;
 
@@ -3379,12 +3350,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       notes: 'نموذج شهادة رسمي جاهز للإدخال اليدوي للدرجات',
     }, decisionSettings);
 
+    const ok = await persistCollectionDoc('certificates', newCert.id, newCert);
+    if (!ok) return false;
     setCertificates((prev) => [...prev, newCert]);
+    return true;
   };
 
-  const issueCertificatesForScope = (
+  const issueCertificatesForScope = async (
     options: IssueCertificatesOptions
-  ): { totalGenerated: number; skippedCount: number; message: string } => {
+  ): Promise<{ totalGenerated: number; skippedCount: number; message: string }> => {
     const {
       scope,
       gradeLevel,
@@ -3502,6 +3476,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       generatedCount++;
     });
 
+    const persistenceResults = await Promise.all(
+      newOrUpdatedCerts.map((cert) => persistCollectionDoc('certificates', cert.id, cert))
+    );
+    if (!persistenceResults.every(Boolean)) {
+      return { totalGenerated: 0, skippedCount, message: 'تعذر حفظ الشهادات في قاعدة البيانات. لم يتم اعتماد العملية.' };
+    }
+
     setCertificates((prev) => {
       if (overwriteExisting) {
         const remaining = prev.filter((c) => {
@@ -3535,65 +3516,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { totalGenerated: generatedCount, skippedCount, message };
   };
 
-  const deleteCertificate = (id: string) => {
+  const deleteCertificate = async (id: string): Promise<boolean> => {
+    const ok = await deleteCollectionDoc('certificates', id);
+    if (!ok) return false;
     setCertificates((prev) => prev.filter((c) => c.id !== id));
-    void deleteCollectionDoc('certificates', id);
+    return true;
   };
 
-  const deleteMultipleCertificates = (ids: string[]) => {
+  const deleteMultipleCertificates = async (ids: string[]): Promise<boolean> => {
+    const results = await Promise.all(ids.map((id) => deleteCollectionDoc('certificates', id)));
+    if (!results.every(Boolean)) return false;
     const idSet = new Set(ids);
     setCertificates((prev) => prev.filter((c) => !idSet.has(c.id)));
-
-    ids.forEach((id) => {
-      void deleteCollectionDoc('certificates', id);
-    });
+    return true;
   };
 
-  const deleteCertificatesForScope = (options: {
+  const deleteCertificatesForScope = async (options: {
     scope: 'all' | 'grade' | 'section' | 'student';
     gradeLevel?: GradeLevel;
     section?: string;
     studentId?: string;
-  }): { deletedCount: number; message: string } => {
+  }): Promise<{ deletedCount: number; message: string }> => {
     const { scope, gradeLevel, section, studentId } = options;
-    let initialCount = certificates.length;
+    const initialCount = certificates.length;
     let remaining = [...certificates];
-
-    if (scope === 'all') {
-      remaining = [];
-    } else if (scope === 'grade' && gradeLevel) {
-      remaining = certificates.filter((c) => c.gradeLevel !== gradeLevel);
-    } else if (scope === 'section' && gradeLevel && section) {
-      remaining = certificates.filter(
-        (c) => !(c.gradeLevel === gradeLevel && (c.section === section || c.section?.toLowerCase().trim() === section.toLowerCase().trim()))
-      );
-    } else if (scope === 'student' && studentId) {
-      remaining = certificates.filter((c) => c.studentId !== studentId && c.id !== studentId);
-    }
+    if (scope === 'all') remaining = [];
+    else if (scope === 'grade' && gradeLevel) remaining = certificates.filter((c) => c.gradeLevel !== gradeLevel);
+    else if (scope === 'section' && gradeLevel && section) remaining = certificates.filter((c) => !(c.gradeLevel === gradeLevel && (c.section === section || c.section?.toLowerCase().trim() === section.toLowerCase().trim())));
+    else if (scope === 'student' && studentId) remaining = certificates.filter((c) => c.studentId !== studentId && c.id !== studentId);
 
     const remainingIds = new Set(remaining.map((certificate) => certificate.id));
-    const certificatesToDelete = certificates.filter(
-      (certificate) => !remainingIds.has(certificate.id)
-    );
-
+    const certificatesToDelete = certificates.filter((certificate) => !remainingIds.has(certificate.id));
+    const results = await Promise.all(certificatesToDelete.map((certificate) => deleteCollectionDoc('certificates', certificate.id)));
+    if (!results.every(Boolean)) return { deletedCount: 0, message: 'تعذر حذف الشهادات من قاعدة البيانات. لم يتم اعتماد العملية.' };
     const deletedCount = initialCount - remaining.length;
     setCertificates(remaining);
-
-    certificatesToDelete.forEach((certificate) => {
-      void deleteCollectionDoc('certificates', certificate.id);
-    });
-
-    const message = `تم حذف (${deletedCount}) شهادة مدرسية بنجاح.`;
-    return { deletedCount, message };
+    return { deletedCount, message: `تم حذف (${deletedCount}) شهادة مدرسية بنجاح.` };
   };
 
-  const clearAllCertificates = () => {
-    const certificatesToDelete = [...certificates];
-
-    certificatesToDelete.forEach((certificate) => {
-      void deleteCollectionDoc('certificates', certificate.id);
-    });
+  const clearAllCertificates = async (): Promise<boolean> => {
+    const results = await Promise.all(certificates.map((certificate) => deleteCollectionDoc('certificates', certificate.id)));
+    if (!results.every(Boolean)) return false;
     setCertificates([]);
+    return true;
   };
 
   // Password / Passcode Management Action - STRICT PER-USER ISOLATION
@@ -3885,26 +3850,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const updateDisciplinarySettings = (updated: Partial<DisciplinarySettings>) => {
-    let finalSettings: DisciplinarySettings;
-    setDisciplinarySettings((prev) => {
-      const newVal = { ...prev, ...updated };
-      finalSettings = newVal;
-      void runTrackedPersistenceWrite(
-        () =>
-          centralSyncService.directObjectMutation('disciplinarySettings', newVal, {
-            id: currentUser?.id || role,
-            name: currentUser?.name || role,
-            role,
-          }),
-        false
-      );
-      return newVal;
-    });
-    // Give state time to settle or pass explicit config
-    setTimeout(() => {
-      recalculateStudentAbsenceStats(undefined, updated as DisciplinarySettings);
-    }, 100);
+  const updateDisciplinarySettings = async (updated: Partial<DisciplinarySettings>): Promise<boolean> => {
+    const finalSettings: DisciplinarySettings = { ...disciplinarySettings, ...updated };
+    const persisted = await runTrackedPersistenceWrite(
+      () => centralSyncService.directObjectMutation('disciplinarySettings', finalSettings, syncSourceUser()),
+      false
+    );
+    if (!persisted) return false;
+    setDisciplinarySettings(finalSettings);
+    await recalculateStudentAbsenceStats(undefined, finalSettings);
     addAuditLog({
       action: 'تحديث إعدادات الانضباط والغياب',
       actionType: 'update',
@@ -3914,6 +3868,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       details: 'تم تعديل قوانين الحضور والإنذارات بنجاح',
       severity: 'warning'
     });
+    return true;
   };
 
 
@@ -3922,40 +3877,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
     document.documentElement.lang = lang;
   }, [lang]);
-
   const t = translations[lang];
 
-  const syncSourceUser = () => ({
-    id: currentUser?.id || role,
-    name: currentUser?.name || role,
-    role,
-  });
-
   const isAdminActor = () => role === 'admin' && currentUser?.role === 'admin';
-
-  const persistCollectionDoc = async (key: string, id: string, item: any, baseItem?: any): Promise<boolean> => {
-    return runTrackedPersistenceWrite(async () => {
-      const res = await centralSyncService.upsertCollectionDocument(key, id, item, baseItem, syncSourceUser());
-      return res.success === true;
-    }, false);
-  };
-
-  const deleteCollectionDoc = async (key: string, id: string): Promise<boolean> => {
-    return runTrackedPersistenceWrite(async () => {
-      const res = await centralSyncService.deleteCollectionDocument(key, id, syncSourceUser());
-      return res.success === true;
-    }, false);
-  };
-
-  const persistChangedCollectionDocs = (key: string, previous: Array<{ id: string }>, next: Array<{ id: string }>) => {
-    const prevMap = new Map(previous.map((item) => [item.id, item]));
-    next.forEach((item) => {
-      const before = prevMap.get(item.id);
-      if (JSON.stringify(before) !== JSON.stringify(item)) {
-        void persistCollectionDoc(key, item.id, item, before);
-      }
-    });
-  };
 
   const blockedAcademicWrite = (): AcademicTransitionResult => ({
     success: false,
@@ -4156,85 +4080,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     ...supervisors.map((x: any) => ({ id: x.id, role: 'supervisor' as const, email: x.email, phone: x.phone, nationalId: x.nationalId })),
   ];
 
-  const addStudent = (data: Omit<Student, 'id' | 'status' | 'enrollmentYear'> & { enrollmentYear?: string }) => {
+  const addStudent = async (data: Omit<Student, 'id' | 'status' | 'enrollmentYear'> & { enrollmentYear?: string }): Promise<boolean> => {
+    if (!isAdminActor() || !isInitialHydrationDone.current) return false;
     const randSuffix = Math.random().toString(36).substring(2, 7);
     const parentId = `prt-${Date.now()}-${randSuffix}`;
     const studentId = `std-${Date.now()}-${randSuffix}`;
     const existingIdentities = identityRecords();
     assertUniqueIdentity({ id: studentId, role: 'student', email: data.email, phone: data.phone, nationalId: data.nationalId }, existingIdentities);
     assertUniqueIdentity({ id: parentId, role: 'parent', email: data.parentEmail, phone: data.parentPhone }, existingIdentities);
-    const newStudent: Student = {
-      ...data,
-      id: studentId,
-      username: stableUsername('student', studentId),
-      parentId,
-      status: 'منتظمة',
-      enrollmentYear: data.enrollmentYear?.trim() || '2026',
-    };
-    setStudents((prev) => [newStudent, ...prev]);
-    void persistCollectionDoc('students', studentId, newStudent);
+    const newStudent: Student = { ...data, id: studentId, username: stableUsername('student', studentId), parentId, status: 'منتظمة', enrollmentYear: data.enrollmentYear?.trim() || '2026' };
+    const newParent: Parent = { id: parentId, username: stableUsername('parent', parentId), name: data.parentName, phone: data.parentPhone, email: data.parentEmail, studentId, studentName: newStudent.name, gradeLevel: newStudent.gradeLevel, studentSection: newStudent.section };
+    const fin: FinancialRecord = { id: `fin-${Date.now()}-${randSuffix}`, studentId, studentName: newStudent.name, gradeLevel: newStudent.gradeLevel, feeType: 'رسوم التسجيل والكتب', totalAmount: 120000, paidAmount: 0, status: 'غير مدفوع', dueDate: '2026-09-01' };
 
-    // Auto add parent account link
-    const newParent: Parent = {
-      id: parentId,
-      username: stableUsername('parent', parentId),
-      name: data.parentName,
-      phone: data.parentPhone,
-      email: data.parentEmail,
-      studentId: newStudent.id,
-      studentName: newStudent.name,
-      gradeLevel: newStudent.gradeLevel,
-      studentSection: newStudent.section,
-    };
+    const studentOk = await persistCollectionDoc('students', studentId, newStudent);
+    if (!studentOk) return false;
+    const parentOk = await persistCollectionDoc('parents', parentId, newParent);
+    if (!parentOk) { await deleteCollectionDoc('students', studentId); return false; }
+    const financialOk = await persistCollectionDoc('financial', fin.id, fin);
+    if (!financialOk) {
+      await Promise.all([deleteCollectionDoc('students', studentId), deleteCollectionDoc('parents', parentId)]);
+      return false;
+    }
+
+    const nextStudents = [newStudent, ...studentsRef.current];
+    setStudents(nextStudents); studentsRef.current = nextStudents;
     setParents((prev) => [newParent, ...prev]);
-    void persistCollectionDoc('parents', parentId, newParent);
-
-    // Create initial tuition financial record
-    const fin: FinancialRecord = {
-      id: `fin-${Date.now()}-${randSuffix}`,
-      studentId: newStudent.id,
-      studentName: newStudent.name,
-      gradeLevel: newStudent.gradeLevel,
-      feeType: 'رسوم التسجيل والكتب',
-      totalAmount: 120000,
-      paidAmount: 0,
-      status: 'غير مدفوع',
-      dueDate: '2026-09-01',
-    };
-    setFinancial((prev) => {
-      const updated = [fin, ...prev];
-      void runTrackedPersistenceWrite(
-        () =>
-          centralSyncService.directArrayMutation('financial', updated, {
-            id: currentUser?.id || role,
-            name: currentUser?.name || role,
-            role,
-          }),
-        false
-      );
-      return updated;
-    });
-
-    addAuditLog({
-      action: `تسجيل طالبة جديدة: ${newStudent.name}`,
-      actionType: 'create',
-      targetCategory: 'students',
-      targetId: newStudent.id,
-      targetName: newStudent.name,
-      details: `تسجيل الطالبة في ${newStudent.gradeLevel} - شعبة (${newStudent.section}) مع ربط حساب ولي الأمر (${data.parentName})`,
-      severity: 'success',
-    });
-
-    // Push notification
-    const notif: NotificationItem = {
-      id: `notif-${Date.now()}-${randSuffix}`,
-      title: lang === 'ar' ? 'تسجيل طالبة جديدة بالمدرسة' : 'New Gifted Student Registered',
-      message: `${newStudent.name} (${newStudent.gradeLevel})`,
-      type: 'success',
-      timestamp: lang === 'ar' ? 'الآن' : 'Just now',
-      isRead: false,
-    };
-    addNotification(notif);
+    setFinancial((prev) => [fin, ...prev]);
+    await publishHonorFromLists(nextStudents, graduatesRef.current);
+    addAuditLog({ action: `تسجيل طالبة جديدة: ${newStudent.name}`, actionType: 'create', targetCategory: 'students', targetId: studentId, targetName: newStudent.name, details: `تسجيل الطالبة في ${newStudent.gradeLevel} - شعبة (${newStudent.section}) مع ربط حساب ولي الأمر (${data.parentName})`, severity: 'success' });
+    addNotification({ id: `notif-${Date.now()}-${randSuffix}`, title: lang === 'ar' ? 'تسجيل طالبة جديدة بالمدرسة' : 'New Gifted Student Registered', message: `${newStudent.name} (${newStudent.gradeLevel})`, type: 'success', timestamp: lang === 'ar' ? 'الآن' : 'Just now', isRead: false });
+    return true;
   };
 
   // User Management Implementations
@@ -4404,15 +4279,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const linkedParent = updatedParents.find((p) => p.id === targetStudent.parentId || p.studentId === id);
       if (linkedParent) {
         const previousParent = parents.find((p) => p.id === linkedParent.id);
-        void persistCollectionDoc('parents', linkedParent.id, linkedParent, previousParent);
+        const parentOk = await persistCollectionDoc('parents', linkedParent.id, linkedParent, previousParent);
+        if (!parentOk) return false;
       }
 
       if (!hasFin) {
         setFinancial(updatedFin);
-        void runTrackedPersistenceWrite(
-          () => centralSyncService.directArrayMutation('financial', updatedFin, syncSourceUser()),
-          false
-        );
+        const newFinancial = updatedFin.find((item) => !financial.some((old) => old.id === item.id));
+        if (newFinancial) {
+          const financialOk = await persistCollectionDoc('financial', newFinancial.id, newFinancial);
+          if (!financialOk) return false;
+        }
       }
 
       await publishHonorFromLists(updatedStudents, graduatesRef.current);
@@ -4457,63 +4334,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     
   };
 
-  const updateStudentBadges = (studentId: string, badges: string[]) => {
-    setStudents((prev) => {
-      const next = prev.map((s) => (s.id === studentId ? { ...s, badges } : s));
-      const updated = next.find((s) => s.id === studentId);
-      const before = prev.find((s) => s.id === studentId);
-      if (updated) void persistCollectionDoc('students', studentId, updated, before);
-      return next;
-    });
+  const updateStudentBadges = async (studentId: string, badges: string[]) => {
+    const before = students.find((s) => s.id === studentId);
+    if (!before) return false;
+    const updated = { ...before, badges };
+    const persisted = await persistCollectionDoc('students', studentId, updated, before);
+    if (!persisted) return false;
+    setStudents((prev) => prev.map((s) => (s.id === studentId ? updated : s)));
+    return true;
   };
 
-  const deleteStudent = (id: string) => {
-    const target = studentsRef.current.find((s) => s.id === id);
-    const deletedName = target?.name || '';
-    const linkedParentId = target?.parentId;
-    setStudents((prev) => prev.filter((s) => s.id !== id));
-    studentsRef.current = studentsRef.current.filter((s) => s.id !== id);
-    void deleteCollectionDoc('students', id);
-    setUserPasscodes(prev => {
-      const copy = { ...prev };
-      delete copy[`student-${id}`];
-            return copy;
-    });
-    if (linkedParentId) {
-      setParents((prev) => prev.filter((p) => p.id !== linkedParentId && p.studentId !== id));
-      void deleteCollectionDoc('parents', linkedParentId);
-    } else {
-      const linked = parents.find((p) => p.studentId === id);
-      setParents((prev) => prev.filter((p) => p.studentId !== id));
-      if (linked?.id) void deleteCollectionDoc('parents', linked.id);
-    }
-    setFinancial((prev) => {
-      const updated = prev.filter((f) => f.studentId !== id);
-      void runTrackedPersistenceWrite(
-        () =>
-          centralSyncService.directArrayMutation('financial', updated, {
-            id: currentUser?.id || role,
-            name: currentUser?.name || role,
-            role,
-          }),
-        false
-      );
-      return updated;
-    });
+  const deleteStudent = async (id: string): Promise<boolean> => {
+    if (!isAdminActor() || !isInitialHydrationDone.current) return false;
+    const target = studentsRef.current.find((student) => student.id === id);
+    if (!target) return false;
+    const linkedParent = parents.find((parent) => parent.id === target.parentId || parent.studentId === id);
+    const linkedFinancial = financial.filter((record) => record.studentId === id);
 
-    addAuditLog({
-      action: `حذف سجل الطالبة: ${deletedName || id}`,
-      actionType: 'delete',
-      targetCategory: 'students',
-      targetId: id,
-      targetName: deletedName || id,
-      details: `تم حذف قيد وسجل الطالبة (${deletedName}) وحساب ولي الأمر المرتبط نهائياً`,
-      severity: 'danger',
-    });
+    const studentOk = await deleteCollectionDoc('students', id);
+    if (!studentOk) return false;
+    if (linkedParent && !(await deleteCollectionDoc('parents', linkedParent.id))) return false;
+    const financialResults = await Promise.all(linkedFinancial.map((record) => deleteCollectionDoc('financial', record.id)));
+    if (!financialResults.every(Boolean)) return false;
+
+    const nextStudents = studentsRef.current.filter((student) => student.id !== id);
+    setStudents(nextStudents); studentsRef.current = nextStudents;
+    if (linkedParent) setParents((prev) => prev.filter((parent) => parent.id !== linkedParent.id));
+    setFinancial((prev) => prev.filter((record) => record.studentId !== id));
+    setUserPasscodes((prev) => { const copy = { ...prev }; delete copy[`student-${id}`]; return copy; });
+    await publishHonorFromLists(nextStudents, graduatesRef.current);
+    addAuditLog({ action: `حذف سجل الطالبة: ${target.name || id}`, actionType: 'delete', targetCategory: 'students', targetId: id, targetName: target.name || id, details: `تم حذف قيد وسجل الطالبة (${target.name}) وحساب ولي الأمر المرتبط نهائياً`, severity: 'danger' });
+    return true;
   };
 
-  // Educational Supervisors Management Implementations
-  const addSupervisor = (newSupData: Omit<EducationalSupervisor, 'id' | 'joinedDate'> & { joinedDate?: string }) => {
+  const addSupervisor = async (newSupData: Omit<EducationalSupervisor, 'id' | 'joinedDate'> & { joinedDate?: string }) => {
     const randSuffix = Math.random().toString(36).substring(2, 6);
     const newSupervisor: EducationalSupervisor = {
       ...newSupData,
@@ -4526,7 +4380,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       isPrimary: Boolean(newSupData.isPrimary),
     };
 
-    setSupervisors((prev) => {
+    const committed = await commitChangedCollectionUpdate('supervisors', supervisors, setSupervisors, (prev) => {
       let updatedList = [newSupervisor, ...prev];
       if (newSupervisor.isPrimary) {
         updatedList = updatedList.map((s) => ({
@@ -4534,9 +4388,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           isPrimary: s.id === newSupervisor.id,
         }));
       }
-      persistChangedCollectionDocs('supervisors', prev, updatedList);
       return updatedList;
     });
+    if (!committed) return false;
 
     if (newSupervisor.isPrimary) {
       updateSchoolAdminData({
@@ -4566,9 +4420,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addNotification(notif);
   };
 
-  const updateSupervisor = (id: string, updated: Partial<EducationalSupervisor>) => {
+  const updateSupervisor = async (id: string, updated: Partial<EducationalSupervisor>) => {
     let supervisorName = '';
-    setSupervisors((prev) => {
+    const committed = await commitChangedCollectionUpdate('supervisors', supervisors, setSupervisors, (prev) => {
       const next = prev.map((s) => {
         if (s.id === id) {
           supervisorName = updated.name || s.name;
@@ -4580,9 +4434,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         return s;
       });
-      persistChangedCollectionDocs('supervisors', prev, next);
       return next;
     });
+    if (!committed) return false;
 
     if (updated.isPrimary || (updated.name && supervisors.find(s => s.id === id)?.isPrimary)) {
       const current = supervisors.find((s) => s.id === id);
@@ -4606,52 +4460,48 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const deleteSupervisor = (id: string) => {
-    let deletedName = '';
-    let wasPrimary = false;
-    setSupervisors((prev) => {
-      const target = prev.find((s) => s.id === id);
-      if (target) {
-        deletedName = target.name;
-        wasPrimary = Boolean(target.isPrimary);
-      }
-      const remaining = prev.filter((s) => s.id !== id);
-      // If deleted was primary and remaining has elements, promote first to primary
-      if (wasPrimary && remaining.length > 0) {
-        remaining[0].isPrimary = true;
-        updateSchoolAdminData({
-          academicSupervisorName: remaining[0].name,
-          timetableSupervisorName: remaining[0].name,
-        });
-        void persistCollectionDoc('supervisors', remaining[0].id, remaining[0]);
-      }
-      void deleteCollectionDoc('supervisors', id);
-      return remaining;
-    });
-
+  const deleteSupervisor = async (id: string): Promise<boolean> => {
+    const target = supervisors.find((item) => item.id === id);
+    if (!target) return false;
+    const remaining = supervisors.filter((item) => item.id !== id).map((item) => ({ ...item }));
+    if (target.isPrimary && remaining.length > 0) {
+      remaining[0] = { ...remaining[0], isPrimary: true };
+      const promoted = await persistCollectionDoc('supervisors', remaining[0].id, remaining[0]);
+      if (!promoted) return false;
+    }
+    const deleted = await deleteCollectionDoc('supervisors', id);
+    if (!deleted) return false;
+    setSupervisors(remaining);
+    if (target.isPrimary && remaining.length > 0) {
+      await updateSchoolAdminData({
+        academicSupervisorName: remaining[0].name,
+        timetableSupervisorName: remaining[0].name,
+      });
+    }
     addAuditLog({
-      action: `حذف مشرف تربوي: ${deletedName || id}`,
+      action: `حذف مشرف تربوي: ${target.name}`,
       actionType: 'delete',
       targetCategory: 'system',
       targetId: id,
-      targetName: deletedName || id,
-      details: `تم إلغاء تكليف وحذف المشرف التربوي (${deletedName}) من النظام الإشرافي`,
+      targetName: target.name,
+      details: `تم إلغاء تكليف وحذف المشرف التربوي (${target.name}) من النظام الإشرافي`,
       severity: 'danger',
     });
+    return true;
   };
 
-  const setPrimarySupervisor = (id: string) => {
+  const setPrimarySupervisor = async (id: string) => {
     const target = supervisors.find((s) => s.id === id);
     if (!target) return;
 
-    setSupervisors((prev) => {
+    const committed = await commitChangedCollectionUpdate('supervisors', supervisors, setSupervisors, (prev) => {
       const next = prev.map((s) => ({
         ...s,
         isPrimary: s.id === id,
       }));
-      persistChangedCollectionDocs('supervisors', prev, next);
       return next;
     });
+    if (!committed) return false;
 
     updateSchoolAdminData({
       academicSupervisorName: target.name,
@@ -4670,26 +4520,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Graduate & Promotion Actions
-  const addGraduate = (gradData: Omit<GraduateStudent, 'id'>) => {
+  const addGraduate = async (gradData: Omit<GraduateStudent, 'id'>): Promise<boolean> => {
+    if (!isAdminActor() || !isInitialHydrationDone.current) return false;
     const newGrad: GraduateStudent = {
       ...gradData,
       id: `grad-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
     };
-    const previous = graduatesRef.current;
-    const next = [newGrad, ...previous];
+    const persisted = await persistCollectionDoc('graduates', newGrad.id, newGrad);
+    if (!persisted) return false;
+    const next = [newGrad, ...graduatesRef.current];
     setGraduates(next);
     graduatesRef.current = next;
-    if (!isAdminActor() || !isInitialHydrationDone.current) return;
-    const token = beginPendingSyncMutation('graduates');
-    void persistCollectionDoc('graduates', newGrad.id, newGrad).then((ok) => {
-      if (!ok) {
-        setGraduates(previous);
-        graduatesRef.current = previous;
-      } else {
-        void publishHonorFromLists(studentsRef.current, next);
-      }
-      settlePendingSyncMutation('graduates', token);
-    });
+    await publishHonorFromLists(studentsRef.current, next);
+    return true;
   };
 
   const updateGraduate = async (id: string, updated: Partial<GraduateStudent>): Promise<boolean> => {
@@ -4719,25 +4562,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const deleteGraduate = (id: string) => {
+  const deleteGraduate = async (id: string): Promise<boolean> => {
+    if (!isAdminActor() || !isInitialHydrationDone.current) return false;
     const previous = graduatesRef.current;
+    if (!previous.some((g) => g.id === id)) return false;
+    const persisted = await deleteCollectionDoc('graduates', id);
+    if (!persisted) return false;
     const next = previous.filter((g) => g.id !== id);
     setGraduates(next);
     graduatesRef.current = next;
-    if (!isAdminActor() || !isInitialHydrationDone.current) return;
-    const token = beginPendingSyncMutation('graduates');
-    void deleteCollectionDoc('graduates', id).then((ok) => {
-      if (!ok) {
-        setGraduates(previous);
-        graduatesRef.current = previous;
-      } else {
-        void publishHonorFromLists(studentsRef.current, next);
-      }
-      settlePendingSyncMutation('graduates', token);
-    });
+    await publishHonorFromLists(studentsRef.current, next);
+    return true;
   };
 
-  const promoteStudents = (options: {
+  const promoteStudents = async (options: {
     academicYearFrom?: string;
     academicYearTo?: string;
     overrides?: Record<string, 'pass' | 'fail'>;
@@ -4805,9 +4643,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     });
 
+    const studentsPersisted = await persistChangedCollectionDocs('students', students, updatedStudentsList);
+    if (!studentsPersisted) return { promotedCount: 0, graduatedCount: 0, retainedCount: 0 };
     setStudents(updatedStudentsList);
     studentsRef.current = updatedStudentsList;
-    persistChangedCollectionDocs('students', students, updatedStudentsList);
 
     if (newGraduatesToInsert.length > 0) {
       const previousGrads = graduatesRef.current;
@@ -4835,14 +4674,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { promotedCount, graduatedCount, retainedCount };
   };
 
-  const updateParent = (id: string, updated: Partial<Parent>) => {
-    setParents((prev) => {
-      const next = prev.map((p) => (p.id === id ? { ...p, ...updated } : p));
-      const after = next.find((p) => p.id === id);
-      const before = prev.find((p) => p.id === id);
-      if (after) void persistCollectionDoc('parents', id, after, before);
-      return next;
-    });
+  const updateParent = async (id: string, updated: Partial<Parent>) => {
+    const before = parents.find((p) => p.id === id);
+    if (!before) return false;
+    const after = { ...before, ...updated };
+    const persisted = await persistCollectionDoc('parents', id, after, before);
+    if (!persisted) return false;
+    setParents((prev) => prev.map((p) => (p.id === id ? after : p)));
+    return true;
   };
 
   useEffect(() => {
@@ -4938,9 +4777,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     })();
   }, [role, currentUser?.role, parents, students, parentStudentSelfHealGeneration]);
 
-  const deleteParent = (id: string) => {
+  const deleteParent = async (id: string) => {
+    const persisted = await deleteCollectionDoc('parents', id);
+    if (!persisted) return false;
     setParents((prev) => prev.filter((p) => p.id !== id));
-    void deleteCollectionDoc('parents', id);
+    return true;
   };
 
   const updateFinancialRecord = (id: string, updated: Partial<FinancialRecord>) => {
@@ -4968,7 +4809,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   };
 
-  const addFinancialRecord = (data: Omit<FinancialRecord, 'id'>) => {
+  const addFinancialRecord = async (data: Omit<FinancialRecord, 'id'>) => {
     const totalAmount = data.totalAmount || 0;
     const paidAmount = data.paidAmount || 0;
     const autoStatus =
@@ -4983,20 +4824,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: `fin-${Date.now()}`,
       status: data.status || autoStatus,
     };
+    const persisted = await persistCollectionDoc('financial', newRecord.id, newRecord);
+    if (!persisted) return false;
     setFinancial((prev) => [newRecord, ...prev]);
   };
 
-  const deleteFinancialRecord = (id: string) => {
+  const deleteFinancialRecord = async (id: string) => {
+    const persisted = await deleteCollectionDoc('financial', id);
+    if (!persisted) return false;
     setFinancial((prev) => prev.filter((f) => f.id !== id));
+    return true;
   };
 
-  const createExam = (data: Omit<Exam, 'id' | 'createdAt'>) => {
+  const createExam = async (data: Omit<Exam, 'id' | 'createdAt'>) => {
     const newExam: Exam = {
       ...data,
       id: `ex-${Date.now()}`,
       createdAt: new Date().toISOString().split('T')[0],
       totalPoints: data.totalPoints || (data.questions ? data.questions.reduce((acc, q) => acc + (q.points || 0), 0) : 100),
     };
+    const persisted = await persistCollectionDoc('exams', newExam.id, newExam);
+    if (!persisted) return false;
     setExams((prev) => [newExam, ...prev]);
 
     // Broadcast notification to students & parents
@@ -5009,12 +4857,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       isRead: false,
       targetRole: 'student',
     };
-    addNotification(notif);
+    await addNotification(notif);
+    return true;
   };
 
-  const updateExam = (id: string, updated: Partial<Exam>) => {
-    setExams((prev) =>
-      prev.map((ex) => {
+  const updateExam = async (id: string, updated: Partial<Exam>) => {
+    const committed = await commitEntityArrayUpdate('exams', exams, setExams, id, (prev) => {
+      const next = prev.map((ex) => {
         if (ex.id === id) {
           const nextExam = { ...ex, ...updated };
           if (updated.questions) {
@@ -5023,16 +4872,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return nextExam;
         }
         return ex;
-      })
-    );
+      });
+      return next;
+    });
+    if (!committed) return false;
   };
 
-  const deleteExam = (id: string) => {
+  const deleteExam = async (id: string) => {
+    const persisted = await deleteCollectionDoc('exams', id);
+    if (!persisted) return false;
     setExams((prev) => prev.filter((ex) => ex.id !== id));
     setSubmissions((prev) => prev.filter((sub) => sub.examId !== id));
+    return true;
   };
 
-  const duplicateExam = (id: string) => {
+  const duplicateExam = async (id: string) => {
     const examToClone = exams.find((ex) => ex.id === id);
     if (!examToClone) return;
     const cloned: Exam = {
@@ -5042,19 +4896,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       status: 'مسودة',
       createdAt: new Date().toISOString().split('T')[0],
     };
+    const persisted = await persistCollectionDoc('exams', cloned.id, cloned);
+    if (!persisted) return false;
     setExams((prev) => [cloned, ...prev]);
+    return true;
   };
 
-  const toggleExamStatus = (id: string, status: Exam['status']) => {
-    setExams((prev) => prev.map((ex) => (ex.id === id ? { ...ex, status } : ex)));
+  const toggleExamStatus = async (id: string, status: Exam['status']) => {
+    const committed = await commitEntityArrayUpdate('exams', exams, setExams, id, (prev) => {
+      const next = prev.map((ex) => (ex.id === id ? { ...ex, status } : ex));
+      return next;
+    });
+    if (!committed) return false;
   };
 
-  const submitExam = (data: Omit<ExamSubmission, 'id' | 'submittedAt'>) => {
+  const submitExam = async (data: Omit<ExamSubmission, 'id' | 'submittedAt'>) => {
     const submission: ExamSubmission = {
       ...data,
       id: `sub-${Date.now()}`,
       submittedAt: new Date().toLocaleString(lang === 'ar' ? 'ar-IQ' : 'en-US'),
     };
+    const persisted = await persistCollectionDoc('submissions', submission.id, submission);
+    if (!persisted) return false;
     setSubmissions((prev) => [submission, ...prev]);
 
     // Notify Parent & Principal automatically
@@ -5165,11 +5028,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   };
 
-  const deleteSubmission = (submissionId: string) => {
+  const deleteSubmission = async (submissionId: string) => {
     setSubmissions((prev) => prev.filter((s) => s.id !== submissionId));
   };
 
-  const logAttendance = (
+  const logAttendance = async (
     records: Omit<AttendanceRecord, 'id'>[],
     meta?: { teacherEmail?: string; teacherName?: string; teacherId?: string }
   ) => {
@@ -5177,6 +5040,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...r,
       id: `att-${Date.now()}-${i}`,
     }));
+    const persisted = await Promise.all(newRecords.map((record) => persistCollectionDoc('attendance', record.id, record)));
+    if (!persisted.every(Boolean)) return false;
     setAttendance((prev) => [...newRecords, ...prev]);
 
     if (newRecords.length > 0) {
@@ -5338,7 +5203,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       parentNotifs.forEach((item) => addNotification(item));
 
       // 4. Update Cumulative Student Absence & Warning Levels Automatically
-      setStudents((prev) => {
+      const committed = await commitChangedCollectionUpdate('students', students, setStudents, (prev) => {
         const lessPerDay = disciplinarySettings?.lessonsPerAbsenceDay ?? 5;
         const first = disciplinarySettings?.firstWarningDays ?? 5;
         const final = disciplinarySettings?.finalWarningDays ?? 10;
@@ -5379,41 +5244,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             warningLevel: newWarn
           };
         });
-        persistChangedCollectionDocs('students', prev, updatedArray);
         return updatedArray;
       });
+      if (!committed) return false;
     }
   };
 
 
-  const updateAttendanceRecord = (
+  const updateAttendanceRecord = async (
     id: string,
     updated: Partial<AttendanceRecord>,
     notifyParent: boolean = true
   ) => {
-    let targetRecord: AttendanceRecord | undefined;
-    let oldStatus: AttendanceRecord['status'] | undefined;
-    let newStatus: AttendanceRecord['status'] | undefined;
-
-    setAttendance((prev) => {
-      const existing = prev.find((r) => r.id === id);
-      if (!existing) return prev;
-      targetRecord = existing;
-      oldStatus = existing.status;
-      newStatus = updated.status ?? existing.status;
-
-      return prev.map((r) => {
-        if (r.id !== id) return r;
-        return {
-          ...r,
-          ...updated,
-          originalStatus: r.originalStatus || r.status,
-          modifiedAt: new Date().toISOString(),
-          modifiedBy: updated.modifiedBy || currentUser?.name || 'إدارة ثانوية ميسان للمتميزات',
-          reasonForModification: updated.reasonForModification || r.reasonForModification,
-        };
-      });
-    });
+    const targetRecord = attendance.find((r) => r.id === id);
+    if (!targetRecord) return false;
+    const oldStatus: AttendanceRecord['status'] = targetRecord.status;
+    const newStatus: AttendanceRecord['status'] = updated.status ?? targetRecord.status;
+    const nextAttendance = attendance.map((r) =>
+      r.id === id
+        ? {
+            ...r,
+            ...updated,
+            originalStatus: r.originalStatus || r.status,
+            modifiedAt: new Date().toISOString(),
+            modifiedBy: updated.modifiedBy || currentUser?.name || 'إدارة ثانوية ميسان للمتميزات',
+            reasonForModification: updated.reasonForModification || r.reasonForModification,
+          }
+        : r
+    );
+    const persisted = await persistEntityFromArray('attendance', attendance, nextAttendance, id);
+    if (!persisted) return false;
+    setAttendance(nextAttendance);
 
     if (targetRecord && oldStatus && newStatus && oldStatus !== newStatus) {
       let deltaMissedLessons = 0;
@@ -5432,7 +5293,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       if (deltaMissedLessons !== 0 || deltaExcusedDays !== 0) {
-        setStudents((prev) => {
+        const committed = await commitChangedCollectionUpdate('students', students, setStudents, (prev) => {
           const updatedArray = prev.map((s) => {
             if (s.id !== targetRecord?.studentId && s.name !== targetRecord?.studentName) return s;
             
@@ -5459,9 +5320,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               warningLevel: newWarn
             };
           });
-          persistChangedCollectionDocs('students', prev, updatedArray);
           return updatedArray;
         });
+        if (!committed) return false;
       }
 
       // If notifyParent is requested, send an official correction notification & direct message
@@ -5531,15 +5392,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const batchUpdateAttendanceRecords = (
+  const batchUpdateAttendanceRecords = async (
     updates: Array<{ id: string; status: 'حاضرة' | 'غائبة' | 'متأخرة' | 'مجازة'; notes?: string; reasonForModification?: string }>,
     notifyParent: boolean = false
   ) => {
     if (!updates || updates.length === 0) return;
 
-    updates.forEach((u) => {
-      updateAttendanceRecord(u.id, { status: u.status, notes: u.notes, reasonForModification: u.reasonForModification }, notifyParent);
-    });
+    const results = await Promise.all(updates.map((u) =>
+      updateAttendanceRecord(u.id, { status: u.status, notes: u.notes, reasonForModification: u.reasonForModification }, notifyParent)
+    ));
+    if (results.some((result) => result === false)) return false;
 
     addNotification({
       title: '✅ تم حفظ التعديلات الجماعية على سجلات الحضور',
@@ -5552,13 +5414,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const deleteAttendanceRecord = (id: string) => {
-    let deletedRecord: AttendanceRecord | undefined;
-
-    setAttendance((prev) => {
-      deletedRecord = prev.find((r) => r.id === id);
-      return prev.filter((r) => r.id !== id);
-    });
+  const deleteAttendanceRecord = async (id: string) => {
+    const deletedRecord = attendance.find((r) => r.id === id);
+    if (!deletedRecord) return false;
+    const persisted = await deleteCollectionDoc('attendance', id);
+    if (!persisted) return false;
+    setAttendance((prev) => prev.filter((r) => r.id !== id));
 
     if (deletedRecord) {
       const rec = deletedRecord as AttendanceRecord;
@@ -5581,7 +5442,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const deleteAttendanceRecordsForSession = (
+  const deleteAttendanceRecordsForSession = async (
     date: string,
     gradeLevel: GradeLevel,
     section: string,
@@ -5597,6 +5458,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (toDelete.length === 0) return;
 
+    const persisted = await Promise.all(toDelete.map((record) => deleteCollectionDoc('attendance', record.id)));
+    if (!persisted.every(Boolean)) return false;
     const idsToDelete = new Set(toDelete.map((r) => r.id));
     setAttendance((prev) => prev.filter((r) => !idsToDelete.has(r.id)));
 
@@ -5624,8 +5487,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const recalculateStudentAbsenceStats = (studentId?: string, overrideSettings?: DisciplinarySettings) => {
-    setStudents((prev) => {
+  const recalculateStudentAbsenceStats = async (studentId?: string, overrideSettings?: DisciplinarySettings) => {
+    const committed = await commitChangedCollectionUpdate('students', students, setStudents, (prev) => {
       const updated = prev.map((s) => {
         if (studentId && s.id !== studentId) return s;
         const discSettings = overrideSettings || disciplinarySettings || DEFAULT_DISCIPLINARY_SETTINGS;
@@ -5644,9 +5507,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         return s;
       });
-      persistChangedCollectionDocs('students', prev, updated);
       return updated;
     });
+    if (!committed) return false;
   };
 
   /**
@@ -5690,7 +5553,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   /**
    * Undo/Retract an accidental absence entry (التراجع عن تسجيل الغياب المسجل سهواً)
    */
-  const undoAccidentalAbsence = (
+  const undoAccidentalAbsence = async (
     recordId: string,
     options?: {
       reason?: string;
@@ -5698,7 +5561,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       notifyParent?: boolean;
       undoneBy?: string;
     }
-  ): { success: boolean; message: string } => {
+  ): Promise<{ success: boolean; message: string }> => {
     const existing = attendance.find((r) => r.id === recordId);
     if (!existing) {
       return { success: false, message: 'لم يتم العثور على سجل الحضور المطلوب.' };
@@ -5733,25 +5596,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const timeStr = new Date().toLocaleString(lang === 'ar' ? 'ar-IQ' : 'en-US');
 
     if (options?.deleteRecordInstead) {
+      const persisted = await deleteCollectionDoc('attendance', recordId);
+      if (!persisted) return { success: false, message: 'تعذر حذف سجل الحضور من قاعدة البيانات.' };
       setAttendance((prev) => prev.filter((r) => r.id !== recordId));
     } else {
-      setAttendance((prev) =>
-        prev.map((r) => {
-          if (r.id !== recordId) return r;
-          return {
-            ...r,
-            status: 'حاضرة',
-            originalStatus: r.originalStatus || r.status,
-            isRevokedMistakenAbsence: true,
-            undoneAt: timestamp,
-            undoneBy: actorName,
-            undoReason: defaultUndoReason,
-            reasonForModification: `↩️ تم التراجع عن تسجيل الغياب (سُجلت سهواً) وتثبيت الحضور: ${defaultUndoReason}`,
-            modifiedAt: timestamp,
-            modifiedBy: actorName,
-          };
-        })
+      const nextAttendance: AttendanceRecord[] = attendance.map((r) =>
+        r.id === recordId
+          ? {
+              ...r,
+              status: 'حاضرة' as const,
+              originalStatus: r.originalStatus || r.status,
+              isRevokedMistakenAbsence: true,
+              undoneAt: timestamp,
+              undoneBy: actorName,
+              undoReason: defaultUndoReason,
+              reasonForModification: `↩️ تم التراجع عن تسجيل الغياب (سُجلت سهواً) وتثبيت الحضور: ${defaultUndoReason}`,
+              modifiedAt: timestamp,
+              modifiedBy: actorName,
+            }
+          : r
       );
+      const persisted = await persistEntityFromArray('attendance', attendance, nextAttendance, recordId);
+      if (!persisted) return { success: false, message: 'تعذر تحديث سجل الحضور في قاعدة البيانات.' };
+      setAttendance(nextAttendance);
     }
 
     // Deduct student missed lesson & recalculate absence days
@@ -5759,7 +5626,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const deltaExcused = isExcused ? -1 : 0;
     
     if (deltaLessons !== 0 || deltaExcused !== 0) {
-      setStudents((prev) => {
+      const committed = await commitChangedCollectionUpdate('students', students, setStudents, (prev) => {
         const updatedArray = prev.map((s) => {
           if (s.id !== existing.studentId && s.name !== existing.studentName) return s;
           
@@ -5786,9 +5653,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             warningLevel: newWarn
           };
         });
-        persistChangedCollectionDocs('students', prev, updatedArray);
         return updatedArray;
       });
+      if (!committed) return { success: false, message: 'تعذر تحديث إحصائيات الطالبة في قاعدة البيانات.' };
     }
 
     // Send Notifications & Direct Messages if notifyParent !== false
@@ -5877,12 +5744,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   /**
    * Batch undo accidental absences
    */
-  const batchUndoAccidentalAbsences = (recordIds: string[], reason?: string) => {
+  const batchUndoAccidentalAbsences = async (recordIds: string[], reason?: string) => {
     let count = 0;
-    recordIds.forEach((id) => {
-      const res = undoAccidentalAbsence(id, { reason });
+    for (const id of recordIds) {
+      const res = await undoAccidentalAbsence(id, { reason });
       if (res.success) count++;
-    });
+    }
     return {
       successCount: count,
       message: `تم بنجاح التراجع عن (${count}) غياب مسجل سهواً وتثبيت حضور الطالبات.`,
@@ -5892,7 +5759,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   /**
    * Direct undo of unexcused absence days and lessons for a student
    */
-  const undoStudentAbsenceDays = (
+  const undoStudentAbsenceDays = async (
     studentId: string,
     daysToUndo: number,
     lessonsToUndo: number = 0,
@@ -5912,7 +5779,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const timeStr = new Date().toLocaleString(lang === 'ar' ? 'ar-IQ' : 'en-US');
     let targetStudent: Student | undefined;
     
-    setStudents((prev) => {
+    const committed = await commitChangedCollectionUpdate('students', students, setStudents, (prev) => {
       const updatedArray = prev.map((s) => {
         if (s.id !== studentId) return s;
         targetStudent = s;
@@ -5946,9 +5813,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           warningLevel: newWarn
         };
       });
-      persistChangedCollectionDocs('students', prev, updatedArray);
       return updatedArray;
     });
+    if (!committed) return false;
 
     if (targetStudent && notifyParent) {
       const s = targetStudent as Student;
@@ -6011,7 +5878,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const addDisciplinaryDecision = (
+  const addDisciplinaryDecision = async (
     decisionData: Omit<DisciplinaryDecision, 'id' | 'issueDate'> & { id?: string; issueDate?: string }
   ) => {
     const randSuffix = Math.random().toString(36).substring(2, 7);
@@ -6097,7 +5964,7 @@ ${newDecision.notes || 'يرجى مراجعة إدارة المدرسة فورا
     setMessages((prev) => [officialMsg, ...prev]);
   };
 
-  const justifyAbsence = (studentId: string, excusedDays: number, notes: string, attachmentUrl?: string, attachmentName?: string, justifiedDates?: string[]) => {
+  const justifyAbsence = async (studentId: string, excusedDays: number, notes: string, attachmentUrl?: string, attachmentName?: string, justifiedDates?: string[]) => {
     const timeStr = new Date().toISOString().split('T')[0];
     const letterNum = `م/ت/${Math.floor(100 + Math.random() * 900)}/${new Date().getFullYear()}`;
     const formattedDatesList = justifiedDates && justifiedDates.length > 0 ? justifiedDates.join(' ، ') : '';
@@ -6106,22 +5973,24 @@ ${newDecision.notes || 'يرجى مراجعة إدارة المدرسة فورا
 
     // Update attendance records for the justified dates if present
     if (justifiedDates && justifiedDates.length > 0) {
-      setAttendance((prev) =>
-        prev.map((rec) => {
+      const committed = await commitChangedCollectionUpdate('attendance', attendance, setAttendance, (prev) => {
+        const next = prev.map((rec) => {
           if (rec.studentId === studentId && justifiedDates.includes(rec.date)) {
             return {
               ...rec,
-              status: 'مجازة',
+              status: 'مجازة' as const,
               notes: `تم تبرير الغياب بعذر رسمي مصدق (${notes})`,
             };
           }
           return rec;
-        })
-      );
+        });
+        return next;
+      });
+      if (!committed) return false;
     }
 
     let targetStudent: Student | undefined;
-    setStudents((prev) => {
+    const committed = await commitChangedCollectionUpdate('students', students, setStudents, (prev) => {
       const updatedArray = prev.map((s) => {
         if (s.id !== studentId) return s;
         targetStudent = s;
@@ -6151,9 +6020,9 @@ ${newDecision.notes || 'يرجى مراجعة إدارة المدرسة فورا
           warningLevel: newWarn
         };
       });
-      persistChangedCollectionDocs('students', prev, updatedArray);
       return updatedArray;
     });
+    if (!committed) return false;
 
     if (targetStudent) {
       const datesDetail = formattedDatesList ? ` التواريخ: (${formattedDatesList}).` : '';
@@ -6257,8 +6126,8 @@ ${defaultReason}
     }
   };
 
-  const deleteDisciplinaryDecision = (decisionId: string, studentId: string) => {
-    setStudents((prev) => {
+  const deleteDisciplinaryDecision = async (decisionId: string, studentId: string) => {
+    const committed = await commitChangedCollectionUpdate('students', students, setStudents, (prev) => {
       const updated = prev.map(s => {
         if (s.id !== studentId) return s;
         if (!s.disciplinaryDecisions) return s;
@@ -6268,9 +6137,9 @@ ${defaultReason}
         // For now just removing it from the array.
         return { ...s, disciplinaryDecisions: filteredDecisions };
       });
-      persistChangedCollectionDocs('students', prev, updated);
       return updated;
     });
+    if (!committed) return false;
   };
 
   const updateDisciplinaryDecision = (decisionId: string, studentId: string, updates: Partial<DisciplinaryDecision>) => {
@@ -6281,13 +6150,15 @@ ${defaultReason}
     revokeDisciplinaryDecision(decisionId, studentId, reason || 'إلغاء تبرير الغياب وإعادة احتساب الأيام غير المبررة');
   };
 
-  const sendAnnouncement = (data: Omit<Announcement, 'id' | 'createdAt' | 'readBy'>) => {
+  const sendAnnouncement = async (data: Omit<Announcement, 'id' | 'createdAt' | 'readBy'>) => {
     const newAnc: Announcement = {
       ...data,
       id: `anc-${Date.now()}`,
       createdAt: new Date().toLocaleString(lang === 'ar' ? 'ar-IQ' : 'en-US'),
       readBy: [],
     };
+    const persisted = await persistCollectionDoc('announcements', newAnc.id, newAnc);
+    if (!persisted) return false;
     setAnnouncements((prev) => [newAnc, ...prev]);
 
     // Push notification
@@ -6299,36 +6170,34 @@ ${defaultReason}
       timestamp: lang === 'ar' ? 'الآن' : 'Just now',
       isRead: false,
     };
-    addNotification(notif);
+    await addNotification(notif);
+    return true;
   };
 
-  const persistSentDirectMessage = (sentMsg: DirectMessage, previousDraft?: DirectMessage) => {
-    pendingDirectMessagePersistRef.current[sentMsg.id] = sentMsg;
+  const persistDirectMessageCommand = async (message: DirectMessage): Promise<boolean> => {
     const sourceUser = {
       id: currentUser?.id || role,
       name: currentUser?.name || role,
       role,
     };
-    void centralSyncService.persistDirectMessage(sentMsg, sourceUser).then((res) => {
-      if (res.success) return;
-      delete pendingDirectMessagePersistRef.current[sentMsg.id];
+    const res = await runTrackedPersistenceWrite(
+      () => centralSyncService.persistDirectMessage(message, sourceUser),
+      { success: false, message: 'logout-in-progress' }
+    );
+    if (res.success !== true) {
       setSyncStatus('error');
       setSyncErrorMessage(res.message || 'فشل حفظ الرسالة في قاعدة البيانات');
-      setMessages((prev) => {
-        if (previousDraft) {
-          return prev.map((m) => (m.id === sentMsg.id ? previousDraft : m));
-        }
-        return prev.filter((m) => m.id !== sentMsg.id);
-      });
-    });
+      return false;
+    }
+    return true;
   };
 
-  const sendMessage = (data: Omit<DirectMessage, 'id' | 'timestamp' | 'isRead'> & { id?: string }) => {
+  const sendMessage = async (data: Omit<DirectMessage, 'id' | 'timestamp' | 'isRead'> & { id?: string }): Promise<boolean> => {
     const canonicalSender = getCanonicalMessageSender();
-    if (!canonicalSender) return;
+    if (!canonicalSender) return false;
     const timeStr = new Date().toLocaleString(lang === 'ar' ? 'ar-IQ' : 'en-US');
+    let sentMsg: DirectMessage;
     if (data.id) {
-      // If it was a draft being sent
       const previousDraft = messages.find((m) => m.id === data.id);
       const ownsDraft = Boolean(
         previousDraft?.isDraft &&
@@ -6336,8 +6205,8 @@ ${defaultReason}
             ? previousDraft.senderAuthUid === canonicalSender.senderAuthUid
             : previousDraft.senderId === canonicalSender.senderId)
       );
-      if (!ownsDraft || !previousDraft) return;
-      const sentMsg: DirectMessage = {
+      if (!ownsDraft || !previousDraft) return false;
+      sentMsg = {
         ...previousDraft,
         ...data,
         ...canonicalSender,
@@ -6348,12 +6217,9 @@ ${defaultReason}
         isSpam: false,
         isRead: true,
       };
-      setMessages((prev) => prev.map((m) => (m.id === data.id ? sentMsg : m)));
-      persistSentDirectMessage(sentMsg, previousDraft);
     } else {
-      // New sent message
       const randSuffix = Math.random().toString(36).substring(2, 7);
-      const newMsg: DirectMessage = {
+      sentMsg = {
         ...data,
         ...canonicalSender,
         id: `msg-${Date.now()}-${randSuffix}`,
@@ -6363,57 +6229,49 @@ ${defaultReason}
         isDraft: false,
         isSpam: false,
       };
-      setMessages((prev) => [newMsg, ...prev]);
-      persistSentDirectMessage(newMsg);
-
-      const notif: NotificationItem = {
-        id: `notif-${Date.now()}-${randSuffix}`,
-        title: lang === 'ar' ? `رسالة جديدة من ${newMsg.senderName}` : `New message from ${newMsg.senderName}`,
-        message: newMsg.subject,
-        type: 'info',
-        timestamp: lang === 'ar' ? 'الآن' : 'Just now',
-        isRead: false,
-      };
-      addNotification(notif);
     }
+
+    const persisted = await persistDirectMessageCommand(sentMsg);
+    if (!persisted) return false;
+    setMessages((prev) => [sentMsg, ...prev.filter((m) => m.id !== sentMsg.id)]);
+
+    await addNotification({
+      id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      title: lang === 'ar' ? `رسالة جديدة من ${sentMsg.senderName}` : `New message from ${sentMsg.senderName}`,
+      message: sentMsg.subject,
+      type: 'info',
+      timestamp: lang === 'ar' ? 'الآن' : 'Just now',
+      isRead: false,
+    });
+    return true;
   };
 
-  const saveDraft = (draftData: Partial<DirectMessage> & { subject: string; content: string }) => {
+  const saveDraft = async (draftData: Partial<DirectMessage> & { subject: string; content: string }): Promise<boolean> => {
     const canonicalSender = getCanonicalMessageSender();
-    if (!canonicalSender) return;
+    if (!canonicalSender) return false;
     const timeStr = new Date().toLocaleString(lang === 'ar' ? 'ar-IQ' : 'en-US');
-    if (draftData.id) {
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === draftData.id && m.isDraft && (m.senderAuthUid ? m.senderAuthUid === canonicalSender.senderAuthUid : m.senderId === canonicalSender.senderId)
-            ? {
-                ...m,
-                ...draftData,
-                ...canonicalSender,
-                timestamp: timeStr,
-                folder: 'drafts',
-                isDraft: true,
-              }
-            : m
-        )
-      );
-    } else {
-      const randSuffix = Math.random().toString(36).substring(2, 7);
-      const newDraft: DirectMessage = {
-        id: draftData.id || `msg-draft-${Date.now()}-${randSuffix}`,
-        // SECURITY_MESSAGING_DRAFT_OWNERSHIP_V1_3D6D1
-        ...canonicalSender,
-        receiverId: draftData.receiverId || '',
-        receiverName: draftData.receiverName || 'مستلم محدد',
-        subject: draftData.subject || 'مسودة جديدة بدون عنوان',
-        content: draftData.content || '',
-        timestamp: timeStr,
-        isRead: true,
-        folder: 'drafts',
-        isDraft: true,
-      };
-      setMessages((prev) => [newDraft, ...prev]);
+    const existing = draftData.id ? messages.find((m) => m.id === draftData.id) : undefined;
+    if (existing && (!existing.isDraft || (existing.senderAuthUid ? existing.senderAuthUid !== canonicalSender.senderAuthUid : existing.senderId !== canonicalSender.senderId))) {
+      return false;
     }
+    const draft: DirectMessage = {
+      ...(existing || {} as DirectMessage),
+      ...draftData,
+      ...canonicalSender,
+      id: draftData.id || `msg-draft-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      receiverId: draftData.receiverId || existing?.receiverId || '',
+      receiverName: draftData.receiverName || existing?.receiverName || 'مستلم محدد',
+      subject: draftData.subject || 'مسودة جديدة بدون عنوان',
+      content: draftData.content || '',
+      timestamp: timeStr,
+      isRead: true,
+      folder: 'drafts',
+      isDraft: true,
+    };
+    const persisted = await persistDirectMessageCommand(draft);
+    if (!persisted) return false;
+    setMessages((prev) => [draft, ...prev.filter((m) => m.id !== draft.id)]);
+    return true;
   };
 
   // SECURITY_MESSAGING_APPCONTEXT_IDENTITY_V1_2
@@ -6605,34 +6463,29 @@ ${defaultReason}
     applyCurrentUserMessageState(id, targetUserId, { folder: folderId, customFolderId: folderId, isArchived: false, isTrash: false, isSpam: false, isDeleted: false });
   };
 
-  const addCustomFolder = (folderData: Omit<UserCustomFolder, 'id'>) => {
+  const addCustomFolder = async (folderData: Omit<UserCustomFolder, 'id'>) => {
     const newFolder: UserCustomFolder = {
       ...folderData,
       id: `folder-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
     };
+    const persisted = await persistCollectionDoc('customFolders', newFolder.id, newFolder);
+    if (!persisted) return false;
     setCustomFolders((prev) => [...prev, newFolder]);
   };
 
-  const deleteCustomFolder = (folderId: string) => {
+  const deleteCustomFolder = async (folderId: string) => {
+    const persisted = await deleteCollectionDoc('customFolders', folderId);
+    if (!persisted) return false;
     setCustomFolders((prev) => prev.filter((f) => f.id !== folderId));
+    return true;
   };
 
-  const deleteMessage = (id: string, explicitUserId?: string) => {
+  const deleteMessage = async (id: string, explicitUserId?: string) => {
     if (role === 'admin' && currentUser?.role === 'admin' && currentUser?.authUid) {
-      setMessages((prev) => {
-        const updated = prev.filter((m) => m.id !== id);
-        void runTrackedPersistenceWrite(
-          () =>
-            centralSyncService.directArrayMutation('messages', updated, {
-              id: currentUser?.id || role,
-              name: currentUser?.name || role,
-              role,
-            }),
-          false
-        );
-        return updated;
-      });
-      return;
+      const persisted = await deleteCollectionDoc('messages', id);
+      if (!persisted) return false;
+      setMessages((prev) => prev.filter((m) => m.id !== id));
+      return true;
     }
     const targetUserId = getCurrentUserIdInContext(explicitUserId);
     if (!targetUserId) return;
@@ -6705,23 +6558,42 @@ ${defaultReason}
     spamIds.forEach((id) => applyCurrentUserMessageState(id, targetUserId, { isDeleted: true }));
   };
 
-  const addLecture = (
+  const addLecture = async (
     data: Omit<LectureResource, 'id' | 'uploadedAt'>,
     options?: {
       resourceId?: string;
     }
-  ): LectureResource => {
-    // DIGITAL_LIBRARY_RESOURCE_ID_V2_2A
+  ): Promise<LectureResource> => {
     const lectureId =
       options?.resourceId?.trim() ||
       `lec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const nowIso = new Date().toISOString();
+    const ownerId =
+      (typeof data.ownerId === 'string' && data.ownerId.trim()) ||
+      (typeof data.uploaderId === 'string' && data.uploaderId.trim()) ||
+      (typeof currentUser?.authUid === 'string' ? currentUser.authUid.trim() : '');
     const newLec: LectureResource = {
       ...data,
       id: lectureId,
-      uploadedAt: new Date().toISOString().split('T')[0],
+      uploadedAt: nowIso.split('T')[0],
+      createdAt: data.createdAt || nowIso,
+      updatedAt: nowIso,
+      ownerId: ownerId || undefined,
+      ownerName: data.ownerName || data.uploaderName || currentUser?.name,
+      ownerRole: data.ownerRole || data.uploaderRole || currentUser?.role,
+      uploaderId: data.uploaderId || ownerId || undefined,
+      uploaderName: data.uploaderName || data.ownerName || currentUser?.name,
+      uploaderRole: data.uploaderRole || data.ownerRole || currentUser?.role,
+      access: data.access && data.access.audiences?.length ? data.access : { audiences: ['authenticated'] },
       downloadCount: data.downloadCount ?? 1,
       viewsCount: data.viewsCount ?? 1,
     };
+
+    if (data.storageProvider === 'firebase') {
+      if (!newLec.ownerId || !newLec.uploaderId) {
+        throw new Error('تعذر حفظ بيانات الملف: معرف المالك غير صالح.');
+      }
+    }
 
     if (
       data.storageProvider !== 'firebase' &&
@@ -6734,28 +6606,31 @@ ${defaultReason}
       }).catch(console.error);
     }
 
-    setLectures((prev) => [newLec, ...prev]);
+    const persistRes = await runTrackedPersistenceWrite(
+      () => centralSyncService.upsertCollectionDocument('lectures', lectureId, newLec, undefined, syncSourceUser()),
+      { success: false, message: 'logout-in-progress' }
+    );
+    if (persistRes.success !== true) {
+      const persistError = new Error(persistRes.message || 'تعذر حفظ بيانات الملف في Firestore.');
+      (persistError as Error & { code?: string }).code = persistRes.message?.includes('permission-denied')
+        ? 'permission-denied'
+        : persistRes.message?.includes('logout-in-progress')
+          ? 'unavailable'
+          : undefined;
+      throw persistError;
+    }
 
-    const notif: NotificationItem = {
-      id: `notif-${Date.now()}`,
-      title: lang === 'ar' ? `تم إضافة مرجع / كتاب جديد للمكتبة: ${newLec.title}` : `New Library Resource: ${newLec.title}`,
-      message: `${newLec.subject} (${newLec.gradeLevel})`,
-      type: 'info',
-      timestamp: lang === 'ar' ? 'الآن' : 'Just now',
-      isRead: false,
-    };
-    addNotification(notif);
+    setLectures((prev) => [newLec, ...prev.filter((row) => row.id !== lectureId)]);
 
-    // Return the exact resource that was inserted.
-    // Storage integration must reuse this same immutable resource ID.
     return newLec;
   };
 
-  const deleteLecture = (id: string) => {
-    // 1. Delete stored attachment/PDF file from IndexedDB
-    deleteStoredFile(id).catch(console.error);
+  const deleteLecture = async (id: string): Promise<boolean> => {
+    const target = lectures.find((row) => row.id === id);
+    if (!target) return false;
+    if (!canManageLibraryResource(target, currentUser)) return false;
 
-    // 2. Track deleted ID permanently in state and localStorage so it is never reloaded
+    suppressLibraryResourceId(id);
     setDeletedLectureIds((prev) => {
       if (prev.includes(id)) return prev;
       const updated = [...prev, id];
@@ -6767,21 +6642,38 @@ ${defaultReason}
       return updated;
     });
 
-    // 3. Remove from active lectures state immediately
-    let targetLectureTitle = 'الكتاب / المرجع';
-    setLectures((prev) => {
-      const target = prev.find((l) => l.id === id);
-      if (target?.title) targetLectureTitle = target.title;
-      return prev.filter((l) => l.id !== id);
-    });
+    const ok = await deleteCollectionDoc('lectures', id);
+    if (!ok) {
+      clearLibraryResourceSuppression(id);
+      setDeletedLectureIds((prev) => {
+        const updated = prev.filter((rowId) => rowId !== id);
+        try {
+          localStorage.setItem('maysan_deleted_lecture_ids_v1', JSON.stringify(updated));
+        } catch (e) {
+          console.error('Failed to save deleted lecture IDs', e);
+        }
+        return updated;
+      });
+      return false;
+    }
 
-    // 4. Clean up bookmarks and recent reads from localStorage
+    if (target.storagePath) {
+      try {
+        await deleteLibraryFile(target.storagePath);
+      } catch (err) {
+        console.error('Library storage delete failed:', err);
+      }
+    }
+    deleteStoredFile(id).catch(console.error);
+
+    let targetLectureTitle = target.title || 'الكتاب / المرجع';
+    setLectures((prev) => prev.filter((l) => l.id !== id));
+
     try {
       const savedBm = localStorage.getItem('maysan_library_bookmarks_v1');
       if (savedBm) {
         const bmList: string[] = JSON.parse(savedBm);
-        const filteredBm = bmList.filter((bId) => bId !== id);
-        localStorage.setItem('maysan_library_bookmarks_v1', JSON.stringify(filteredBm));
+        localStorage.setItem('maysan_library_bookmarks_v1', JSON.stringify(bmList.filter((bId) => bId !== id)));
       }
     } catch {
       // ignore
@@ -6791,14 +6683,12 @@ ${defaultReason}
       const savedRec = localStorage.getItem('maysan_library_recent_reads_v1');
       if (savedRec) {
         const recList: string[] = JSON.parse(savedRec);
-        const filteredRec = recList.filter((rId) => rId !== id);
-        localStorage.setItem('maysan_library_recent_reads_v1', JSON.stringify(filteredRec));
+        localStorage.setItem('maysan_library_recent_reads_v1', JSON.stringify(recList.filter((rId) => rId !== id)));
       }
     } catch {
       // ignore
     }
 
-    // 5. Add Audit Log
     addAuditLog({
       action: `حذف كتاب / مرجع نهائياً: ${targetLectureTitle}`,
       actionType: 'delete',
@@ -6806,22 +6696,31 @@ ${defaultReason}
       details: `تم حذف الكتاب برقم المعرف (${id}) وجميع ملفاته المرفقة بشكل دائم ونهائي من قاعدة البيانات والمكتبة المدرسية.`,
       severity: 'warning',
     });
+    return true;
   };
 
-  const updateLecture = (id: string, data: Partial<LectureResource>) => {
+  const updateLecture = async (id: string, data: Partial<LectureResource>): Promise<boolean> => {
+    const target = lectures.find((row) => row.id === id);
+    if (!target) return false;
+    if (!canManageLibraryResource(target, currentUser)) return false;
+    const next = applyManagedLibraryResourceUpdate(target, data);
+    next.updatedAt = new Date().toISOString();
+
     if (
       data.storageProvider !== 'firebase' &&
       data.pdfDataUrl &&
       data.pdfDataUrl.length > 50
     ) {
       saveStoredFile(id, data.pdfDataUrl, {
-        name: `${data.title || 'document'}.pdf`,
+        name: `${next.title || 'document'}.pdf`,
         type: 'application/pdf',
       }).catch(console.error);
     }
-    setLectures((prev) =>
-      prev.map((l) => (l.id === id ? { ...l, ...data } : l))
-    );
+
+    const ok = await persistCollectionDoc('lectures', id, next, target);
+    if (!ok) return false;
+    setLectures((prev) => prev.map((l) => (l.id === id ? next : l)));
+    return true;
   };
 
   const recordLectureDownload = (id: string) => {
@@ -6859,16 +6758,16 @@ ${defaultReason}
   });
 
   // SECURITY_NOTIFICATION_AUTH_UID_CREATE_V1_D6F2
-  const addNotification = (
+  const addNotification = async (
     notifData: Omit<NotificationItem, 'id' | 'createdAt'> & { id?: string }
-  ): boolean => {
+  ): Promise<boolean> => {
     const prepared = prepareNotificationAuthIdentity(
       notifData,
       buildNotificationIdentityCatalog(),
       currentUser?.authUid
     );
     if (!prepared.ok) {
-      console.error('[Notifications]', prepared.reason);
+      console.error('[Notifications]', 'reason' in prepared ? prepared.reason : 'recipient-resolution-failed');
       return false;
     }
     const randSuffix = Math.random().toString(36).substring(2, 7);
@@ -6881,6 +6780,8 @@ ${defaultReason}
       isRead: false,
       readBy: [],
     };
+    const persisted = await persistCollectionDoc('notifications', newNotif.id, newNotif);
+    if (!persisted) return false;
     setNotifications((prev) => [newNotif, ...prev]);
     return true;
   };
@@ -6903,23 +6804,13 @@ ${defaultReason}
     void centralSyncService.upsertCurrentUserNotificationState(notificationId, next);
   };
 
-  const deleteNotification = (id: string, explicitUserId?: string) => {
+  const deleteNotification = async (id: string, explicitUserId?: string) => {
     // Admin override: Actually delete the notification from the system completely
     if (role === 'admin' || currentUser?.role === 'admin') {
-      setNotifications(prev => {
-        const updated = prev.filter(n => n.id !== id);
-        void runTrackedPersistenceWrite(
-          () =>
-            centralSyncService.directArrayMutation('notifications', updated, {
-              id: currentUser?.id || role,
-              name: currentUser?.name || role,
-              role,
-            }),
-          false
-        );
-        return updated;
-      });
-      return;
+      const persisted = await deleteCollectionDoc('notifications', id);
+      if (!persisted) return false;
+      setNotifications((prev) => prev.filter((n) => n.id !== id));
+      return true;
     }
     const target = notifications.find((n) => n.id === id);
     if (target && notificationHasAuthUidTargeting(target)) {
@@ -7461,46 +7352,67 @@ ${defaultReason}
     );
   };
 
-  // Timetable Handlers
-  const updateTimetableSlot = (id: string, updated: Partial<TimetableSlot>) => {
-    setTimetable((prev) => prev.map((s) => (s.id === id ? { ...s, ...updated } : s)));
+  // Timetable Handlers — explicit persistence: write first, then expose success to the UI.
+  const updateTimetableSlot = async (id: string, updated: Partial<TimetableSlot>): Promise<boolean> => {
+    const before = timetable.find((slot) => slot.id === id);
+    if (!before) return false;
+    const after = { ...before, ...updated };
+    const ok = await persistCollectionDoc('timetable', id, after, before);
+    if (ok) setTimetable((prev) => prev.map((slot) => (slot.id === id ? after : slot)));
+    return ok;
   };
 
-  const addTimetableSlot = (slotData: Omit<TimetableSlot, 'id'>) => {
+  const addTimetableSlot = async (slotData: Omit<TimetableSlot, 'id'>): Promise<boolean> => {
     const newSlot: TimetableSlot = {
       ...slotData,
       id: `time-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
     };
-    setTimetable((prev) => [...prev, newSlot]);
+    const ok = await persistCollectionDoc('timetable', newSlot.id, newSlot);
+    if (ok) setTimetable((prev) => [...prev, newSlot]);
+    return ok;
   };
 
-  const deleteTimetableSlot = (id: string) => {
-    setTimetable((prev) => prev.filter((s) => s.id !== id));
+  const deleteTimetableSlot = async (id: string): Promise<boolean> => {
+    const ok = await deleteCollectionDoc('timetable', id);
+    if (ok) setTimetable((prev) => prev.filter((slot) => slot.id !== id));
+    return ok;
   };
 
-  const saveFullTimetable = (slots: TimetableSlot[]) => {
-    setTimetable(slots);
+  const saveFullTimetable = async (slots: TimetableSlot[]): Promise<boolean> => {
+    const ok = await persistChangedCollectionDocs('timetable', timetable, slots, true);
+    if (ok) setTimetable(slots);
+    return ok;
   };
 
-  // Grade Subject Quota Handlers
-  const updateSubjectQuota = (id: string, updated: Partial<GradeSubjectQuota>) => {
-    setSubjectQuotas((prev) => prev.map((q) => (q.id === id ? { ...q, ...updated } : q)));
+  const updateSubjectQuota = async (id: string, updated: Partial<GradeSubjectQuota>): Promise<boolean> => {
+    const before = subjectQuotas.find((quota) => quota.id === id);
+    if (!before) return false;
+    const after = { ...before, ...updated };
+    const ok = await persistCollectionDoc('subjectQuotas', id, after, before);
+    if (ok) setSubjectQuotas((prev) => prev.map((quota) => (quota.id === id ? after : quota)));
+    return ok;
   };
 
-  const addSubjectQuota = (quotaData: Omit<GradeSubjectQuota, 'id'>) => {
+  const addSubjectQuota = async (quotaData: Omit<GradeSubjectQuota, 'id'>): Promise<boolean> => {
     const newQuota: GradeSubjectQuota = {
       ...quotaData,
       id: `quota-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
     };
-    setSubjectQuotas((prev) => [...prev, newQuota]);
+    const ok = await persistCollectionDoc('subjectQuotas', newQuota.id, newQuota);
+    if (ok) setSubjectQuotas((prev) => [...prev, newQuota]);
+    return ok;
   };
 
-  const deleteSubjectQuota = (id: string) => {
-    setSubjectQuotas((prev) => prev.filter((q) => q.id !== id));
+  const deleteSubjectQuota = async (id: string): Promise<boolean> => {
+    const ok = await deleteCollectionDoc('subjectQuotas', id);
+    if (ok) setSubjectQuotas((prev) => prev.filter((quota) => quota.id !== id));
+    return ok;
   };
 
-  const saveSubjectQuotas = (quotas: GradeSubjectQuota[]) => {
-    setSubjectQuotas(quotas);
+  const saveSubjectQuotas = async (quotas: GradeSubjectQuota[]): Promise<boolean> => {
+    const ok = await persistChangedCollectionDocs('subjectQuotas', subjectQuotas, quotas, true);
+    if (ok) setSubjectQuotas(quotas);
+    return ok;
   };
 
   const exportDataJSON = () => {
@@ -7558,7 +7470,7 @@ ${defaultReason}
       if (parsed.attendance) setAttendance(parsed.attendance);
       if (parsed.announcements) setAnnouncements(parsed.announcements);
       if (parsed.messages) setMessages(parsed.messages);
-      if (parsed.lectures) setLectures(parsed.lectures);
+      if (parsed.lectures) setLectures(filterRuntimeLibraryResources(parsed.lectures));
       if (parsed.timetable) setTimetable(parsed.timetable);
       if (parsed.subjectQuotas) setSubjectQuotas(parsed.subjectQuotas);
       if (parsed.financial) setFinancial(parsed.financial);
@@ -7603,7 +7515,7 @@ ${defaultReason}
     setAttendance(INITIAL_ATTENDANCE);
     setAnnouncements(INITIAL_ANNOUNCEMENTS);
     setMessages(INITIAL_MESSAGES);
-    setLectures(INITIAL_LECTURES);
+    setLectures([]);
     setTimetable(INITIAL_TIMETABLE);
     setSubjectQuotas(INITIAL_SUBJECT_QUOTAS);
     setFinancial(INITIAL_FINANCIAL);
@@ -7667,7 +7579,7 @@ ${defaultReason}
     setAttendance(next.attendance);
     setAnnouncements(next.announcements);
     setMessages(next.messages);
-    setLectures(next.lectures);
+    setLectures(filterRuntimeLibraryResources(next.lectures));
     setTimetable(next.timetable);
     setSubjectQuotas(next.subjectQuotas);
     setFinancial(next.financial);
@@ -7700,10 +7612,6 @@ ${defaultReason}
     const admission = admitAuthenticatedLogout(sessionAdmissionRef.current);
     if (!admission.admitted) {
       return;
-    }
-    if (pushDebounceTimer.current) {
-      clearTimeout(pushDebounceTimer.current);
-      pushDebounceTimer.current = null;
     }
     try {
       await FirebaseAuthService.logout();
@@ -7769,6 +7677,8 @@ ${defaultReason}
         calendarEvents,
         schoolAdminData,
         updateSchoolAdminData,
+        persistPublicHomepageNews,
+        persistPublicHomepageGallery,
         addCalendarEvent,
         updateCalendarEvent,
         deleteCalendarEvent,
@@ -7782,6 +7692,7 @@ ${defaultReason}
         updateCertificate,
         updateSubjectGrade,
         batchUpdateStudentGrades,
+        commitCertificate,
         recalculateCertificate,
         addStudentCertificate,
         issueCertificatesForScope,

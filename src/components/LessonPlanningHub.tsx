@@ -1684,12 +1684,13 @@ export const LessonPlanningHub: React.FC<Props> = ({
         <AnnualPlanFormModal
           planToEdit={editingAnnualPlan}
           onClose={() => setShowAnnualModal(false)}
-          onSave={(data) => {
+          onSave={async (data) => {
             if (editingAnnualPlan) {
-              updateAnnualPlan(editingAnnualPlan.id, data);
+              const ok = await updateAnnualPlan(editingAnnualPlan.id, data);
+              if (ok === false) return;
               showToast(`تم تحديث الخطة السنوية لمادة (${data.subject}) بنجاح`);
             } else {
-              addAnnualPlan({
+              await addAnnualPlan({
                 ...data,
                 createdBy: currentUser?.profileId || currentUser?.teacherObj?.id || currentUser?.id || '',
               });
@@ -1711,12 +1712,13 @@ export const LessonPlanningHub: React.FC<Props> = ({
           planToEdit={editingDailyPlan}
           annualPlans={annualPlans}
           onClose={() => setShowDailyModal(false)}
-          onSave={(data) => {
+          onSave={async (data) => {
             if (editingDailyPlan) {
-              updateDailyLessonPlan(editingDailyPlan.id, data);
+              const ok = await updateDailyLessonPlan(editingDailyPlan.id, data);
+              if (ok === false) return;
               showToast(`تم تحديث خطة درس (${data.lessonTitle}) بنجاح`);
             } else {
-              addDailyLessonPlan({
+              await addDailyLessonPlan({
                 ...data,
                 createdBy: currentUser?.profileId || currentUser?.teacherObj?.id || currentUser?.id || '',
               });
@@ -1787,13 +1789,15 @@ export const LessonPlanningHub: React.FC<Props> = ({
               </button>
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
                   if (deleteTarget.type === 'annual') {
-                    deleteAnnualPlan(deleteTarget.id);
+                    const ok = await deleteAnnualPlan(deleteTarget.id);
+                    if (ok === false) return;
                     if (viewingAnnualPlan?.id === deleteTarget.id) setViewingAnnualPlan(null);
                     showToast(`تم حذف الخطة السنوية لمادة (${deleteTarget.subject}) بشكل نهائي`);
                   } else {
-                    deleteDailyLessonPlan(deleteTarget.id);
+                    const ok = await deleteDailyLessonPlan(deleteTarget.id);
+                    if (ok === false) return;
                     if (viewingDailyPlan?.id === deleteTarget.id) setViewingDailyPlan(null);
                     showToast(`تم حذف خطة درس (${deleteTarget.title}) بشكل نهائي`);
                   }
