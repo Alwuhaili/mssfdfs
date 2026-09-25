@@ -282,12 +282,28 @@ export function facultyFromSubjectQuotas(
 }
 
 export function resolveTimetableFaculty(
-  _schoolAdminData: SchoolAdminData | undefined,
+  schoolAdminData: SchoolAdminData | undefined,
   localTeachers: Teacher[] = [],
   _subjectQuotas: Array<{ teacherName?: string; subjectName?: string; availableDays?: string[] }> = []
 ): TimetableFacultyProjection[] {
-  // Firestore-backed teachers are the sole authoritative faculty source.
-  return sanitizeTimetableFacultyList(localTeachers);
+  // Firestore-backed teachers remain the sole authoritative source of faculty identity.
+  // Preserve timetable-only metadata (such as approved availability days) from the
+  // existing admin projection, but never use that projection to introduce a teacher
+  // who is not present in the real teachers collection.
+  const realTeachers = sanitizeTimetableFacultyList(localTeachers);
+  const projectedFaculty = sanitizeTimetableFacultyList(schoolAdminData?.timetableFaculty);
+  const projectedById = new Map(projectedFaculty.map((teacher) => [teacher.id, teacher]));
+  const projectedByName = new Map(projectedFaculty.map((teacher) => [teacher.name.trim(), teacher]));
+
+  return realTeachers.map((teacher) => {
+    const projected = projectedById.get(teacher.id) || projectedByName.get(teacher.name.trim());
+    if (!projected) return teacher;
+    return {
+      ...teacher,
+      subject: projected.subject || teacher.subject,
+      availableDays: projected.availableDays ?? teacher.availableDays,
+    };
+  });
 }
 
 export function resolveActiveGradeSections(
