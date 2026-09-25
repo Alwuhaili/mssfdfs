@@ -282,16 +282,12 @@ export function facultyFromSubjectQuotas(
 }
 
 export function resolveTimetableFaculty(
-  schoolAdminData: SchoolAdminData | undefined,
+  _schoolAdminData: SchoolAdminData | undefined,
   localTeachers: Teacher[] = [],
-  subjectQuotas: Array<{ teacherName?: string; subjectName?: string; availableDays?: string[] }> = []
+  _subjectQuotas: Array<{ teacherName?: string; subjectName?: string; availableDays?: string[] }> = []
 ): TimetableFacultyProjection[] {
-  if (isTimetableAcademicFieldPresent(schoolAdminData, 'timetableFaculty')) {
-    return sanitizeTimetableFacultyList(schoolAdminData?.timetableFaculty);
-  }
-  const fromTeachers = sanitizeTimetableFacultyList(localTeachers);
-  if (fromTeachers.length > 0) return fromTeachers;
-  return facultyFromSubjectQuotas(subjectQuotas);
+  // Firestore-backed teachers are the sole authoritative faculty source.
+  return sanitizeTimetableFacultyList(localTeachers);
 }
 
 export function resolveActiveGradeSections(
