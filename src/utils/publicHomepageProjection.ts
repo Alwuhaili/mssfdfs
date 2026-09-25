@@ -192,6 +192,44 @@ export function parsePublicHomepageDocument(raw: any): PublicHomepageDocument {
   };
 }
 
+export function schoolAdminPatchTouchesPublicHomepage(
+  updated: Record<string, unknown> | null | undefined
+): boolean {
+  if (!updated || typeof updated !== 'object') return false;
+  const publicKeys = new Set<string>([
+    ...REQUIRED_PUBLIC_SCHOOL_INFO_FIELDS,
+    'schoolName',
+    'schoolNameAr',
+    'schoolNameEn',
+    'schoolLogoUrl',
+    'principalDegree',
+    'principalImageUrl',
+    'achievements',
+    'assistantPrincipalName',
+    'assistantPrincipalTitle',
+    'academicSupervisorName',
+    'academicSupervisorTitle',
+  ]);
+  return Object.keys(updated).some((key) => publicKeys.has(key));
+}
+
+export function overlayPublicSchoolInfo<T extends Record<string, any>>(
+  privateData: T,
+  publicInfo: PublicSchoolInfo | null | undefined
+): T {
+  if (!publicInfo) return privateData;
+  const next: Record<string, any> = { ...privateData };
+  (Object.keys(publicInfo) as Array<keyof PublicSchoolInfo>).forEach((key) => {
+    const value = publicInfo[key];
+    if (value === undefined) return;
+    if (typeof value === 'string' && !value.trim()) return;
+    if (Array.isArray(value) && value.length === 0) return;
+    next[key as string] = value;
+  });
+  if (publicInfo.schoolName) next.schoolNameAr = publicInfo.schoolName;
+  return next as T;
+}
+
 export function hasNewsField(raw: any): boolean {
   return Boolean(raw && typeof raw === 'object' && Object.prototype.hasOwnProperty.call(raw, 'news'));
 }
