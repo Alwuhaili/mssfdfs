@@ -310,12 +310,12 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
     if (existing) {
       setActiveEditingSlot(existing);
       setEditSubject(existing.subject || 'الرياضيات');
-      setEditTeacher(existing.teacherName || (teachers[0]?.name || ''));
+      setEditTeacher(existing.teacherName || '');
       setEditRoom(existing.room || 'قاعة 1');
     } else {
       setActiveEditingSlot(null);
       setEditSubject('الرياضيات');
-      setEditTeacher(teachers[0]?.name || 'أستاذة المادة');
+      setEditTeacher('');
       setEditRoom('قاعة 1');
     }
   };
@@ -370,7 +370,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
     setActiveEditingQuota(null);
     setQuotaSubjectName('الرياضيات والتفاضل');
     setQuotaWeeklyPeriods(5);
-    setQuotaTeacherName(teachers[0]?.name || 'مدرس المادة المعين');
+    setQuotaTeacherName('');
     setQuotaClassroom('قاعة المتميزات 1');
     setShowQuotaForm(true);
   };
@@ -2984,20 +2984,17 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
 
                   <div>
                     <label className="block text-xs font-bold text-slate-300 mb-1">اسم الأستاذة / المدرس *</label>
-                    <input
-                      type="text"
+                    <select
                       required
-                      list="teachers-quota-list"
                       value={quotaTeacherName}
                       onChange={(e) => setQuotaTeacherName(e.target.value)}
-                      placeholder="اسم الأستاذة..."
                       className="w-full bg-slate-900 border border-slate-700 text-white text-xs rounded-xl px-3.5 py-2 font-bold"
-                    />
-                    <datalist id="teachers-quota-list">
+                    >
+                      <option value="">اختر المدرس/المدرسة</option>
                       {academicFaculty.map((t) => (
-                        <option key={t.id} value={t.name} />
+                        <option key={t.id} value={t.name}>{t.name}</option>
                       ))}
-                    </datalist>
+                    </select>
                   </div>
 
                   <div>
@@ -3098,20 +3095,17 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
 
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">اسم المدرس / أستاذة المادة *</label>
-                <input
-                  type="text"
+                <select
                   required
-                  list="teachers-list"
                   value={editTeacher}
                   onChange={(e) => setEditTeacher(e.target.value)}
-                  placeholder="اسم المدرس..."
                   className="w-full bg-slate-900 border border-slate-700 text-white text-xs rounded-xl px-3.5 py-2 font-bold"
-                />
-                <datalist id="teachers-list">
+                >
+                  <option value="">اختر المدرس/المدرسة</option>
                   {academicFaculty.map((t) => (
-                    <option key={t.id} value={t.name} />
+                    <option key={t.id} value={t.name}>{t.name}</option>
                   ))}
-                </datalist>
+                </select>
               </div>
 
               <div>
