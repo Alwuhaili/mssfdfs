@@ -60,6 +60,8 @@ export const QuickEditPrincipalModal: React.FC<QuickEditPrincipalModalProps> = (
   const [syncCert, setSyncCert] = useState(true);
   const [syncTimetable, setSyncTimetable] = useState(true);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -70,7 +72,7 @@ export const QuickEditPrincipalModal: React.FC<QuickEditPrincipalModalProps> = (
       setCertName(schoolAdminData.principalNameOnCert || schoolAdminData.principalName || 'الهام صبيح سعدون');
       setSavedSuccess(false);
     }
-  }, [isOpen, schoolAdminData]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -102,8 +104,9 @@ export const QuickEditPrincipalModal: React.FC<QuickEditPrincipalModalProps> = (
     handleNameChange(newName);
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSaving) return;
     const finalName = name.trim() || 'الهام صبيح سعدون';
     const finalBadge = badge.trim() || `المديرة ${finalName}`;
     const finalTitle = title.trim() || 'مديرة ثانوية ميسان للمتميزات';
@@ -111,7 +114,9 @@ export const QuickEditPrincipalModal: React.FC<QuickEditPrincipalModalProps> = (
     const finalCertName = syncCert ? finalName : (certName.trim() || finalName);
     const finalTimetableName = syncTimetable ? finalName : finalCertName;
 
-    updateSchoolAdminData({
+    setIsSaving(true);
+    setSaveError('');
+    const ok = await updateSchoolAdminData({
       principalName: finalName,
       principalBadge: finalBadge,
       principalTitle: finalTitle,
@@ -119,6 +124,11 @@ export const QuickEditPrincipalModal: React.FC<QuickEditPrincipalModalProps> = (
       principalNameOnCert: finalCertName,
       principalNameOnTimetable: finalTimetableName,
     });
+    setIsSaving(false);
+    if (!ok) {
+      setSaveError('تعذر حفظ بيانات المديرة في Firestore.');
+      return;
+    }
 
     setSavedSuccess(true);
     setTimeout(() => {
@@ -165,6 +175,11 @@ export const QuickEditPrincipalModal: React.FC<QuickEditPrincipalModalProps> = (
         </div>
 
         {/* Success Alert Banner */}
+        {saveError && (
+          <div className="p-4 bg-rose-600 text-white font-bold text-xs flex items-center justify-center gap-2">
+            <span>{saveError}</span>
+          </div>
+        )}
         {savedSuccess && (
           <div className="p-4 bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-2 animate-fadeIn">
             <CheckCircle2 className="w-5 h-5" />
@@ -358,10 +373,11 @@ export const QuickEditPrincipalModal: React.FC<QuickEditPrincipalModalProps> = (
               </button>
               <button
                 type="submit"
-                className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-slate-950 font-black text-xs shadow-lg shadow-amber-500/25 flex items-center gap-2 transition-all transform hover:scale-105"
+                disabled={isSaving}
+                className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-slate-950 font-black text-xs shadow-lg shadow-amber-500/25 flex items-center gap-2 transition-all transform hover:scale-105 disabled:opacity-50"
               >
                 <Save className="w-4 h-4" />
-                <span>حفظ وتحديث اسم المديرة الآن</span>
+                <span>{isSaving ? 'جارٍ الحفظ...' : 'حفظ وتحديث اسم المديرة الآن'}</span>
               </button>
             </div>
           </div>

@@ -96,7 +96,7 @@ export const EditNewsEventsModal: React.FC<EditNewsEventsModalProps> = ({
         createNewNewsItem();
       }
     }
-  }, [isOpen, newsList]);
+  }, [isOpen]);
 
   const handleSelectNews = (id: string) => {
     setSelectedId(id);

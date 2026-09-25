@@ -30,6 +30,9 @@ import {
   getSupervisorLabel,
   getTeacherSubjectTitle,
 } from '../utils/teacherUtils';
+import { canManageLibraryResource } from '../utils/libraryResourceAccess';
+import { uploadLibraryFile, deleteLibraryFile, validateLibraryFile, getLibraryFileExtension } from '../services/storageService';
+import { auth } from '../lib/firebase';
 
 interface EditLectureModalProps {
   isOpen: boolean;
@@ -132,7 +135,7 @@ export const EditLectureModal: React.FC<EditLectureModalProps> = ({
       setErrorMessage('');
       setSaveSuccess(false);
     }
-  }, [lecture, isOpen]);
+  }, [lecture?.id, isOpen]);
 
   // Clean up blob url
   useEffect(() => {
@@ -148,11 +151,19 @@ export const EditLectureModal: React.FC<EditLectureModalProps> = ({
   const handleFileProcess = (file: File) => {
     if (!file) return;
     setErrorMessage('');
+    try {
+      validateLibraryFile(file);
+    } catch (err: any) {
+      setSelectedFile(null);
+      setErrorMessage(err?.message || 'نوع الملف غير مسموح.');
+      return;
+    }
     setSelectedFile(file);
+    setFileDataUrl('');
 
     const sizeInMB = file.size / (1024 * 1024);
     const sizeText = sizeInMB >= 1 ? `${sizeInMB.toFixed(1)} MB` : `${(file.size / 1024).toFixed(0)} KB`;
-    const ext = file.name.split('.').pop()?.toUpperCase() || 'PDF';
+    const ext = getLibraryFileExtension(file.name).toUpperCase() || 'FILE';
     setFileSizeText(`${ext} ${sizeText}`);
 
     try {
@@ -164,20 +175,6 @@ export const EditLectureModal: React.FC<EditLectureModalProps> = ({
     } catch (e) {
       console.warn('Blob URL creation error:', e);
     }
-
-    setIsReadingFile(true);
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setIsReadingFile(false);
-      if (e.target?.result) {
-        setFileDataUrl(e.target.result as string);
-      }
-    };
-    reader.onerror = (err) => {
-      setIsReadingFile(false);
-      console.warn('FileReader error:', err);
-    };
-    reader.readAsDataURL(file);
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -221,6 +218,12 @@ export const EditLectureModal: React.FC<EditLectureModalProps> = ({
     const finalSubject = subject === 'أخرى' && customSubject.trim() ? customSubject.trim() : subject;
     const finalTeacherName = teacherName.trim() || lecture.teacherName || 'أستاذة المادة';
 
+    if (!canManageLibraryResource(lecture, currentUser)) {
+      setErrorMessage('ليست لديك صلاحية تعديل هذا المورد.');
+      setIsSubmitting(false);
+      return;
+    }
+
     const updatedData: Partial<LectureResource> = {
       title: title.trim(),
       subject: finalSubject,
@@ -234,18 +237,42 @@ export const EditLectureModal: React.FC<EditLectureModalProps> = ({
       isOfficialBook: category === 'curriculum_book',
       fileSize: fileSizeText,
       lastModifiedAt: new Date().toISOString().split('T')[0],
-      lastModifiedBy: currentUser?.name || currentUser?.teacherObj?.name || 'الإدارة',
+      lastModifiedBy: currentUser?.authUid || currentUser?.id,
+      updatedAt: new Date().toISOString(),
     };
 
-    // If new file was provided, update fileUrl and pdfDataUrl
-    if (fileDataUrl || previewBlobUrl) {
-      const newFileUrl = fileDataUrl || previewBlobUrl;
-      updatedData.fileUrl = newFileUrl;
-      updatedData.pdfDataUrl = newFileUrl;
-    }
-
     try {
-      updateLecture(lecture.id, updatedData);
+      if (selectedFile) {
+        const firebaseUser = auth.currentUser;
+        if (!firebaseUser?.uid) {
+          setIsSubmitting(false);
+          setErrorMessage('يجب تسجيل الدخول بحساب موثق قبل استبدال الملف.');
+          return;
+        }
+        const ownerUid = lecture.ownerId || lecture.uploaderId || firebaseUser.uid;
+        const uploaded = await uploadLibraryFile(selectedFile, {
+          uploaderId: ownerUid,
+          resourceId: lecture.id,
+        });
+        if (lecture.storagePath && lecture.storagePath !== uploaded.storagePath) {
+          try { await deleteLibraryFile(lecture.storagePath); } catch (err) { console.error(err); }
+        }
+        updatedData.fileUrl = uploaded.downloadUrl;
+        updatedData.pdfDataUrl = undefined;
+        updatedData.storagePath = uploaded.storagePath;
+        updatedData.originalFileName = uploaded.originalFileName;
+        updatedData.fileExtension = uploaded.fileExtension;
+        updatedData.mimeType = uploaded.mimeType;
+        updatedData.fileSizeBytes = uploaded.fileSizeBytes;
+        updatedData.storageProvider = 'firebase';
+      }
+
+      const ok = await updateLecture(lecture.id, updatedData);
+      if (!ok) {
+        setIsSubmitting(false);
+        setErrorMessage('تعذر حفظ التعديل. تحقق من صلاحية المالك أو الإدارة.');
+        return;
+      }
 
       setSaveSuccess(true);
       setTimeout(() => {
@@ -262,7 +289,7 @@ export const EditLectureModal: React.FC<EditLectureModalProps> = ({
     } catch (err: any) {
       console.error('Error updating lecture:', err);
       setIsSubmitting(false);
-      setErrorMessage('حدث خطأ أثناء حفظ التعديلات، يرجى المحاولة مجدداً.');
+      setErrorMessage(err?.message || 'حدث خطأ أثناء حفظ التعديلات، يرجى المحاولة مجدداً.');
     }
   };
 

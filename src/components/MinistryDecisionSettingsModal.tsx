@@ -51,7 +51,7 @@ export const MinistryDecisionSettingsModal: React.FC<MinistryDecisionSettingsMod
       setAutoApplyDecisionMarks(decisionSettings.autoApplyDecisionMarks ?? true);
       setCustomInputValue(String(decisionSettings.maxDecisionMarks ?? 10));
     }
-  }, [decisionSettings, isOpen]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 

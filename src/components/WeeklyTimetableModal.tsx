@@ -232,7 +232,7 @@ export const WeeklyTimetableModal: React.FC<WeeklyTimetableModalProps> = ({
       setPrincipalName(p);
       setTempPrincipalName(p);
     }
-  }, [schoolAdminData, isOpen]);
+  }, [isOpen]);
 
   const [showConflictsModal, setShowConflictsModal] = useState<boolean>(false);
   const [activeEditingSlot, setActiveEditingSlot] = useState<TimetableSlot | null>(null);

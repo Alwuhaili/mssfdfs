@@ -21,7 +21,7 @@ import {
   FileCode,
   ExternalLink,
 } from 'lucide-react';
-import { GradeLevel, LectureResource, LibraryCategory } from '../types';
+import { GradeLevel, LectureResource, LibraryCategory, LibraryAccessAudience } from '../types';
 import { useApp } from '../context/AppContext';
 import {
   isMaleTeacher,
@@ -37,6 +37,8 @@ import {
   getLibraryFileExtension,
 } from '../services/storageService';
 import { auth } from '../lib/firebase';
+import { executeLibraryUploadTransaction } from '../utils/libraryUploadOrchestration';
+import { formatLibraryUploadError } from '../utils/libraryUploadError';
 
 interface UploadPdfModalProps {
   isOpen: boolean;
@@ -163,6 +165,7 @@ export const UploadPdfModal: React.FC<UploadPdfModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [uploadSuccess, setUploadSuccess] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
+  const [accessAudiences, setAccessAudiences] = useState<LibraryAccessAudience[]>(['authenticated']);
 
   // Sync state when modal opens or current user changes
   useEffect(() => {
@@ -174,7 +177,7 @@ export const UploadPdfModal: React.FC<UploadPdfModalProps> = ({
       setErrorMessage('');
       setShowInModalPreview(false);
     }
-  }, [isOpen, autoResolvedTeacherName, defaultSubject, defaultGrade, defaultCategory]);
+  }, [isOpen]);
 
   // Clean up blob url on unmount or file clear
   useEffect(() => {
@@ -258,26 +261,38 @@ export const UploadPdfModal: React.FC<UploadPdfModalProps> = ({
     if (!title.trim()) { setErrorMessage('يرجى كتابة عنوان المورد التعليمي.'); return; }
     const finalTeacherName = teacherName.trim() || autoResolvedTeacherName || (isAdminUploader ? 'إدارة المدرسة' : 'أستاذ المادة');
     const extension = getLibraryFileExtension(selectedFile.name).toLowerCase();
-    const resourceType: LectureResource['type'] = extension === 'pdf' ? 'pdf' : ['doc','docx'].includes(extension) ? 'doc' : ['ppt','pptx'].includes(extension) ? 'ppt' : ['xls','xlsx','csv'].includes(extension) ? 'sheet' : ['jpg','jpeg','png','webp','gif'].includes(extension) ? 'image' : ['mp4','webm','mov'].includes(extension) ? 'video' : ['mp3','wav','m4a'].includes(extension) ? 'audio' : extension === 'txt' ? 'text' : 'other';
-    const resourceId = `lec-${Date.now()}-${Math.random().toString(36).slice(2,10)}`; setIsSubmitting(true); let uploadedStoragePath: string | undefined;
+    const resourceType: LectureResource['type'] = extension === 'pdf' ? 'pdf' : ['doc','docx'].includes(extension) ? 'doc' : ['ppt','pptx'].includes(extension) ? 'ppt' : ['xls','xlsx','csv'].includes(extension) ? 'sheet' : ['jpg','jpeg','png','webp','gif'].includes(extension) ? 'image' : ['mp4','webm','mov'].includes(extension) ? 'video' : ['mp3','wav','m4a'].includes(extension) ? 'audio' : ['zip','rar','7z'].includes(extension) ? 'other' : extension === 'txt' ? 'text' : 'other';
+    const resourceId = `lec-${Date.now()}-${Math.random().toString(36).slice(2,10)}`; setIsSubmitting(true);
     try {
-      const uploaded = await uploadLibraryFile(selectedFile, { uploaderId: firebaseUser.uid, resourceId }); uploadedStoragePath = uploaded.storagePath;
-      const resourceData: Omit<LectureResource, 'id' | 'uploadedAt'> = {
-        title: title.trim(), subject: finalSubject, teacherName: finalTeacherName, gradeLevel: finalGrade, type: resourceType,
-        fileUrl: uploaded.downloadUrl, pdfDataUrl: undefined, storagePath: uploaded.storagePath, originalFileName: uploaded.originalFileName,
-        fileExtension: uploaded.fileExtension, mimeType: uploaded.mimeType, fileSizeBytes: uploaded.fileSizeBytes, storageProvider: 'firebase',
-        description: description.trim() || `مورد تعليمي في مادة ${finalSubject} للصف ${finalGrade}.`, fileSize: fileSizeText, category,
-        pageCount: resourceType === 'pdf' ? Number(pageCount) || undefined : undefined, chapterOrUnit: chapterOrUnit || 'شامل المنهج',
-        isOfficialBook: category === 'curriculum_book', sampleContentText: sampleContentText.trim() || `المورد التعليمي: ${title.trim()}\nالمادة: ${finalSubject}\nالصف: ${finalGrade}\nاسم الملف الأصلي: ${uploaded.originalFileName}`,
-        chapters: [], downloadCount: 0, viewsCount: 0, academicYear: '2026 - 2027', uploaderId: firebaseUser.uid, uploaderName: finalTeacherName, uploaderRole: tokenRole,
-      };
-      const createdResource = addLecture(resourceData, { resourceId });
-      if (!createdResource || createdResource.id !== resourceId) throw new Error('لم يتطابق معرف ملف Storage مع معرف مورد المكتبة.');
+      const createdResource = await executeLibraryUploadTransaction({
+        file: selectedFile,
+        ownerUid: firebaseUser.uid,
+        resourceId,
+        uploadFile: uploadLibraryFile,
+        rollbackFile: deleteLibraryFile,
+        persistAfterUpload: async (uploaded) => {
+          const resourceData: Omit<LectureResource, 'id' | 'uploadedAt'> = {
+            title: title.trim(), subject: finalSubject, teacherName: finalTeacherName, gradeLevel: finalGrade, type: resourceType,
+            fileUrl: uploaded.downloadUrl, storagePath: uploaded.storagePath, originalFileName: uploaded.originalFileName,
+            fileExtension: uploaded.fileExtension, mimeType: uploaded.mimeType, fileSizeBytes: uploaded.fileSizeBytes, storageProvider: 'firebase',
+            description: description.trim() || `مورد تعليمي في مادة ${finalSubject} للصف ${finalGrade}.`, fileSize: fileSizeText, category,
+            pageCount: resourceType === 'pdf' ? Number(pageCount) || undefined : undefined, chapterOrUnit: chapterOrUnit || 'شامل المنهج',
+            isOfficialBook: category === 'curriculum_book', sampleContentText: sampleContentText.trim() || undefined,
+            chapters: [], downloadCount: 0, viewsCount: 0,
+            ownerId: firebaseUser.uid, ownerName: finalTeacherName, ownerRole: isAdminUploader ? 'admin' : 'teacher',
+            createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+            access: { audiences: accessAudiences.length ? accessAudiences : ['authenticated'] },
+            uploaderId: firebaseUser.uid, uploaderName: finalTeacherName, uploaderRole: tokenRole as LectureResource['uploaderRole'],
+          };
+          const created = await addLecture(resourceData, { resourceId });
+          if (!created || created.id !== resourceId) throw new Error('لم يتطابق معرف ملف Storage مع معرف مورد المكتبة.');
+          return created;
+        },
+      });
       setUploadSuccess(true); setTimeout(() => { setIsSubmitting(false); setUploadSuccess(false); if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl); onClose(); if (onSuccess) onSuccess(createdResource); }, 1000);
     } catch (err: any) {
       console.error('Digital Library V2.2B upload failed:', err);
-      if (uploadedStoragePath) { try { await deleteLibraryFile(uploadedStoragePath); } catch (rollbackError) { console.error('Storage rollback failed:', rollbackError); } }
-      setIsSubmitting(false); setErrorMessage(err?.message || 'حدث خطأ أثناء رفع الملف أو إنشاء سجل المكتبة.');
+      setIsSubmitting(false); setErrorMessage(formatLibraryUploadError(err));
     }
   };
 
@@ -292,7 +307,7 @@ export const UploadPdfModal: React.FC<UploadPdfModalProps> = ({
             </div>
             <div>
               <h3 className="text-base font-black text-slate-900">
-                رفع كتاب أو ملف تعليمي للمكتبة الرقمية (PDF)
+                رفع ملف تعليمي للمكتبة الرقمية
               </h3>
               <p className="text-xs text-slate-500">
                 إتاحة الكتب والملازم وأوراق العمل فورياً للطالبات في لوحة التحكم
@@ -346,7 +361,7 @@ export const UploadPdfModal: React.FC<UploadPdfModalProps> = ({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.jpg,.jpeg,.png,.webp,.gif,.mp4,.webm,.mov,.mp3,.wav,.m4a"
+                accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.jpg,.jpeg,.png,.webp,.gif,.mp4,.webm,.mov,.mp3,.wav,.m4a,.zip,.rar,.7z"
                 onChange={handleFileChange}
                 className="hidden"
               />
@@ -417,10 +432,10 @@ export const UploadPdfModal: React.FC<UploadPdfModalProps> = ({
                 <div className="space-y-1.5">
                   <UploadCloud className="w-8 h-8 text-indigo-500 mx-auto" />
                   <div className="text-xs font-bold text-slate-800">
-                    اسحبي وأفلتي ملف الـ PDF هنا، أو <span className="text-indigo-600 underline">انقري للاختيار من جهازكِ</span>
+                    اسحبي وأفلتي الملف هنا، أو <span className="text-indigo-600 underline">انقري للاختيار من جهازكِ</span>
                   </div>
                   <p className="text-[10px] text-slate-500">
-                    يدعم ملفات PDF والكتب الإلكترونية والمستندات التعليمية (حتى 50 ميغابايت)
+                    يدعم المستندات والصور والفيديو والصوت والملفات المضغوطة (حتى 50 ميغابايت)
                   </p>
                 </div>
               )}
@@ -598,6 +613,36 @@ export const UploadPdfModal: React.FC<UploadPdfModalProps> = ({
                 onChange={(e) => setSampleContentText(e.target.value)}
                 className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs font-medium text-slate-900 focus:outline-none focus:border-indigo-500 resize-none"
               />
+            </div>
+
+            <div className="rounded-2xl border border-indigo-100 bg-indigo-50/50 p-3 space-y-2">
+              <label className="block text-xs font-black text-indigo-950">من يمكنه عرض هذا الملف؟</label>
+              <div className="flex flex-wrap gap-2">
+                {([
+                  ['authenticated', 'المستخدمون المسجلون'],
+                  ['administration', 'الإدارة'],
+                  ['teachers', 'المدرسات'],
+                  ['students', 'الطالبات'],
+                  ['parents', 'أولياء الأمور'],
+                ] as Array<[LibraryAccessAudience, string]>).map(([value, label]) => {
+                  const checked = accessAudiences.includes(value);
+                  return (
+                    <label key={value} className="flex items-center gap-1.5 text-[11px] font-bold text-slate-800 bg-white px-2.5 py-1.5 rounded-xl border border-slate-200 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() =>
+                          setAccessAudiences((prev) =>
+                            checked ? prev.filter((item) => item !== value) : [...prev, value]
+                          )
+                        }
+                      />
+                      {label}
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="text-[10px] text-slate-500 font-medium">إذا لم يُحدد أي خيار يصبح المورد خاصاً (المالك والإدارة فقط).</p>
             </div>
 
             {/* Submit Buttons */}

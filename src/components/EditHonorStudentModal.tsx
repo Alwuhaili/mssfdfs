@@ -114,7 +114,7 @@ export const EditHonorStudentModal: React.FC<EditHonorStudentModalProps> = ({
         dream: 'طبيبة ومخترعة مستقبلية',
       });
     }
-  }, [activeRank, grade, students]);
+  }, [activeRank, grade, isOpen]);
 
   if (!isOpen) return null;
 

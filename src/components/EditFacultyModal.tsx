@@ -134,7 +134,7 @@ export const EditFacultyModal: React.FC<EditFacultyModalProps> = ({
         createNewTeacher(facultyList);
       }
     }
-  }, [isOpen, facultyList, initialTeacherId, openInAddMode]);
+  }, [isOpen, initialTeacherId, openInAddMode]);
 
   const handleSelectTeacher = (id: string) => {
     setSelectedId(id);

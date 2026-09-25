@@ -130,6 +130,7 @@ export const EditSchoolAdminModal: React.FC<EditSchoolAdminModalProps> = ({ isOp
   const [newGoal, setNewGoal] = useState('');
   const [photoUploadSuccess, setPhotoUploadSuccess] = useState(false);
   const [saveSuccessNotice, setSaveSuccessNotice] = useState(false);
+  const [isSavingHomepage, setIsSavingHomepage] = useState(false);
   const [imageUploading, setImageUploading] = useState(false);
   const [imageUploadError, setImageUploadError] = useState('');
 
@@ -228,7 +229,7 @@ export const EditSchoolAdminModal: React.FC<EditSchoolAdminModalProps> = ({ isOp
       }
       setSaveSuccessNotice(false);
     }
-  }, [isOpen, schoolAdminData, initialTab]);
+  }, [isOpen, initialTab]);
 
   if (!isOpen) return null;
 
@@ -252,11 +253,11 @@ export const EditSchoolAdminModal: React.FC<EditSchoolAdminModalProps> = ({ isOp
     setStrategicGoals((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSavingHomepage) return;
 
-    const updatedData: SchoolAdminData = {
-      ...schoolAdminData,
+    const updatedData: Partial<SchoolAdminData> = {
       principalName,
       principalBadge,
       principalTitle,
@@ -288,7 +289,13 @@ export const EditSchoolAdminModal: React.FC<EditSchoolAdminModalProps> = ({ isOp
       principalNameOnTimetable: principalNameOnCert || principalName,
     };
 
-    updateSchoolAdminData(updatedData);
+    setIsSavingHomepage(true);
+    const ok = await updateSchoolAdminData(updatedData);
+    setIsSavingHomepage(false);
+    if (!ok) {
+      setImageUploadError('تعذر حفظ بيانات الصفحة الرئيسية في Firestore. لم يُغلق النموذج.');
+      return;
+    }
     setSaveSuccessNotice(true);
     setTimeout(() => {
       onClose();
@@ -1264,7 +1271,7 @@ export const EditSchoolAdminModal: React.FC<EditSchoolAdminModalProps> = ({ isOp
         <div className="shrink-0 bg-slate-950/95 border-t border-slate-800 px-6 py-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-xs text-slate-400">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span>يتم حفظ جميع التعديلات محلياً وتحديث المنصة مباشرة</span>
+            <span>يتم حفظ التعديلات في Firestore ثم تظهر للجميع بعد نجاح الكتابة</span>
           </div>
 
           <div className="flex items-center gap-3">
@@ -1278,10 +1285,11 @@ export const EditSchoolAdminModal: React.FC<EditSchoolAdminModalProps> = ({ isOp
             <button
               type="submit"
               form="edit-school-admin-form"
-              className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs flex items-center gap-2 shadow-lg shadow-amber-500/25 transition-all transform hover:scale-[1.02] cursor-pointer"
+              disabled={isSavingHomepage}
+              className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs flex items-center gap-2 shadow-lg shadow-amber-500/25 transition-all transform hover:scale-[1.02] cursor-pointer disabled:opacity-50"
             >
               <Save className="w-4 h-4 text-slate-950" />
-              <span>حفظ وتثبيت التعديلات المباشرة</span>
+              <span>{isSavingHomepage ? 'جارٍ الحفظ في Firestore...' : 'حفظ وتثبيت التعديلات'}</span>
             </button>
           </div>
         </div>

@@ -56,7 +56,7 @@ export const StudentManualGradesEditorModal: React.FC<StudentManualGradesEditorM
         }))
       );
     }
-  }, [certificate]);
+  }, [certificate?.id, isOpen]);
 
   // Compute live temporary metrics
   const liveComputed = useMemo(() => {
@@ -259,8 +259,12 @@ export const StudentManualGradesEditorModal: React.FC<StudentManualGradesEditorM
     );
   };
 
-  const handleSave = () => {
-    batchUpdateStudentGrades(certificate.id, liveComputed.subjects);
+  const handleSave = async () => {
+    const ok = await batchUpdateStudentGrades(certificate.id, liveComputed.subjects);
+    if (!ok) {
+      setIsSavedToast(false);
+      return;
+    }
     setIsSavedToast(true);
     if (onSaved) {
       onSaved({

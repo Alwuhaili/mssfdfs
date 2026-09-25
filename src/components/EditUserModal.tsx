@@ -134,7 +134,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
     // Load passcode
     const currentPin = getUserPasscode(userData.id, userType);
     setPasscode(currentPin);
-  }, [userData, userType, isOpen, getUserPasscode]);
+  }, [userData?.id, userType, isOpen]);
 
   if (!isOpen || !userData) return null;
 

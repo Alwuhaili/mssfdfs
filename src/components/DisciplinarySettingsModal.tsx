@@ -25,7 +25,7 @@ export const DisciplinarySettingsModal: React.FC<DisciplinarySettingsModalProps>
       setExpulsion(disciplinarySettings.expulsionDays ?? 15);
       setLessonsPerDay(disciplinarySettings.lessonsPerAbsenceDay ?? 5);
     }
-  }, [disciplinarySettings, isOpen]);
+  }, [isOpen]);
 
   if (!isOpen || role !== 'admin') return null;
 

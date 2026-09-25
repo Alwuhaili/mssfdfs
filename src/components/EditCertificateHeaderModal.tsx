@@ -97,7 +97,7 @@ export const EditCertificateHeaderModal: React.FC<EditCertificateHeaderModalProp
         schoolAdminData.auditorCommitteeMemberName || 'رئيسة لجنة التدقيق والنتائج'
       );
     }
-  }, [isOpen, schoolAdminData]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -136,7 +136,7 @@ export const EditCertificateHeaderModal: React.FC<EditCertificateHeaderModalProp
         updateCertificate(cert.id, {
           academicYear: academicYearDefault,
           issueDate: issueDateDefault,
-        });
+        }, true);
       });
     }
 

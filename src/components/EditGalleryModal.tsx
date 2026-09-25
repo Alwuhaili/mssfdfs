@@ -90,7 +90,7 @@ export const EditGalleryModal: React.FC<EditGalleryModalProps> = ({
         createNewPhotoItem();
       }
     }
-  }, [isOpen, galleryList]);
+  }, [isOpen]);
 
   const handleSelectPhoto = (id: string) => {
     setSelectedId(id);
