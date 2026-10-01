@@ -1,7 +1,8 @@
 /**
  * Firebase Admin adapter for NEW account provisioning.
  * Never import this file from src/ or any browser bundle.
- * Credentials come only from FIREBASE_SERVICE_ACCOUNT_JSON or Application Default Credentials.
+ * Inside Cloud Functions / Cloud Run the runtime service account is used.
+ * Elsewhere, credentials come only from FIREBASE_SERVICE_ACCOUNT_JSON or GOOGLE_APPLICATION_CREDENTIALS.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -44,27 +45,41 @@ const notConfigured = () =>
 
 let backendPromise: Promise<{ auth: AuthGateway; store: AccountStore; verifyAdmin: (authorization?: string) => Promise<{ uid: string; name?: string }> }> | null = null;
 
-const readServiceAccount = () => {
+/** Cloud Run (Gen 2) and the Functions framework set these. A project id alone does not. */
+const hasGoogleRuntimeIdentity = (): boolean =>
+  Boolean(process.env.K_SERVICE || process.env.FUNCTION_TARGET);
+
+const credentialFromEnvironment = () => {
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  if (!raw) return null;
-  try {
-    return cert(JSON.parse(raw));
-  } catch {
-    throw notConfigured();
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      return cert(JSON.parse(raw));
+    } catch {
+      throw notConfigured();
+    }
   }
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS || hasGoogleRuntimeIdentity()) {
+    return applicationDefault();
+  }
+  throw notConfigured();
 };
 
 export function getProvisioningBackend() {
   if (!backendPromise) {
     backendPromise = Promise.resolve().then(() => {
-      const credential = readServiceAccount();
-      const hasAdc = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS);
-      if (!credential && !hasAdc) throw notConfigured();
       const config = loadPublicFirebaseConfig();
-      const app = getApps()[0] || initializeApp({
-        credential: credential || applicationDefault(),
-        projectId: config.projectId,
-      });
+      let app = getApps()[0];
+      if (!app) {
+        try {
+          app = initializeApp({
+            credential: credentialFromEnvironment(),
+            projectId: config.projectId,
+          });
+        } catch (error) {
+          if (error instanceof ProvisionError) throw error;
+          throw notConfigured();
+        }
+      }
       const auth = getAuth(app);
       const db: Firestore = config.firestoreDatabaseId
         ? getFirestore(app, config.firestoreDatabaseId)
