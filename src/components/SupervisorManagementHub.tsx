@@ -6,6 +6,7 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { EducationalSupervisor, GradeLevel, ALL_GRADES_LIST, OFFICIAL_SUBJECTS_LIST } from '../types';
+import { suggestUsername } from '../utils/newAccountPolicy';
 import {
   Building2,
   Users,
@@ -99,6 +100,12 @@ export const SupervisorManagementHub: React.FC<SupervisorManagementHubProps> = (
   const [formDegree, setFormDegree] = useState('');
   const [formEmail, setFormEmail] = useState('');
   const [formPhone, setFormPhone] = useState('');
+  const [formUsername, setFormUsername] = useState('');
+  const [formNationalId, setFormNationalId] = useState('');
+  const [formInitialPassword, setFormInitialPassword] = useState('');
+  const [formConfirmPassword, setFormConfirmPassword] = useState('');
+  const [formSubmitting, setFormSubmitting] = useState(false);
+  const [formError, setFormError] = useState('');
   const [formAssignedSubjects, setFormAssignedSubjects] = useState<string[]>([]);
   const [formAssignedGrades, setFormAssignedGrades] = useState<GradeLevel[]>([]);
   const [formStatus, setFormStatus] = useState<EducationalSupervisor['status']>('نشط');
@@ -131,8 +138,13 @@ export const SupervisorManagementHub: React.FC<SupervisorManagementHubProps> = (
     setFormTitle('مشرف اختصاص - وزارة التربية');
     setFormSpecialization('الرياضيات والعلوم المتقدمة');
     setFormDegree('دكتوراه في المناهج والطرائق التدريسية');
-    setFormEmail(`supervisor.${Date.now().toString().slice(-4)}@maysan.edu.iq`);
-    setFormPhone('0770' + Math.floor(1000000 + Math.random() * 9000000));
+    setFormEmail('');
+    setFormPhone('');
+    setFormUsername(suggestUsername('supervisor'));
+    setFormNationalId('');
+    setFormInitialPassword('');
+    setFormConfirmPassword('');
+    setFormError('');
     setFormAssignedSubjects(['الرياضيات']);
     setFormAssignedGrades(['الصف السادس العلمي', 'الصف الخامس العلمي']);
     setFormStatus('نشط');
@@ -165,8 +177,9 @@ export const SupervisorManagementHub: React.FC<SupervisorManagementHubProps> = (
   };
 
   // Handle Form Submission
-  const handleSaveSupervisor = (e: React.FormEvent) => {
+  const handleSaveSupervisor = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (formSubmitting) return;
     if (!formName.trim()) {
       showToast('⚠️ يرجى كتابة اسم المشرف التربوي');
       return;
@@ -190,14 +203,24 @@ export const SupervisorManagementHub: React.FC<SupervisorManagementHubProps> = (
         isPrimary: formIsPrimary,
       });
       showToast(`تم تحديث بيانات المشرف (${formName}) بنجاح ✨`);
-    } else {
-      addSupervisor({
+      setIsFormModalOpen(false);
+      return;
+    }
+
+    setFormSubmitting(true);
+    setFormError('');
+    try {
+      const result = await addSupervisor({
         name: formName.trim(),
         title: formTitle.trim() || 'مشرف تربوي معتمد',
         specialization: formSpecialization.trim() || 'إشراف أكاديمي عام',
         degree: formDegree.trim() || 'دكتوراه في التربية والتعليم',
         email: formEmail.trim(),
         phone: formPhone.trim(),
+        username: formUsername,
+        nationalId: formNationalId.trim() || undefined,
+        initialPassword: formInitialPassword,
+        confirmPassword: formConfirmPassword,
         assignedSubjects: formAssignedSubjects.length > 0 ? formAssignedSubjects : ['الرياضيات'],
         assignedGrades: formAssignedGrades.length > 0 ? formAssignedGrades : ['الصف السادس العلمي'],
         status: formStatus,
@@ -207,10 +230,17 @@ export const SupervisorManagementHub: React.FC<SupervisorManagementHubProps> = (
         avatar: formAvatar,
         isPrimary: formIsPrimary,
       });
+      if (!result.success) {
+        setFormError('message' in result ? result.message : 'تعذر إنشاء حساب Firebase.');
+        return;
+      }
       showToast(`تمت إضافة المشرف التربوي (${formName}) بنجاح 🎉`);
+      setFormInitialPassword('');
+      setFormConfirmPassword('');
+      setIsFormModalOpen(false);
+    } finally {
+      setFormSubmitting(false);
     }
-
-    setIsFormModalOpen(false);
   };
 
   // Handle Delete Confirmation
@@ -837,11 +867,32 @@ export const SupervisorManagementHub: React.FC<SupervisorManagementHubProps> = (
                       type="email"
                       value={formEmail}
                       onChange={(e) => setFormEmail(e.target.value)}
-                      placeholder="supervisor@maysan.edu.iq"
+                      placeholder="supervisor@example.com"
                       className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs font-bold font-mono focus:bg-white focus:border-indigo-500 outline-none transition-all"
                     />
                   </div>
                 </div>
+
+                {!editingSupervisor && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-slate-700 block">اسم المستخدم *</label>
+                      <input type="text" required autoComplete="off" value={formUsername} onChange={(e) => setFormUsername(e.target.value)} className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs font-bold font-mono focus:bg-white focus:border-indigo-500 outline-none" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-slate-700 block">الرقم الوطني</label>
+                      <input type="text" value={formNationalId} onChange={(e) => setFormNationalId(e.target.value)} className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs font-bold font-mono focus:bg-white focus:border-indigo-500 outline-none" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-slate-700 block">كلمة المرور الأولية *</label>
+                      <input type="password" required autoComplete="new-password" value={formInitialPassword} onChange={(e) => setFormInitialPassword(e.target.value)} className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs font-bold focus:bg-white focus:border-indigo-500 outline-none" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-slate-700 block">تأكيد كلمة المرور *</label>
+                      <input type="password" required autoComplete="new-password" value={formConfirmPassword} onChange={(e) => setFormConfirmPassword(e.target.value)} className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs font-bold focus:bg-white focus:border-indigo-500 outline-none" />
+                    </div>
+                  </div>
+                )}
 
                 {/* 6. Assigned Subjects (Multi-select) */}
                 <div className="space-y-2">
@@ -950,22 +1001,26 @@ export const SupervisorManagementHub: React.FC<SupervisorManagementHubProps> = (
                   />
                 </div>
 
+                {formError && <p role="alert" className="text-sm font-bold text-rose-600">{formError}</p>}
+
                 {/* Submit & Cancel Buttons */}
                 <div className="pt-4 border-t border-slate-200 flex items-center justify-end gap-3">
                   <button
                     type="button"
+                    disabled={formSubmitting}
                     onClick={() => setIsFormModalOpen(false)}
-                    className="px-5 py-2.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-all"
+                    className="px-5 py-2.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-all disabled:opacity-50"
                   >
                     إلغاء
                   </button>
 
                   <button
                     type="submit"
-                    className="px-6 py-2.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs shadow-lg shadow-indigo-600/20 flex items-center gap-2 transition-all transform hover:scale-105"
+                    disabled={formSubmitting}
+                    className="px-6 py-2.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs shadow-lg shadow-indigo-600/20 flex items-center gap-2 transition-all disabled:opacity-60"
                   >
                     <CheckCircle2 className="w-4 h-4" />
-                    <span>{editingSupervisor ? 'حفظ تعديلات المشرف' : 'إضافة المشرف الآن'}</span>
+                    <span>{formSubmitting ? 'جاري إنشاء الحساب...' : (editingSupervisor ? 'حفظ تعديلات المشرف' : 'إضافة المشرف الآن')}</span>
                   </button>
                 </div>
               </form>

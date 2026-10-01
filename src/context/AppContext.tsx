@@ -3,7 +3,9 @@
  */
 
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import { assertUniqueIdentity, stableUsername, type IdentityRecord } from '../utils/identityPolicy';
+import { assertUniqueIdentity, stableUsername, DuplicateIdentityError, type IdentityRecord } from '../utils/identityPolicy';
+import { provisionAccounts, type ManagedAccountCreateResult } from '../services/accountProvisioningClient';
+import { AccountPolicyError, ACCOUNT_PROVISION_MESSAGES, validateNewAccountCredentials, type NewAccountCredentials } from '../utils/newAccountPolicy';
 import { centralSyncService, SCHOOL_ADMIN_DATA_SYNC_KEY } from '../services/syncService';
 import { publishPublicSchoolInfo, publishPublicNews, publishPublicGallery, initializePublicSchoolInfoFromAuthoritative, initializePublicFacultyFromAuthoritative, initializePublicHonorBoardFromAuthoritative, publishPublicFaculty, publishPublicHonorBoard } from '../services/publicHomepageService';
 import { buildPublicHonorBoard, HONOR_ROLL_DEMO_NAMES } from '../utils/publicHomepageFacultyHonor';
@@ -276,7 +278,7 @@ interface AppContextType {
   deleteStudent: (id: string) => Promise<boolean>;
   updateParent: (id: string, updated: Partial<Parent>) => void;
   deleteParent: (id: string) => void;
-  addSupervisor: (supervisor: Omit<EducationalSupervisor, 'id' | 'joinedDate'> & { joinedDate?: string }) => void;
+  addSupervisor: (supervisor: Omit<EducationalSupervisor, 'id' | 'joinedDate'> & { joinedDate?: string } & NewAccountCredentials) => Promise<ManagedAccountCreateResult>;
   updateSupervisor: (id: string, updated: Partial<EducationalSupervisor>) => void;
   deleteSupervisor: (id: string) => void;
   setPrimarySupervisor: (id: string) => void;
@@ -305,8 +307,19 @@ interface AppContextType {
   saveSubjectQuotas: (quotas: GradeSubjectQuota[]) => Promise<boolean>;
 
   // Actions
-  addTeacher: (teacher: Omit<Teacher, 'id' | 'status' | 'joinedDate'>) => Promise<boolean>;
-  addStudent: (student: Omit<Student, 'id' | 'status' | 'enrollmentYear'> & { enrollmentYear?: string }) => Promise<boolean>;
+  addTeacher: (teacher: Omit<Teacher, 'id' | 'status' | 'joinedDate'> & NewAccountCredentials) => Promise<ManagedAccountCreateResult>;
+  addStudent: (
+    student: Omit<Student, 'id' | 'status' | 'enrollmentYear'> & {
+      enrollmentYear?: string;
+      username: string;
+      initialPassword: string;
+      confirmPassword: string;
+      parentUsername: string;
+      parentNationalId?: string;
+      parentInitialPassword: string;
+      parentConfirmPassword: string;
+    }
+  ) => Promise<ManagedAccountCreateResult>;
   createExam: (exam: Omit<Exam, 'id' | 'createdAt'>) => void;
   updateExam: (id: string, updated: Partial<Exam>) => void;
   deleteExam: (id: string) => void;
@@ -2829,7 +2842,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (receivedParentStudentSnapshot) {
       setParentStudentSelfHealGeneration((n) => n + 1);
     }
-    if (Array.isArray(remoteData.supervisors)) setSupervisors(remoteData.supervisors);
+    if (Array.isArray(remoteData.supervisors) && !isSyncKeyPending('supervisors')) setSupervisors(remoteData.supervisors);
     if (Array.isArray(remoteData.graduates)) {
       authoritativeGraduatesReceivedRef.current = true;
       if (!isSyncKeyPending('graduates')) setGraduates(remoteData.graduates);
@@ -2863,7 +2876,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (Array.isArray(remoteData.deletedChallengeIds)) setDeletedChallengeIds(remoteData.deletedChallengeIds);
     if (Array.isArray(remoteData.timetable)) setTimetable(remoteData.timetable);
     if (Array.isArray(remoteData.subjectQuotas)) setSubjectQuotas(remoteData.subjectQuotas);
-    if (Array.isArray(remoteData.financial)) setFinancial(remoteData.financial);
+    if (Array.isArray(remoteData.financial) && !isSyncKeyPending('financial')) setFinancial(remoteData.financial);
     if (Array.isArray(remoteData.notifications)) setNotifications(remoteData.notifications);
     if (Array.isArray(remoteData.certificates)) setCertificates(remoteData.certificates);
     if (Array.isArray(remoteData.academicEnrollments)) setAcademicEnrollments(remoteData.academicEnrollments);
@@ -3999,52 +4012,108 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Actions
-  const addTeacher = async (data: Omit<Teacher, 'id' | 'status' | 'joinedDate'>): Promise<boolean> => {
+  const credentialFailure = (input: {
+    username?: string;
+    password?: string;
+    confirmPassword?: string;
+    email?: string;
+    phone?: string;
+    nationalId?: string;
+  }): string | null => {
+    try {
+      validateNewAccountCredentials({
+        username: input.username,
+        password: input.password,
+        confirmPassword: input.confirmPassword,
+        email: input.email,
+        phone: input.phone,
+        nationalId: input.nationalId,
+      });
+      return null;
+    } catch (error) {
+      if (error instanceof AccountPolicyError) return error.message;
+      return ACCOUNT_PROVISION_MESSAGES.invalid;
+    }
+  };
+
+  const addTeacher = async (data: Omit<Teacher, 'id' | 'status' | 'joinedDate'> & NewAccountCredentials): Promise<ManagedAccountCreateResult> => {
     if (!isAdminActor()) {
       console.warn('[SECURITY] Blocked unauthorized teacher create.');
-      return false;
+      return { success: false, message: ACCOUNT_PROVISION_MESSAGES.forbidden };
     }
-    if (!isInitialHydrationDone.current) return false;
+    if (!isInitialHydrationDone.current) return { success: false, message: 'تعذر التنفيذ قبل اكتمال تحميل البيانات.' };
+    const invalid = credentialFailure({
+      username: data.username,
+      password: data.initialPassword,
+      confirmPassword: data.confirmPassword,
+      email: data.email,
+      phone: data.phone,
+      nationalId: data.nationalId,
+    });
+    if (invalid) return { success: false, message: invalid };
+
     const randSuffix = Math.random().toString(36).substring(2, 7);
-    const newTeacher: Teacher = {
-      ...data,
-      id: `tech-${Date.now()}-${randSuffix}`,
+    const teacherId = `tech-${Date.now()}-${randSuffix}`;
+    const { username, initialPassword, confirmPassword, ...profileFields } = data;
+    const profile: Record<string, unknown> = {
+      ...profileFields,
+      id: teacherId,
       status: 'نشط',
       joinedDate: new Date().toISOString().split('T')[0],
       rating: 5.0,
     };
-    const previous = teachersRef.current;
-    const updated = [newTeacher, ...previous];
+    delete profile.initialPassword;
+    delete profile.confirmPassword;
+    delete profile.password;
+    if (!String(profile.email || '').trim()) delete profile.email;
+    if (!String(profile.phone || '').trim()) delete profile.phone;
+    if (!String(profile.nationalId || '').trim()) delete profile.nationalId;
+
     const token = beginPendingSyncMutation('teachers');
-    setTeachers(updated);
-    teachersRef.current = updated;
     try {
-      const ok = await persistCollectionDoc('teachers', newTeacher.id, newTeacher);
-      if (!ok) {
-        setTeachers(previous);
-        teachersRef.current = previous;
-        return false;
-      }
-      await publishPublicFaculty(updated);
-      addAuditLog({
-        action: `إضافة مدرسة جديدة: ${newTeacher.name}`,
-        actionType: 'create',
-        targetCategory: 'teachers',
-        targetId: newTeacher.id,
-        targetName: newTeacher.name,
-        details: `تمت إضافة المدرسة لتدريس مادة (${newTeacher.subject}) للصفوف (${(newTeacher.assignedGrades || []).join('، ')})`,
-        severity: 'success',
+      const result = await provisionAccounts({
+        accounts: [{
+          role: 'teacher',
+          profileId: teacherId,
+          username,
+          password: initialPassword,
+          confirmPassword,
+          email: data.email,
+          phone: data.phone,
+          nationalId: data.nationalId,
+          profile,
+        }],
       });
-      const notif: NotificationItem = {
+      if (!result.success) return result;
+      const created = result.accounts[0];
+      const newTeacher = {
+        ...profile,
+        ...created.profile,
+        id: teacherId,
+        authUid: created.authUid,
+        username: created.username,
+        email: String(created.profile.email || ''),
+        phone: String(created.profile.phone || data.phone || ''),
+        status: 'نشط',
+        joinedDate: String(created.profile.joinedDate || profile.joinedDate),
+      } as Teacher;
+      const updated = [newTeacher, ...teachersRef.current];
+      setTeachers(updated);
+      teachersRef.current = updated;
+      try {
+        await publishPublicFaculty(updated);
+      } catch {
+        console.warn('[provision] public faculty publish failed');
+      }
+      addNotification({
         id: `notif-${Date.now()}-${randSuffix}`,
         title: lang === 'ar' ? 'انضمام مدرسة جديدة للهيئة التدريسية' : 'New Faculty Member Added',
         message: `${newTeacher.name} - ${newTeacher.subject}`,
         type: 'info',
         timestamp: lang === 'ar' ? 'الآن' : 'Just now',
         isRead: false,
-      };
-      addNotification(notif);
-      return true;
+      });
+      return { success: true, accounts: result.accounts };
     } finally {
       settlePendingSyncMutation('teachers', token);
     }
@@ -4057,36 +4126,194 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     ...supervisors.map((x: any) => ({ id: x.id, role: 'supervisor' as const, email: x.email, phone: x.phone, nationalId: x.nationalId })),
   ];
 
-  const addStudent = async (data: Omit<Student, 'id' | 'status' | 'enrollmentYear'> & { enrollmentYear?: string }): Promise<boolean> => {
-    if (!isAdminActor() || !isInitialHydrationDone.current) return false;
+  const addStudent = async (
+    data: Omit<Student, 'id' | 'status' | 'enrollmentYear'> & {
+      enrollmentYear?: string;
+      username: string;
+      initialPassword: string;
+      confirmPassword: string;
+      parentUsername: string;
+      parentNationalId?: string;
+      parentInitialPassword: string;
+      parentConfirmPassword: string;
+    }
+  ): Promise<ManagedAccountCreateResult> => {
+    if (!isAdminActor() || !isInitialHydrationDone.current) {
+      return { success: false, message: ACCOUNT_PROVISION_MESSAGES.forbidden };
+    }
+    const studentCredentials = credentialFailure({
+      username: data.username,
+      password: data.initialPassword,
+      confirmPassword: data.confirmPassword,
+      email: data.email,
+      phone: data.phone,
+      nationalId: data.nationalId,
+    });
+    if (studentCredentials) return { success: false, message: studentCredentials };
+    const parentCredentials = credentialFailure({
+      username: data.parentUsername,
+      password: data.parentInitialPassword,
+      confirmPassword: data.parentConfirmPassword,
+      email: data.parentEmail,
+      phone: data.parentPhone,
+      nationalId: data.parentNationalId,
+    });
+    if (parentCredentials) return { success: false, message: parentCredentials };
+
     const randSuffix = Math.random().toString(36).substring(2, 7);
     const parentId = `prt-${Date.now()}-${randSuffix}`;
     const studentId = `std-${Date.now()}-${randSuffix}`;
-    const existingIdentities = identityRecords();
-    assertUniqueIdentity({ id: studentId, role: 'student', email: data.email, phone: data.phone, nationalId: data.nationalId }, existingIdentities);
-    assertUniqueIdentity({ id: parentId, role: 'parent', email: data.parentEmail, phone: data.parentPhone }, existingIdentities);
-    const newStudent: Student = { ...data, id: studentId, username: stableUsername('student', studentId), parentId, status: 'منتظمة', enrollmentYear: data.enrollmentYear?.trim() || '2026' };
-    const newParent: Parent = { id: parentId, username: stableUsername('parent', parentId), name: data.parentName, phone: data.parentPhone, email: data.parentEmail, studentId, studentName: newStudent.name, gradeLevel: newStudent.gradeLevel, studentSection: newStudent.section };
-    const fin: FinancialRecord = { id: `fin-${Date.now()}-${randSuffix}`, studentId, studentName: newStudent.name, gradeLevel: newStudent.gradeLevel, feeType: 'رسوم التسجيل والكتب', totalAmount: 120000, paidAmount: 0, status: 'غير مدفوع', dueDate: '2026-09-01' };
-
-    const studentOk = await persistCollectionDoc('students', studentId, newStudent);
-    if (!studentOk) return false;
-    const parentOk = await persistCollectionDoc('parents', parentId, newParent);
-    if (!parentOk) { await deleteCollectionDoc('students', studentId); return false; }
-    const financialOk = await persistCollectionDoc('financial', fin.id, fin);
-    if (!financialOk) {
-      await Promise.all([deleteCollectionDoc('students', studentId), deleteCollectionDoc('parents', parentId)]);
-      return false;
+    try {
+      const existingIdentities = identityRecords();
+      assertUniqueIdentity({ id: studentId, role: 'student', nationalId: data.nationalId }, existingIdentities);
+      assertUniqueIdentity({ id: parentId, role: 'parent', nationalId: data.parentNationalId }, existingIdentities);
+    } catch (error) {
+      if (error instanceof DuplicateIdentityError) {
+        const message = error.field === 'email'
+          ? ACCOUNT_PROVISION_MESSAGES.emailTaken
+          : error.field === 'phone'
+            ? ACCOUNT_PROVISION_MESSAGES.phoneTaken
+            : ACCOUNT_PROVISION_MESSAGES.nationalIdTaken;
+        return { success: false, message };
+      }
+      return { success: false, message: ACCOUNT_PROVISION_MESSAGES.invalid };
     }
 
-    const nextStudents = [newStudent, ...studentsRef.current];
-    setStudents(nextStudents); studentsRef.current = nextStudents;
-    setParents((prev) => [newParent, ...prev]);
-    setFinancial((prev) => [fin, ...prev]);
-    await publishHonorFromLists(nextStudents, graduatesRef.current);
-    addAuditLog({ action: `تسجيل طالبة جديدة: ${newStudent.name}`, actionType: 'create', targetCategory: 'students', targetId: studentId, targetName: newStudent.name, details: `تسجيل الطالبة في ${newStudent.gradeLevel} - شعبة (${newStudent.section}) مع ربط حساب ولي الأمر (${data.parentName})`, severity: 'success' });
-    addNotification({ id: `notif-${Date.now()}-${randSuffix}`, title: lang === 'ar' ? 'تسجيل طالبة جديدة بالمدرسة' : 'New Gifted Student Registered', message: `${newStudent.name} (${newStudent.gradeLevel})`, type: 'success', timestamp: lang === 'ar' ? 'الآن' : 'Just now', isRead: false });
-    return true;
+    const {
+      username,
+      initialPassword,
+      confirmPassword,
+      parentUsername,
+      parentNationalId,
+      parentInitialPassword,
+      parentConfirmPassword,
+      ...studentFields
+    } = data;
+    const studentProfile: Record<string, unknown> = {
+      ...studentFields,
+      id: studentId,
+      parentId,
+      parentEmail: data.parentEmail?.trim() || '',
+      status: 'منتظمة',
+      enrollmentYear: data.enrollmentYear?.trim() || '2026',
+    };
+    delete studentProfile.initialPassword;
+    delete studentProfile.confirmPassword;
+    delete studentProfile.password;
+    delete studentProfile.parentUsername;
+    delete studentProfile.parentNationalId;
+    delete studentProfile.parentInitialPassword;
+    delete studentProfile.parentConfirmPassword;
+    if (!String(studentProfile.nationalId || '').trim()) delete studentProfile.nationalId;
+    if (!String(studentProfile.email || '').trim()) delete studentProfile.email;
+    if (!String(studentProfile.phone || '').trim()) delete studentProfile.phone;
+
+    const parentProfile: Record<string, unknown> = {
+      id: parentId,
+      name: data.parentName,
+      phone: data.parentPhone,
+      studentId,
+      studentName: data.name,
+      gradeLevel: data.gradeLevel,
+      studentSection: data.section,
+    };
+    if (data.parentEmail?.trim()) parentProfile.email = data.parentEmail.trim();
+    if (parentNationalId?.trim()) parentProfile.nationalId = parentNationalId.trim();
+
+    const fin: FinancialRecord = {
+      id: `fin-${Date.now()}-${randSuffix}`,
+      studentId,
+      studentName: data.name,
+      gradeLevel: data.gradeLevel,
+      feeType: 'رسوم التسجيل والكتب',
+      totalAmount: 120000,
+      paidAmount: 0,
+      status: 'غير مدفوع',
+      dueDate: '2026-09-01',
+    };
+
+    const studentToken = beginPendingSyncMutation('students');
+    const parentToken = beginPendingSyncMutation('parents');
+    const financialToken = beginPendingSyncMutation('financial');
+    try {
+      const result = await provisionAccounts({
+        accounts: [
+          {
+            role: 'student',
+            profileId: studentId,
+            username,
+            password: initialPassword,
+            confirmPassword,
+            email: data.email,
+            phone: data.phone,
+            nationalId: data.nationalId,
+            profile: studentProfile,
+          },
+          {
+            role: 'parent',
+            profileId: parentId,
+            username: parentUsername,
+            password: parentInitialPassword,
+            confirmPassword: parentConfirmPassword,
+            email: data.parentEmail,
+            phone: data.parentPhone,
+            nationalId: parentNationalId,
+            profile: parentProfile,
+          },
+        ],
+        extraDocuments: [{ collection: 'financial', id: fin.id, data: fin as unknown as Record<string, unknown> }],
+      });
+      if (!result.success) return result;
+      const createdStudent = result.accounts.find((account) => account.role === 'student');
+      const createdParent = result.accounts.find((account) => account.role === 'parent');
+      if (!createdStudent || !createdParent || createdStudent.authUid === createdParent.authUid) {
+        return { success: false, message: ACCOUNT_PROVISION_MESSAGES.rolledBack };
+      }
+      const newStudent = {
+        ...studentProfile,
+        ...createdStudent.profile,
+        id: studentId,
+        authUid: createdStudent.authUid,
+        username: createdStudent.username,
+        parentId,
+        parentEmail: data.parentEmail?.trim() || '',
+        status: 'منتظمة',
+        enrollmentYear: String(createdStudent.profile.enrollmentYear || studentProfile.enrollmentYear),
+      } as Student;
+      const newParent = {
+        ...parentProfile,
+        ...createdParent.profile,
+        id: parentId,
+        authUid: createdParent.authUid,
+        username: createdParent.username,
+        email: String(createdParent.profile.email || ''),
+        phone: String(createdParent.profile.phone || data.parentPhone || ''),
+        studentId,
+      } as Parent;
+      const nextStudents = [newStudent, ...studentsRef.current];
+      setStudents(nextStudents);
+      studentsRef.current = nextStudents;
+      setParents((prev) => [newParent, ...prev]);
+      setFinancial((prev) => [fin, ...prev]);
+      try {
+        await publishHonorFromLists(nextStudents, graduatesRef.current);
+      } catch {
+        console.warn('[provision] public honor publish failed');
+      }
+      addNotification({
+        id: `notif-${Date.now()}-${randSuffix}`,
+        title: lang === 'ar' ? 'تسجيل طالبة جديدة بالمدرسة' : 'New Gifted Student Registered',
+        message: `${newStudent.name} (${newStudent.gradeLevel})`,
+        type: 'success',
+        timestamp: lang === 'ar' ? 'الآن' : 'Just now',
+        isRead: false,
+      });
+      return { success: true, accounts: result.accounts };
+    } finally {
+      settlePendingSyncMutation('students', studentToken);
+      settlePendingSyncMutation('parents', parentToken);
+      settlePendingSyncMutation('financial', financialToken);
+    }
   };
 
   // User Management Implementations
@@ -4344,11 +4571,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return true;
   };
 
-  const addSupervisor = async (newSupData: Omit<EducationalSupervisor, 'id' | 'joinedDate'> & { joinedDate?: string }) => {
-    const randSuffix = Math.random().toString(36).substring(2, 6);
-    const newSupervisor: EducationalSupervisor = {
-      ...newSupData,
-      id: `sup-${Date.now()}-${randSuffix}`,
+  const addSupervisor = async (
+    newSupData: Omit<EducationalSupervisor, 'id' | 'joinedDate'> & { joinedDate?: string } & NewAccountCredentials
+  ): Promise<ManagedAccountCreateResult> => {
+    if (!isAdminActor() || !isInitialHydrationDone.current) {
+      console.warn('[SECURITY] Blocked unauthorized supervisor create.');
+      return { success: false, message: ACCOUNT_PROVISION_MESSAGES.forbidden };
+    }
+    const invalid = credentialFailure({
+      username: newSupData.username,
+      password: newSupData.initialPassword,
+      confirmPassword: newSupData.confirmPassword,
+      email: newSupData.email,
+      phone: newSupData.phone,
+      nationalId: newSupData.nationalId,
+    });
+    if (invalid) return { success: false, message: invalid };
+
+    const randSuffix = Math.random().toString(36).substring(2, 7);
+    const supervisorId = `sup-${Date.now()}-${randSuffix}`;
+    const { username, initialPassword, confirmPassword, ...profileFields } = newSupData;
+    const profile: Record<string, unknown> = {
+      ...profileFields,
+      id: supervisorId,
       joinedDate: newSupData.joinedDate || new Date().toISOString().split('T')[0],
       status: newSupData.status || 'نشط',
       evaluationScore: newSupData.evaluationScore || 99.0,
@@ -4356,45 +4601,66 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       assignedGrades: newSupData.assignedGrades || [],
       isPrimary: Boolean(newSupData.isPrimary),
     };
+    delete profile.initialPassword;
+    delete profile.confirmPassword;
+    delete profile.password;
+    if (!String(profile.email || '').trim()) delete profile.email;
+    if (!String(profile.phone || '').trim()) delete profile.phone;
+    if (!String(profile.nationalId || '').trim()) delete profile.nationalId;
 
-    const committed = await commitChangedCollectionUpdate('supervisors', supervisors, setSupervisors, (prev) => {
-      let updatedList = [newSupervisor, ...prev];
-      if (newSupervisor.isPrimary) {
-        updatedList = updatedList.map((s) => ({
-          ...s,
-          isPrimary: s.id === newSupervisor.id,
-        }));
-      }
-      return updatedList;
-    });
-    if (!committed) return false;
-
-    if (newSupervisor.isPrimary) {
-      updateSchoolAdminData({
-        academicSupervisorName: newSupervisor.name,
-        timetableSupervisorName: newSupervisor.name,
+    const token = beginPendingSyncMutation('supervisors');
+    try {
+      const result = await provisionAccounts({
+        accounts: [{
+          role: 'supervisor',
+          profileId: supervisorId,
+          username,
+          password: initialPassword,
+          confirmPassword,
+          email: newSupData.email,
+          phone: newSupData.phone,
+          nationalId: newSupData.nationalId,
+          profile,
+        }],
       });
+      if (!result.success) return result;
+      const created = result.accounts[0];
+      const newSupervisor = {
+        ...profile,
+        ...created.profile,
+        id: supervisorId,
+        authUid: created.authUid,
+        username: created.username,
+        email: String(created.profile.email || ''),
+        phone: String(created.profile.phone || newSupData.phone || ''),
+      } as EducationalSupervisor;
+      setSupervisors((prev) => {
+        const next = [newSupervisor, ...prev.filter((item) => item.id !== newSupervisor.id)];
+        if (!newSupervisor.isPrimary) return next;
+        return next.map((item) => ({ ...item, isPrimary: item.id === newSupervisor.id }));
+      });
+      if (newSupervisor.isPrimary) {
+        for (const current of supervisors) {
+          if (!current.isPrimary || current.id === newSupervisor.id) continue;
+          await persistCollectionDoc('supervisors', current.id, { ...current, isPrimary: false }, current);
+        }
+        void updateSchoolAdminData({
+          academicSupervisorName: newSupervisor.name,
+          timetableSupervisorName: newSupervisor.name,
+        });
+      }
+      addNotification({
+        id: `notif-${Date.now()}-${randSuffix}`,
+        title: lang === 'ar' ? 'اعتماد مشرف تربوي جديد 🏛️' : 'New Educational Supervisor Appointed',
+        message: `${newSupervisor.name} (${newSupervisor.title}) - ${newSupervisor.specialization}`,
+        type: 'success',
+        timestamp: lang === 'ar' ? 'الآن' : 'Just now',
+        isRead: false,
+      });
+      return { success: true, accounts: result.accounts };
+    } finally {
+      settlePendingSyncMutation('supervisors', token);
     }
-
-    addAuditLog({
-      action: `إضافة مشرف تربوي جديد: ${newSupervisor.name}`,
-      actionType: 'create',
-      targetCategory: 'system',
-      targetId: newSupervisor.id,
-      targetName: newSupervisor.name,
-      details: `تم اعتماد المشرف التربوي (${newSupervisor.name}) - ${newSupervisor.title} لتخصص (${newSupervisor.specialization})`,
-      severity: 'success',
-    });
-
-    const notif: NotificationItem = {
-      id: `notif-${Date.now()}-${randSuffix}`,
-      title: lang === 'ar' ? 'اعتماد مشرف تربوي جديد 🏛️' : 'New Educational Supervisor Appointed',
-      message: `${newSupervisor.name} (${newSupervisor.title}) - ${newSupervisor.specialization}`,
-      type: 'success',
-      timestamp: lang === 'ar' ? 'الآن' : 'Just now',
-      isRead: false,
-    };
-    addNotification(notif);
   };
 
   const updateSupervisor = async (id: string, updated: Partial<EducationalSupervisor>) => {

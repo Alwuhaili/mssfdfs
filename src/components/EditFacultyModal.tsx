@@ -51,6 +51,7 @@ interface EditFacultyModalProps {
   onResetDefault?: () => void;
   initialTeacherId?: string;
   openInAddMode?: boolean;
+  onRequestFullTeacherAccount?: () => void;
 }
 
 const AVATAR_PRESETS = [
@@ -72,6 +73,7 @@ export const EditFacultyModal: React.FC<EditFacultyModalProps> = ({
   onResetDefault,
   initialTeacherId,
   openInAddMode = false,
+  onRequestFullTeacherAccount,
 }) => {
   const avatarFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -122,7 +124,7 @@ export const EditFacultyModal: React.FC<EditFacultyModalProps> = ({
     if (isOpen) {
       setLocalList(facultyList);
       if (openInAddMode) {
-        createNewTeacher(facultyList);
+        createNewTeacher();
       } else if (initialTeacherId && facultyList.some((f) => f.id === initialTeacherId)) {
         setSelectedId(initialTeacherId);
         const target = facultyList.find((f) => f.id === initialTeacherId);
@@ -131,7 +133,7 @@ export const EditFacultyModal: React.FC<EditFacultyModalProps> = ({
         setSelectedId(facultyList[0].id);
         setFormData({ ...facultyList[0] });
       } else {
-        createNewTeacher(facultyList);
+        createNewTeacher();
       }
     }
   }, [isOpen, initialTeacherId, openInAddMode]);
@@ -144,27 +146,10 @@ export const EditFacultyModal: React.FC<EditFacultyModalProps> = ({
     }
   };
 
-  const createNewTeacher = (baseList = localList) => {
-    const newId = `f_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`;
-    const newTeacher: FacultyMember = {
-      id: newId,
-      name: 'أستاذة جديدة',
-      roleTitle: 'مدرسة مادة أولى',
-      subject: 'العلوم والأبحاث التخصصية',
-      avatar: AVATAR_PRESETS[Math.floor(Math.random() * AVATAR_PRESETS.length)].url,
-      degree: 'ماجستير علوم وتدريس',
-      researchCount: 1,
-      booksCount: 1,
-      gamesCount: 1,
-      achievements: ['إشراف على مشاريع الطالبات والابتكارات المدرسية والمهرجانات العلمية'],
-    };
-    const updated = [...baseList, newTeacher];
-    setLocalList(updated);
-    setSelectedId(newId);
-    setFormData(newTeacher);
-    onSaveFacultyList(updated);
-    setSavedToast('تمت إضافة عضو هيئة تدريسية جديد! يمكنكِ تعديل بياناته الآن 📝');
-    setTimeout(() => setSavedToast(null), 3000);
+  const createNewTeacher = () => {
+    setSavedToast('إضافة مدرسة جديدة تتم من نموذج إضافة المدرس، حتى يُنشأ حساب Firebase واسم مستخدم وكلمة مرور.');
+    setTimeout(() => setSavedToast(null), 3500);
+    onRequestFullTeacherAccount?.();
   };
 
   // Perform permanent teacher deletion

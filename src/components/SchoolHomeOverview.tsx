@@ -9,6 +9,7 @@ import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { EditHonorStudentModal } from './EditHonorStudentModal';
 import { EditFacultyModal, FacultyMember } from './EditFacultyModal';
+import { AddTeacherModal } from './AddUserModals';
 import { EditSchoolAdminModal } from './EditSchoolAdminModal';
 import { QuickEditPrincipalModal } from './QuickEditPrincipalModal';
 import { EditNewsEventsModal, NewsItem } from './EditNewsEventsModal';
@@ -493,7 +494,6 @@ export const SchoolHomeOverview: React.FC = () => {
     teachers,
     students,
     graduates,
-    addTeacher,
     updateTeacher,
     deleteTeacher,
     updateStudent,
@@ -744,6 +744,7 @@ export const SchoolHomeOverview: React.FC = () => {
   }, [publicFaculty]);
 
   const [isFacultyModalOpen, setIsFacultyModalOpen] = useState(false);
+  const [isAddTeacherAccountOpen, setIsAddTeacherAccountOpen] = useState(false);
   const [selectedFacultyIdToEdit, setSelectedFacultyIdToEdit] = useState<string | undefined>(undefined);
   const [openFacultyInAddMode, setOpenFacultyInAddMode] = useState<boolean>(false);
   const [deleteConfirmTeacherInHome, setDeleteConfirmTeacherInHome] = useState<FacultyMember | null>(null);
@@ -770,26 +771,13 @@ export const SchoolHomeOverview: React.FC = () => {
 
     void (async () => {
       let allOk = true;
+      let blockedNewTeacher = false;
       for (const faculty of newList) {
-        if (currentIds.has(faculty.id)) {
-          const ok = await updateTeacher(faculty.id, toCentralTeacherPatch(faculty) as any);
-          if (!ok) allOk = false;
+        if (!currentIds.has(faculty.id)) {
+          blockedNewTeacher = true;
           continue;
         }
-        const ok = await addTeacher({
-          name: faculty.name,
-          email: '',
-          phone: '',
-          subject: faculty.subject || '',
-          assignedGrades: [],
-          avatar: faculty.avatar || '',
-          facultyRoleTitle: faculty.roleTitle,
-          facultyDegree: faculty.degree,
-          researchCount: Number(faculty.researchCount) || 0,
-          booksCount: Number(faculty.booksCount) || 0,
-          gamesCount: Number(faculty.gamesCount) || 0,
-          facultyAchievements: Array.isArray(faculty.achievements) ? faculty.achievements : [],
-        } as any);
+        const ok = await updateTeacher(faculty.id, toCentralTeacherPatch(faculty) as any);
         if (!ok) allOk = false;
       }
 
@@ -801,7 +789,9 @@ export const SchoolHomeOverview: React.FC = () => {
       }
 
       setSaveToast(
-        allOk
+        blockedNewTeacher
+          ? 'لم يُنشأ حساب مدرسة من بطاقة الهيئة التدريسية. استخدمي نموذج «إضافة مدرس» حتى يُنشأ حساب Firebase واسم المستخدم وكلمة المرور.'
+          : allOk
           ? 'تم تحديث بيانات وإنجازات الهيئة التدريسية ومزامنتها مركزياً 🎓'
           : 'تعذر حفظ بعض سجلات الهيئة التدريسية. لم يتم اعتماد التغيير بالكامل.'
       );
@@ -1567,11 +1557,7 @@ export const SchoolHomeOverview: React.FC = () => {
                 </span>
                 <button
                   type="button"
-                  onClick={() => {
-                    setSelectedFacultyIdToEdit(undefined);
-                    setOpenFacultyInAddMode(true);
-                    setIsFacultyModalOpen(true);
-                  }}
+                  onClick={() => setIsAddTeacherAccountOpen(true)}
                   className="px-3.5 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-slate-950 font-extrabold text-xs shadow-md shadow-teal-500/20 transition-all flex items-center gap-1.5"
                 >
                   <Plus className="w-3.5 h-3.5" />
@@ -1610,11 +1596,7 @@ export const SchoolHomeOverview: React.FC = () => {
               <div className="flex items-center justify-center gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    setSelectedFacultyIdToEdit(undefined);
-                    setOpenFacultyInAddMode(true);
-                    setIsFacultyModalOpen(true);
-                  }}
+                  onClick={() => setIsAddTeacherAccountOpen(true)}
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-slate-950 font-bold text-xs shadow-sm transition-all"
                 >
                   <Plus className="w-4 h-4" />
@@ -1773,8 +1755,15 @@ export const SchoolHomeOverview: React.FC = () => {
             onSaveFacultyList={handleSaveFacultyList}
             onResetDefault={handleResetFacultyList}
             initialTeacherId={selectedFacultyIdToEdit}
-            openInAddMode={openFacultyInAddMode}
+            onRequestFullTeacherAccount={() => {
+              setIsFacultyModalOpen(false);
+              setOpenFacultyInAddMode(false);
+              setIsAddTeacherAccountOpen(true);
+            }}
           />
+        )}
+        {role === 'admin' && (
+          <AddTeacherModal isOpen={isAddTeacherAccountOpen} onClose={() => setIsAddTeacherAccountOpen(false)} />
         )}
 
         {/* Direct Delete Confirmation Modal in Overview */}

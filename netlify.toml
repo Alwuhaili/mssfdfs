@@ -2,6 +2,17 @@
   command = "npm run build"
   publish = "dist"
 
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+  external_node_modules = ["firebase-admin"]
+
+[[redirects]]
+  from = "/api/accounts/provision"
+  to = "/.netlify/functions/provision-account"
+  status = 200
+  force = true
+
 # Security Hardening V1: Firebase web configuration is public metadata, but secrets
 # must never be placed in this file. Configure real secrets in the hosting dashboard.
 [[headers]]
