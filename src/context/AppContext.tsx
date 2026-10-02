@@ -7158,7 +7158,7 @@ ${defaultReason}
       parents.find(
         (p) =>
           (activeUser?.id && p.id === activeUser.id) ||
-          (activeUser?.email && p.email.toLowerCase() === activeUser.email.toLowerCase()) ||
+          (activeUser?.email && p.email?.toLowerCase() === activeUser.email.toLowerCase()) ||
           (activeUser?.phone && p.phone === activeUser.phone)
       ) || activeUser?.parentObj;
 
@@ -7176,7 +7176,7 @@ ${defaultReason}
 
     const daughters = students.filter(
       (s) =>
-        (activeParentObj && s.parentEmail.toLowerCase() === activeParentObj.email.toLowerCase()) ||
+        (activeParentObj?.email && s.parentEmail?.toLowerCase() === activeParentObj.email.toLowerCase()) ||
         (activeParentObj && s.parentPhone === activeParentObj.phone) ||
         (activeParentObj && s.parentName === activeParentObj.name) ||
         (activeParentObj && s.parentId === activeParentObj.id) ||

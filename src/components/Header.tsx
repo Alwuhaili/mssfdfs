@@ -56,14 +56,14 @@ export const Header: React.FC<{
     parents.find(
       (p) =>
         (currentUser?.id && p.id === currentUser.id) ||
-        (currentUser?.email && p.email.toLowerCase() === currentUser.email.toLowerCase()) ||
+        (currentUser?.email && p.email?.toLowerCase() === currentUser.email.toLowerCase()) ||
         (currentUser?.phone && p.phone === currentUser.phone)
     ) || currentUser?.parentObj;
 
   const daughter =
     students.find(
       (s) =>
-        (activeParentObj && s.parentEmail.toLowerCase() === activeParentObj.email.toLowerCase()) ||
+        (activeParentObj?.email && s.parentEmail?.toLowerCase() === activeParentObj.email.toLowerCase()) ||
         (activeParentObj && s.parentPhone === activeParentObj.phone) ||
         (activeParentObj && s.parentName === activeParentObj.name) ||
         (currentUser?.studentObj && s.id === currentUser.studentObj.id)
