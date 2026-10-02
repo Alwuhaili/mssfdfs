@@ -134,7 +134,7 @@ export const NotificationModal: React.FC<{ isOpen: boolean; onClose: () => void 
     parents.find(
       (p) =>
         (currentUser?.id && p.id === currentUser.id) ||
-        (currentUser?.email && p.email.toLowerCase() === currentUser.email.toLowerCase()) ||
+        (currentUser?.email && p.email?.toLowerCase() === currentUser.email.toLowerCase()) ||
         (currentUser?.phone && p.phone === currentUser.phone)
     ) || currentUser?.parentObj;
 
@@ -152,7 +152,7 @@ export const NotificationModal: React.FC<{ isOpen: boolean; onClose: () => void 
 
   const daughters = students.filter(
     (s) =>
-      (activeParentObj && s.parentEmail.toLowerCase() === activeParentObj.email.toLowerCase()) ||
+      (activeParentObj?.email && s.parentEmail?.toLowerCase() === activeParentObj.email.toLowerCase()) ||
       (activeParentObj && s.parentPhone === activeParentObj.phone) ||
       (activeParentObj && s.parentName === activeParentObj.name) ||
       (activeParentObj && s.parentId === activeParentObj.id) ||
