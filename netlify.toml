@@ -9,7 +9,7 @@
 
 [[redirects]]
   from = "/api/accounts/provision"
-  to = "/.netlify/functions/provision-account"
+  to = "https://provisionaccount-vomo2subdq-uc.a.run.app"
   status = 200
   force = true
 
