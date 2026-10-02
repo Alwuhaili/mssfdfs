@@ -3,10 +3,11 @@
  * مدرسة ثانوية ميسان للمتميزات
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { GradeLevel, ALL_GRADES_LIST } from '../types';
 import { resolveTimetableSettings } from '../utils/timetableSettings';
+import { suggestUsername } from '../utils/newAccountPolicy';
 import { X, UserPlus, GraduationCap, CheckCircle } from 'lucide-react';
 
 interface AddTeacherModalProps {
@@ -22,30 +23,59 @@ export const AddTeacherModal: React.FC<AddTeacherModalProps> = ({ isOpen, onClos
   const [subject, setSubject] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
+  const [nationalId, setNationalId] = useState('');
+  const [username, setUsername] = useState('');
+  const [initialPassword, setInitialPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [assignedGrades, setAssignedGrades] = useState<GradeLevel[]>(['الصف السادس العلمي']);
   const [availableDays, setAvailableDays] = useState<string[]>(() => [...weekdaysList]);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setUsername((current) => current || suggestUsername('teacher'));
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     if (!name || !subject || !phone) return;
-
-    addTeacher({
-      name,
-      subject,
-      email: email || `${name.toLowerCase().replace(/\s+/g, '.')}@maysan-gifted.edu.iq`,
-      phone,
-      assignedGrades,
-      availableDays,
-    });
-
-    onClose();
-    setName('');
-    setSubject('');
-    setEmail('');
-    setPhone('');
-    setAvailableDays([...weekdaysList]);
+    setSubmitting(true);
+    setError('');
+    try {
+      const result = await addTeacher({
+        name,
+        subject,
+        email: email.trim(),
+        phone,
+        nationalId: nationalId.trim() || undefined,
+        username,
+        initialPassword,
+        confirmPassword,
+        assignedGrades,
+        availableDays,
+      });
+      if (!result.success) {
+        setError('message' in result ? result.message : 'تعذر إنشاء حساب Firebase.');
+        return;
+      }
+      onClose();
+      setName('');
+      setSubject('');
+      setEmail('');
+      setPhone('');
+      setNationalId('');
+      setUsername('');
+      setInitialPassword('');
+      setConfirmPassword('');
+      setError('');
+      setAvailableDays([...weekdaysList]);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const allGrades: GradeLevel[] = ALL_GRADES_LIST;
@@ -82,13 +112,13 @@ export const AddTeacherModal: React.FC<AddTeacherModalProps> = ({ isOpen, onClos
               {lang === 'ar' ? 'إضافة مدرس أو مدرسة جديدة للهيئة التدريسية' : 'Add New Faculty Teacher'}
             </h3>
           </div>
-          <button onClick={onClose} className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800">
+          <button type="button" onClick={() => { if (!submitting) onClose(); }} className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800">
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        <form onSubmit={handleSubmit} className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1">
               {lang === 'ar' ? 'اسم المدرس أو المدرسة الثلاثي واللقب *' : 'Teacher Full Name *'}
@@ -139,11 +169,67 @@ export const AddTeacherModal: React.FC<AddTeacherModalProps> = ({ isOpen, onClos
             </label>
             <input
               type="email"
-              placeholder="teacher@maysan-gifted.edu.iq"
+              placeholder="teacher@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               className="w-full px-3.5 py-2.5 rounded-xl bg-slate-800/80 border border-slate-700 text-white text-sm focus:outline-none focus:border-indigo-500"
             />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                {lang === 'ar' ? 'اسم المستخدم *' : 'Username *'}
+              </label>
+              <input
+                type="text"
+                required
+                autoComplete="off"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-800/80 border border-slate-700 text-white text-sm focus:outline-none focus:border-indigo-500 font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                {lang === 'ar' ? 'الرقم الوطني' : 'National ID'}
+              </label>
+              <input
+                type="text"
+                value={nationalId}
+                onChange={(e) => setNationalId(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-800/80 border border-slate-700 text-white text-sm focus:outline-none focus:border-indigo-500 font-mono"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                {lang === 'ar' ? 'كلمة المرور الأولية *' : 'Initial password *'}
+              </label>
+              <input
+                type="password"
+                required
+                autoComplete="new-password"
+                value={initialPassword}
+                onChange={(e) => setInitialPassword(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-800/80 border border-slate-700 text-white text-sm focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                {lang === 'ar' ? 'تأكيد كلمة المرور *' : 'Confirm password *'}
+              </label>
+              <input
+                type="password"
+                required
+                autoComplete="new-password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-800/80 border border-slate-700 text-white text-sm focus:outline-none focus:border-indigo-500"
+              />
+            </div>
           </div>
 
           <div>
@@ -202,19 +288,23 @@ export const AddTeacherModal: React.FC<AddTeacherModalProps> = ({ isOpen, onClos
             </p>
           </div>
 
+          {error && <p role="alert" className="text-sm text-rose-300">{error}</p>}
+
           <div className="pt-4 border-t border-slate-800 flex justify-end gap-3">
             <button
               type="button"
+              disabled={submitting}
               onClick={onClose}
-              className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700"
+              className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 disabled:opacity-50"
             >
               {t.cancel}
             </button>
             <button
               type="submit"
-              className="px-5 py-2 rounded-xl text-xs font-bold text-indigo-950 bg-amber-400 hover:bg-amber-300 shadow-lg shadow-amber-500/20"
+              disabled={submitting}
+              className="px-5 py-2 rounded-xl text-xs font-bold text-indigo-950 bg-amber-400 hover:bg-amber-300 shadow-lg shadow-amber-500/20 disabled:opacity-60"
             >
-              {lang === 'ar' ? 'إضافة وتثبيت السجل' : 'Add Faculty Member'}
+              {submitting ? 'جاري إنشاء الحساب...' : (lang === 'ar' ? 'إضافة وتثبيت السجل' : 'Add Faculty Member')}
             </button>
           </div>
         </form>
@@ -240,39 +330,78 @@ export const AddStudentModal: React.FC<AddStudentModalProps> = ({ isOpen, onClos
   const [parentName, setParentName] = useState('');
   const [parentPhone, setParentPhone] = useState('');
   const [parentEmail, setParentEmail] = useState('');
+  const [username, setUsername] = useState('');
+  const [initialPassword, setInitialPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [parentUsername, setParentUsername] = useState('');
+  const [parentNationalId, setParentNationalId] = useState('');
+  const [parentInitialPassword, setParentInitialPassword] = useState('');
+  const [parentConfirmPassword, setParentConfirmPassword] = useState('');
   const [gpa, setGpa] = useState('98.5');
   const [enrollmentYear, setEnrollmentYear] = useState('2026');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setUsername((current) => current || suggestUsername('student'));
+    setParentUsername((current) => current || suggestUsername('parent'));
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     if (!name || !parentName || !parentPhone) return;
+    setSubmitting(true);
+    setError('');
+    try {
+      const result = await addStudent({
+        name,
+        nationalId: nationalId.trim() || undefined,
+        phone: studentPhone.trim() || undefined,
+        email: studentEmail.trim() || undefined,
+        gradeLevel,
+        section,
+        parentName,
+        parentPhone,
+        parentEmail: parentEmail.trim(),
+        gpa: parseFloat(gpa) || 98.0,
+        enrollmentYear: enrollmentYear.trim() || '2026',
+        username,
+        initialPassword,
+        confirmPassword,
+        parentUsername,
+        parentNationalId: parentNationalId.trim() || undefined,
+        parentInitialPassword,
+        parentConfirmPassword,
+      });
+      if (!result.success) {
+        setError('message' in result ? result.message : 'تعذر إنشاء حساب Firebase.');
+        return;
+      }
 
-    const saved = await addStudent({
-      name,
-      nationalId: nationalId || `${Math.floor(1000000000 + Math.random() * 9000000000)}`,
-      phone: studentPhone || undefined,
-      email: studentEmail || undefined,
-      gradeLevel,
-      section,
-      parentName,
-      parentPhone,
-      parentEmail: parentEmail || `${parentName.toLowerCase().replace(/\s+/g, '.')}@gmail.com`,
-      gpa: parseFloat(gpa) || 98.0,
-      enrollmentYear: enrollmentYear.trim() || '2026',
-    });
-    if (!saved) return;
-
-    onClose();
-    setName('');
-    setNationalId('');
-    setStudentPhone('');
-    setStudentEmail('');
-    setParentName('');
-    setParentPhone('');
-    setParentEmail('');
-    setEnrollmentYear('2026');
+      onClose();
+      setName('');
+      setNationalId('');
+      setStudentPhone('');
+      setStudentEmail('');
+      setParentName('');
+      setParentPhone('');
+      setParentEmail('');
+      setUsername('');
+      setInitialPassword('');
+      setConfirmPassword('');
+      setParentUsername('');
+      setParentNationalId('');
+      setParentInitialPassword('');
+      setParentConfirmPassword('');
+      setError('');
+      setEnrollmentYear('2026');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -289,7 +418,7 @@ export const AddStudentModal: React.FC<AddStudentModalProps> = ({ isOpen, onClos
               {lang === 'ar' ? 'إضافة طالبة متميزة جديدة' : 'Register New Gifted Student'}
             </h3>
           </div>
-          <button onClick={onClose} className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800">
+          <button type="button" onClick={() => { if (!submitting) onClose(); }} className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -429,12 +558,27 @@ export const AddStudentModal: React.FC<AddStudentModalProps> = ({ isOpen, onClos
               </label>
               <input
                 type="email"
-                placeholder="student@maysan-gifted.edu.iq (اختياري)"
+                placeholder="student@example.com"
                 value={studentEmail}
                 onChange={(e) => setStudentEmail(e.target.value)}
                 className="w-full px-3.5 py-2.5 rounded-xl bg-slate-800/80 border border-slate-700 text-white text-sm focus:outline-none focus:border-indigo-500"
               />
             </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">{lang === 'ar' ? 'اسم مستخدم الطالبة *' : 'Student username *'}</label>
+              <input type="text" required autoComplete="off" value={username} onChange={(e) => setUsername(e.target.value)} className="w-full px-3.5 py-2.5 rounded-xl bg-slate-800/80 border border-slate-700 text-white text-sm focus:outline-none focus:border-indigo-500 font-mono" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">{lang === 'ar' ? 'كلمة مرور الطالبة *' : 'Student password *'}</label>
+              <input type="password" required autoComplete="new-password" value={initialPassword} onChange={(e) => setInitialPassword(e.target.value)} className="w-full px-3.5 py-2.5 rounded-xl bg-slate-800/80 border border-slate-700 text-white text-sm focus:outline-none focus:border-indigo-500" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">{lang === 'ar' ? 'تأكيد كلمة مرور الطالبة *' : 'Confirm student password *'}</label>
+            <input type="password" required autoComplete="new-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="w-full px-3.5 py-2.5 rounded-xl bg-slate-800/80 border border-slate-700 text-white text-sm focus:outline-none focus:border-indigo-500" />
           </div>
 
           <div className="p-4 bg-indigo-950/50 rounded-2xl border border-indigo-800/40 space-y-3">
@@ -477,28 +621,53 @@ export const AddStudentModal: React.FC<AddStudentModalProps> = ({ isOpen, onClos
                 </label>
                 <input
                   type="email"
-                  placeholder="parent@gmail.com"
+                  placeholder="parent@example.com"
                   value={parentEmail}
                   onChange={(e) => setParentEmail(e.target.value)}
                   className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-sm focus:outline-none focus:border-indigo-500"
                 />
               </div>
             </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">{lang === 'ar' ? 'اسم مستخدم ولي الأمر *' : 'Parent username *'}</label>
+                <input type="text" required autoComplete="off" value={parentUsername} onChange={(e) => setParentUsername(e.target.value)} className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-sm focus:outline-none focus:border-indigo-500 font-mono" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">{lang === 'ar' ? 'الرقم الوطني لولي الأمر' : 'Parent national ID'}</label>
+                <input type="text" value={parentNationalId} onChange={(e) => setParentNationalId(e.target.value)} className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-sm focus:outline-none focus:border-indigo-500 font-mono" />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">{lang === 'ar' ? 'كلمة مرور ولي الأمر *' : 'Parent password *'}</label>
+                <input type="password" required autoComplete="new-password" value={parentInitialPassword} onChange={(e) => setParentInitialPassword(e.target.value)} className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-sm focus:outline-none focus:border-indigo-500" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">{lang === 'ar' ? 'تأكيد كلمة المرور *' : 'Confirm password *'}</label>
+                <input type="password" required autoComplete="new-password" value={parentConfirmPassword} onChange={(e) => setParentConfirmPassword(e.target.value)} className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-sm focus:outline-none focus:border-indigo-500" />
+              </div>
+            </div>
           </div>
+
+          {error && <p role="alert" className="text-sm text-rose-300">{error}</p>}
 
           <div className="pt-4 border-t border-slate-800 flex justify-end gap-3">
             <button
               type="button"
+              disabled={submitting}
               onClick={onClose}
-              className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700"
+              className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 disabled:opacity-50"
             >
               {t.cancel}
             </button>
             <button
               type="submit"
-              className="px-5 py-2 rounded-xl text-xs font-bold text-indigo-950 bg-emerald-400 hover:bg-emerald-300 shadow-lg shadow-emerald-500/20"
+              disabled={submitting}
+              className="px-5 py-2 rounded-xl text-xs font-bold text-indigo-950 bg-emerald-400 hover:bg-emerald-300 shadow-lg shadow-emerald-500/20 disabled:opacity-60"
             >
-              {lang === 'ar' ? 'إضافة الطالبة وإنشاء الحسابات' : 'Register Student & Link Parent'}
+              {submitting ? 'جاري إنشاء الحساب...' : (lang === 'ar' ? 'إضافة الطالبة وإنشاء الحسابات' : 'Register Student & Link Parent')}
             </button>
           </div>
         </form>

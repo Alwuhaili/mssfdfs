@@ -4,6 +4,7 @@ import { createServer as createViteServer } from "vite";
 import { timingSafeEqual } from "node:crypto";
 import { ServerAuthService } from "./server/authService.js";
 import { serverDataStore } from "./server/dataStore.js";
+import { handleProvisionHttp } from "./server/provisionHttp.js";
 
 async function startServer() {
   const app = express();
@@ -239,6 +240,22 @@ async function startServer() {
         success: false,
         message: "فشلت إعادة ضبط قاعدة البيانات المركزية.",
       });
+    }
+  });
+
+  // NEW ACCOUNT PROVISIONING. Firebase ID token is verified on the server.
+  // ADMIN_API_KEY is not accepted on this route.
+  app.post("/api/accounts/provision", rateLimitIpOnly("provision-account", 30, 15 * 60 * 1000), async (req, res) => {
+    try {
+      const result = await handleProvisionHttp({
+        method: req.method,
+        authorization: req.headers.authorization,
+        payload: req.body,
+        ip: req.ip || req.socket.remoteAddress || "unknown",
+      });
+      return res.status(result.status).json(result.body);
+    } catch {
+      return res.status(500).json({ success: false, message: "تعذر إنشاء حساب Firebase." });
     }
   });
 

@@ -162,6 +162,8 @@ export interface EducationalSupervisor {
   title: string; // e.g. 'المشرف الأكاديمي والتربوي المعتمد'
   specialization: string; // e.g. 'الفيزياء المتقدمة ورعاية المتفوقين'
   degree?: string; // e.g. 'دكتوراه في الفيزياء النظرية'
+  username?: string;
+  nationalId?: string;
   email: string; // e.g. 'haider.supervisor@maysan.edu.iq'
   phone: string; // e.g. '07709988776'
   assignedSubjects: string[]; // e.g. ['الفيزياء', 'الرياضيات']
@@ -259,7 +261,7 @@ export interface Student {
   username?: string;
   studentCode?: string;
   name: string;
-  nationalId: string;
+  nationalId?: string;
   phone?: string;
   email?: string;
   gradeLevel: GradeLevel;

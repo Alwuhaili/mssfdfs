@@ -588,7 +588,7 @@ export const DisciplinaryAttendancePanel: React.FC = () => {
       !searchQuery ||
       std.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       std.parentName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      std.nationalId.includes(searchQuery);
+      (std.nationalId ? std.nationalId.includes(searchQuery) : false);
 
     const matchesGrade = selectedGrade === 'all' || std.gradeLevel === selectedGrade;
     const matchesSection = selectedSection === 'all' || std.section === selectedSection;
